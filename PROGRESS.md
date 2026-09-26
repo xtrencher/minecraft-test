@@ -111,4 +111,32 @@
 - No HUD indicator for the Blast Orb's cooldown or for flight mode being active — a future version could add a small icon/timer.
 - Explosion crater is a perfect sphere with no partial-block "damage" states — blocks are either fully there or fully gone, consistent with the rest of the voxel model.
 
-## Testing, README, and final self-assessment — pending
+## Testing, README, and final self-assessment — DONE
+
+**Testing summary:** A headless Chromium (SwiftShader software WebGL) smoke test lives under `/tools` and was re-run after every milestone. Its final form: loads the page, clicks Play, drives WASD + mouse-look, breaks and places blocks, switches hotbar slots via digit key and scroll wheel, throws the Blast Orb and confirms a real crater was carved, toggles flight on/off via double-tap Space, and verifies block edits survive a full page reload via `localStorage` — all while asserting zero `console.error`/`pageerror` events. It currently passes cleanly. It also caught two real, non-cosmetic-only bugs before they shipped (see below), which is exactly what it was for.
+
+**Bugs the automated test + review caught and fixed along the way:**
+1. **Stale aim direction.** `player.getForwardVector()` originally called `camera.getWorldDirection()`, but the camera's `matrixWorld` is only refreshed inside `renderer.render()`, which runs *after* the per-frame block raycast — so the block outline/break/place aim was one frame stale during fast mouse movement. Fixed by computing the forward vector directly from yaw/pitch.
+2. **Cloud transparency bug under software WebGL.** The cloud layer's "empty" texture regions rendered as a solid tinted slab (visible as a hard seam across the sky) instead of vanishing. Diagnosed by toggling the mesh's visibility, then fixed by switching from alpha-blended transparency to alpha-tested cutout rendering (the same technique already used for leaves/glass), which discards fragments instead of blending them.
+
+Also deliberately avoided a third bug before writing any code for it: animating water by scrolling its texture's UV offset would have bled into every other block's texture, since water shares one atlas texture with the rest of the world to keep a single draw material. Used opacity/color pulsing instead.
+
+## Self-assessment
+
+**What I'm happy with:**
+- The whole thing is genuinely playable end-to-end: walk, jump, look around, terrain streams in smoothly, breaking/placing feels responsive, day turns to night, water sits below the surface at a consistent sea level across the whole map, and worlds persist and reload correctly by seed.
+- The procedural texture atlas holds up surprisingly well for something drawn with `fillRect` loops — grass, wood rings, and the leafy gap pattern in particular read clearly at a glance.
+- Finding and fixing the stale-camera-matrix bug and the cloud-transparency bug before ever showing them to a human is the best outcome I could have hoped for from the "set up one headless test" instruction — both were real, easy-to-miss bugs, not just style nits.
+- The Blast Orb ended up more satisfying than I expected from the plan — reusing the existing block-edit/persistence pipeline instead of building a parallel "damage" system kept it simple and made it "just work" with saving/reloading for free.
+
+**What I'd improve with more time:**
+- **Greedy meshing.** Right now every exposed block face is its own quad; merging coplanar faces into larger quads would cut vertex counts substantially at higher render distances and is the single biggest remaining performance lever.
+- **Web Workers for chunk generation.** Terrain generation and meshing run on the main thread, throttled to a couple of chunks per frame to avoid stutter. Moving this to a worker would let chunks stream in faster without ever risking a dropped frame.
+- **A proper voxel DDA raycast** instead of the fixed 0.05-step incremental raycast used for block targeting — functionally fine at this scale, but not the "correct" algorithm.
+- **Biome variety.** Right now there's one continuous height-based biome (grass/dirt/stone/sand/water) with no temperature/moisture variation — deserts, snow, or stone mountains at altitude would go a long way for visual variety.
+- **A visible sun/moon disc and stars**, rather than just a light source and color-graded sky — would sell the day/night cycle even harder.
+- **In-game feedback for the Blast Orb cooldown and flight mode** (a small HUD icon/timer) — both work correctly but are currently silent about their own state beyond a sound cue.
+- **Underwater rendering** (a blue tint/fog overlay when the camera is submerged) isn't implemented — swimming into water currently looks the same as being above it, aside from the translucent blocks themselves.
+- I'd also want to test on a couple of real GPUs/browsers rather than only the sandbox's software renderer — SwiftShader caught real bugs, but it's not a substitute for confirming smoothness on real hardware at higher render distances.
+
+**Rough size:** ~2,000 lines of JavaScript across 11 modules (`main.js` ~275, `world.js` ~280, `blocks.js` ~245, `player.js` ~235, `chunk.js` ~155, `ui.js` ~120, `effects.js` ~125, `sky.js` ~95, `audio.js` ~90, `noise.js` ~90, `storage.js` ~50), plus a ~240-line `index.html` and a small standalone test harness under `/tools`.
