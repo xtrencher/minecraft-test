@@ -75,6 +75,11 @@ export class Audio {
     this._playTone({ freq: 300, slideTo: 420, duration: 0.1, volume: 0.12, type: "triangle" });
   }
 
+  playFlightToggle(enabled) {
+    if (enabled) this._playTone({ freq: 260, slideTo: 620, duration: 0.25, volume: 0.16, type: "sine" });
+    else this._playTone({ freq: 500, slideTo: 180, duration: 0.2, volume: 0.14, type: "sine" });
+  }
+
   playThrow() {
     this._playTone({ freq: 500, slideTo: 800, duration: 0.12, volume: 0.15, type: "sine" });
   }

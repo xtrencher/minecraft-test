@@ -94,4 +94,21 @@
 - No explicit "world saved" UI indicator — saving is silent/automatic. Given the scope, decided this is the right default (no interruption), but a future version could add a small toast.
 - Footstep sound doesn't vary by block type walked on (grass vs. stone vs. sand) — a single generic footstep sound for simplicity.
 
-## Milestone 6: Signature feature — pending
+## Milestone 6: Signature feature — DONE
+
+**Chosen feature: the Blast Orb.** Press `F` to throw a glowing projectile (with its own point light) that arcs under gravity; on impact with any block it carves a spherical crater (radius 3) out of the terrain, plays a procedural explosion sound, and bursts into a shower of small fading cube particles. It has a 3-second cooldown so it can't be spammed. I picked this over other ideas I considered (a generative ambient soundtrack, fireflies at night) because it's the most *actively fun* to trigger repeatedly, gives instant, satisfying, visible feedback, and reuses systems already built for building/breaking (world.setBlock, chunk remeshing, persistence) rather than requiring a whole new subsystem — low risk to implement well within the remaining time, high payoff in "delight per keypress."
+
+**Bonus mechanic (folded in earlier since it lives in `player.js`'s input handling): double-tap Space toggles Creative Flight** — gravity is disabled, Space/Shift move up/down, and movement speed increases. This makes it fast and satisfying to survey builds or explore terrain, and is a one-line-of-intent, low-risk feature (reuses the exact same movement/collision code path, just skips gravity and reads two extra keys).
+
+**What works:**
+- `js/effects.js` (new module): projectile physics, sphere-carving explosion (skips any already-air cells so it's cheap on repeated blasts in the same spot), and a small particle-burst pool that fades and shrinks each particle over ~1 second before disposing it.
+- Explosions correctly go through `world.setBlock`, so blast damage persists to `localStorage` and re-meshes affected chunks (and their neighbors, if the blast crosses a chunk boundary) exactly like a manual break.
+- Flight toggle plays a distinct rising/falling tone via the Audio module so the mode switch has clear feedback even though there's no HUD flight indicator.
+
+**Testing:** Extended the smoke test to press F and wait for the explosion, then confirmed via `localStorage` that a real spherical cluster of blocks was cleared (dozens of coordinates set to id 0 around a center point) and survived a page reload. Also exercised the double-tap-Space flight toggle twice (on/off) with no console errors. A screenshot after the explosion shows a clean carved-out crater in the terrain.
+
+**Known bugs / simplifications:**
+- No HUD indicator for the Blast Orb's cooldown or for flight mode being active — a future version could add a small icon/timer.
+- Explosion crater is a perfect sphere with no partial-block "damage" states — blocks are either fully there or fully gone, consistent with the rest of the voxel model.
+
+## Testing, README, and final self-assessment — pending

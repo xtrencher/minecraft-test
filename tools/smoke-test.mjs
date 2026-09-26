@@ -92,7 +92,14 @@ try {
       await page.keyboard.press("Digit3");
       await page.mouse.wheel(0, 200);
       await page.keyboard.press("KeyF");
-      await page.waitForTimeout(2500); // let the throttled autosave fire
+      await page.waitForTimeout(2000);
+      // Double-tap space to toggle flight mode.
+      await page.keyboard.press("Space");
+      await page.keyboard.press("Space");
+      await page.waitForTimeout(500);
+      await page.keyboard.press("Space");
+      await page.keyboard.press("Space");
+      await page.waitForTimeout(500); // let the throttled autosave fire
     } else {
       errors.push("play button (#play-btn) not found in DOM");
     }

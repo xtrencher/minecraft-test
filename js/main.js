@@ -6,6 +6,7 @@ import { BLOCK } from "./blocks.js";
 import { Audio } from "./audio.js";
 import { Sky } from "./sky.js";
 import { loadEdits, saveEdits } from "./storage.js";
+import { EffectsSystem } from "./effects.js";
 
 // ---------- Seed ----------
 function parseSeedFromURL() {
@@ -113,6 +114,9 @@ scene.add(blockOutline);
 
 const audio = new Audio();
 const sky = new Sky(scene, ambientLight, sunLight);
+const effects = new EffectsSystem(scene, world, audio);
+
+player.onFlightToggle = (enabled) => audio.playFlightToggle(enabled);
 
 // ---------- Pointer lock / menu flow ----------
 let gameState = "start"; // "start" | "playing" | "paused"
@@ -171,6 +175,12 @@ window.addEventListener("keydown", (e) => {
 canvas.addEventListener("wheel", (e) => {
   if (gameState !== "playing") return;
   ui.setSelected(ui.selectedIndex + (e.deltaY > 0 ? 1 : -1));
+});
+
+// ---------- Signature feature: Blast Orb ----------
+window.addEventListener("keydown", (e) => {
+  if (gameState !== "playing" || e.code !== "KeyF") return;
+  effects.throwOrb(player.getEyePosition(), player.getForwardVector());
 });
 
 // ---------- Breaking / placing blocks ----------
@@ -242,6 +252,7 @@ function animate() {
     if (player.jumpEvent) audio.playJump();
   }
   world.processQueues(2, 3);
+  effects.update(dt);
 
   if (pendingSave && performance.now() - lastSaveTime > 2000) flushSave();
   updateTargetBlock();
