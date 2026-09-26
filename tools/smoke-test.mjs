@@ -73,7 +73,7 @@ try {
       await page.waitForTimeout(2000);
       // Simulate a bit of movement/input.
       await page.keyboard.down("KeyW");
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(3000);
       await page.keyboard.up("KeyW");
       await page.mouse.move(700, 400);
       await page.mouse.move(650, 380);
