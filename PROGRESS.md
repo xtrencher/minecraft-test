@@ -78,6 +78,20 @@
 - Sun is a light source only, not a visible disc in the sky.
 - Cloud puffs are static in shape (only their scroll offset and world position under the player move); no cloud regeneration.
 
-## Milestone 5: Persistence + polish — pending
-## Milestone 5: Persistence + polish — pending
+## Milestone 5: Persistence + polish — DONE
+
+**What works:**
+- Block edits (breaks and placements) are saved to `localStorage` as a compact flat `[x,y,z,id, x,y,z,id, ...]` array, keyed per-seed (`voxelands_v1_edits_<seed>`) so different worlds don't clobber each other. All keys use the `voxelands_v1_` prefix so the game never touches unrelated data on its origin.
+- Saving is throttled (at most once every 2 seconds while edits are pending) rather than on every single block change, and also flushed immediately on `beforeunload` and on tab-hide (`visibilitychange`), so closing the tab or switching away doesn't lose the last few edits.
+- Loading happens before terrain generation: saved edits for the current seed are read at startup and re-applied on top of the freshly-generated chunks as they stream in, so a saved world looks exactly as it was left.
+- `js/storage.js` wraps every `localStorage` call in try/catch and logs a warning instead of throwing if storage is full, disabled, or unavailable (private browsing, quota exceeded, etc.) — the game keeps running either way, it just won't persist that session.
+- Start menu (seed display + controls list) and pause menu (render distance, seed, controls, copy-world-link button) were already built in earlier milestones; verified both still work correctly with the fuller feature set.
+- Web Audio sound effects are now fully wired: break, place, footsteps (distance-triggered while walking on the ground), and jump, all synthesized procedurally (noise bursts + oscillators, no audio files). The AudioContext is started on the first "Play"/"Resume" click to satisfy browser autoplay policies.
+
+**Testing:** Extended the smoke test to check `localStorage` after a break+place sequence, then reload the page and confirm the saved edits persist across the reload. Passed — verified a real edit round-trip (`[1,23,5,1]`, i.e. a single coordinate whose final state survived a break-then-place-back sequence, since only the latest value per coordinate needs to persist). Zero console errors throughout, including through the reload.
+
+**Known bugs / simplifications:**
+- No explicit "world saved" UI indicator — saving is silent/automatic. Given the scope, decided this is the right default (no interruption), but a future version could add a small toast.
+- Footstep sound doesn't vary by block type walked on (grass vs. stone vs. sand) — a single generic footstep sound for simplicity.
+
 ## Milestone 6: Signature feature — pending

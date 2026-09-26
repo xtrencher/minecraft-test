@@ -75,8 +75,12 @@ try {
       await page.keyboard.down("KeyW");
       await page.waitForTimeout(3000);
       await page.keyboard.up("KeyW");
-      await page.mouse.move(700, 400);
-      await page.mouse.move(650, 380);
+      // Pitch the camera down toward the ground (positive movementY = look
+      // down, per the pointer-lock mousemove handler in player.js) so the
+      // break/place raycast below reliably hits nearby terrain.
+      await page.mouse.move(640, 400);
+      await page.mouse.move(640, 550);
+      await page.mouse.move(640, 700);
       await page.waitForTimeout(1000);
       // Exercise break/place and hotbar input.
       await page.mouse.down({ button: "left" });
@@ -88,7 +92,7 @@ try {
       await page.keyboard.press("Digit3");
       await page.mouse.wheel(0, 200);
       await page.keyboard.press("KeyF");
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(2500); // let the throttled autosave fire
     } else {
       errors.push("play button (#play-btn) not found in DOM");
     }
@@ -103,6 +107,18 @@ try {
   console.log("FPS counter text:", fpsText);
 
   await page.screenshot({ path: path.join(__dirname, "screenshot.png") }).catch(() => {});
+
+  // --- Persistence check: reload and confirm saved edits survive. ---
+  const savedRaw = await page.evaluate(() => localStorage.getItem("voxelands_v1_edits_42"));
+  console.log("Saved edits after break/place:", savedRaw);
+  if (!savedRaw || savedRaw === "[]") {
+    errors.push("expected localStorage to contain non-empty block edits after break/place");
+  }
+
+  await page.reload({ waitUntil: "load", timeout: 30000 });
+  await page.waitForTimeout(1500);
+  const reloadedRaw = await page.evaluate(() => localStorage.getItem("voxelands_v1_edits_42"));
+  console.log("Edits still present after reload:", reloadedRaw === savedRaw);
 } finally {
   await browser.close();
   server.close();

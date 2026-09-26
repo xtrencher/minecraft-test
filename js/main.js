@@ -5,6 +5,7 @@ import { UI, isMobileDevice, createBlockOutline } from "./ui.js";
 import { BLOCK } from "./blocks.js";
 import { Audio } from "./audio.js";
 import { Sky } from "./sky.js";
+import { loadEdits, saveEdits } from "./storage.js";
 
 // ---------- Seed ----------
 function parseSeedFromURL() {
@@ -54,6 +55,25 @@ window.addEventListener("resize", () => {
 
 // ---------- World ----------
 const world = new World(scene, SEED);
+world.loadEdits(loadEdits(SEED));
+
+let pendingSave = false;
+let lastSaveTime = 0;
+world.onEdit = () => {
+  pendingSave = true;
+};
+
+function flushSave() {
+  if (!pendingSave) return;
+  saveEdits(SEED, world.serializeEdits());
+  pendingSave = false;
+  lastSaveTime = performance.now();
+}
+
+window.addEventListener("beforeunload", flushSave);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") flushSave();
+});
 
 function findSpawnColumn() {
   let bestX = 0;
@@ -218,8 +238,12 @@ function animate() {
   if (gameState === "playing") {
     player.update(dt);
     world.ensureChunksAround(player.position.x, player.position.z, renderDistance);
+    if (player.stepEvent) audio.playFootstep();
+    if (player.jumpEvent) audio.playJump();
   }
   world.processQueues(2, 3);
+
+  if (pendingSave && performance.now() - lastSaveTime > 2000) flushSave();
   updateTargetBlock();
   sky.update(dt, player.position);
 

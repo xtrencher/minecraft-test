@@ -24,6 +24,7 @@ export class Player {
     this.onGround = false;
     this.flying = false;
     this.stepEvent = false;
+    this.jumpEvent = false;
 
     this.keys = new Set();
     this.locked = false;
@@ -155,6 +156,7 @@ export class Player {
     this.camera.rotation.y = this.yaw;
     this.camera.rotation.x = this.pitch;
 
+    this.jumpEvent = false;
     let moveX = 0;
     let moveZ = 0;
     if (this.keys.has("KeyW")) moveZ -= 1;
@@ -188,6 +190,7 @@ export class Player {
       if (this.velocity.y < MAX_FALL_SPEED) this.velocity.y = MAX_FALL_SPEED;
       if (this.onGround && this.keys.has("Space")) {
         this.velocity.y = JUMP_SPEED;
+        this.jumpEvent = true;
       }
     }
 
