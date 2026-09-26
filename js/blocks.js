@@ -13,7 +13,6 @@ export const BLOCK = Object.freeze({
   LEAVES: 7,
   PLANKS: 8,
   GLASS: 9,
-  TNT: 10,
 });
 
 export const TILE = Object.freeze({
@@ -28,8 +27,6 @@ export const TILE = Object.freeze({
   PLANKS: 8,
   GLASS: 9,
   WATER: 10,
-  TNT_SIDE: 11,
-  TNT_TOP: 12,
 });
 
 export const TILE_SIZE = 16;
@@ -47,7 +44,6 @@ export const BLOCK_INFO = {
   [BLOCK.LEAVES]: { name: "Leaves", opaque: false, transparent: true, cutout: true, liquid: false, faces: { top: TILE.LEAVES, bottom: TILE.LEAVES, side: TILE.LEAVES } },
   [BLOCK.PLANKS]: { name: "Planks", opaque: true, transparent: false, liquid: false, faces: { top: TILE.PLANKS, bottom: TILE.PLANKS, side: TILE.PLANKS } },
   [BLOCK.GLASS]: { name: "Glass", opaque: false, transparent: true, cutout: true, liquid: false, faces: { top: TILE.GLASS, bottom: TILE.GLASS, side: TILE.GLASS } },
-  [BLOCK.TNT]: { name: "TNT", opaque: true, transparent: false, liquid: false, faces: { top: TILE.TNT_TOP, bottom: TILE.TNT_TOP, side: TILE.TNT_SIDE } },
 };
 
 export const HOTBAR = [BLOCK.GRASS, BLOCK.DIRT, BLOCK.STONE, BLOCK.SAND, BLOCK.WOOD, BLOCK.LEAVES, BLOCK.PLANKS, BLOCK.GLASS];
@@ -208,20 +204,6 @@ function drawWater(ctx, x, y, rand) {
   drawSpeckled(ctx, x, y, [55, 110, 200], 20, rand, 235);
 }
 
-function drawTntSide(ctx, x, y, rand) {
-  drawSpeckled(ctx, x, y, [190, 60, 40], 12, rand);
-  ctx.fillStyle = "rgba(240,240,230,0.9)";
-  ctx.fillRect(x, y + 6, TILE_SIZE, 4);
-  ctx.fillStyle = "rgba(30,30,30,0.85)";
-  ctx.fillRect(x + 6, y + 7, 4, 2);
-}
-
-function drawTntTop(ctx, x, y, rand) {
-  drawSpeckled(ctx, x, y, [190, 60, 40], 12, rand);
-  ctx.fillStyle = "rgba(240,240,230,0.9)";
-  ctx.fillRect(x + 4, y + 4, 8, 8);
-}
-
 export function buildTextureAtlas() {
   const canvas = document.createElement("canvas");
   canvas.width = ATLAS_SIZE;
@@ -241,8 +223,6 @@ export function buildTextureAtlas() {
     [TILE.PLANKS, drawPlanks],
     [TILE.GLASS, drawGlass],
     [TILE.WATER, drawWater],
-    [TILE.TNT_SIDE, drawTntSide],
-    [TILE.TNT_TOP, drawTntTop],
   ];
 
   for (const [tile, fn] of drawers) {

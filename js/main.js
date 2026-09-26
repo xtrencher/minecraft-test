@@ -250,9 +250,9 @@ function animate() {
     world.ensureChunksAround(player.position.x, player.position.z, renderDistance);
     if (player.stepEvent) audio.playFootstep();
     if (player.jumpEvent) audio.playJump();
+    effects.update(dt);
   }
   world.processQueues(2, 3);
-  effects.update(dt);
 
   if (pendingSave && performance.now() - lastSaveTime > 2000) flushSave();
   updateTargetBlock();
