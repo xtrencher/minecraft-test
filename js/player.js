@@ -84,10 +84,15 @@ export class Player {
     return new THREE.Vector3(this.position.x, this.position.y + EYE_HEIGHT, this.position.z);
   }
 
+  // Computed directly from yaw/pitch rather than camera.getWorldDirection(),
+  // since the camera's matrixWorld isn't refreshed until renderer.render()
+  // runs — using it here would read one frame stale during fast look input.
   getForwardVector() {
-    const dir = new THREE.Vector3();
-    this.camera.getWorldDirection(dir);
-    return dir;
+    return new THREE.Vector3(
+      -Math.sin(this.yaw) * Math.cos(this.pitch),
+      Math.sin(this.pitch),
+      -Math.cos(this.yaw) * Math.cos(this.pitch)
+    );
   }
 
   // Returns the maximum movement (same sign as delta, magnitude <= |delta|) allowed along

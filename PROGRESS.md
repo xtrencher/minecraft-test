@@ -22,7 +22,25 @@
 - No sound effects wired yet (Audio class exists but isn't called from gameplay events).
 - No save/load of edits yet (nothing to save until breaking/placing exists).
 
-## Milestone 2: Building — pending
+## Milestone 2: Building — DONE
+
+**What works:**
+- Left click breaks the targeted block, right click places the selected hotbar block, both via a simple incremental voxel raycast (`world.raycast`, 0.05 step, 6 block reach) run every frame from the camera eye position.
+- Found and fixed a real bug while wiring this up: `player.getForwardVector()` was using `camera.getWorldDirection()`, but the camera's `matrixWorld` is only refreshed inside `renderer.render()`, which runs *after* the raycast in the frame loop — so the aim direction was one frame stale during fast mouse movement. Replaced with a direct trig computation from yaw/pitch (`js/player.js`), which is also cheaper.
+- A black wireframe box (`THREE.EdgesGeometry` + `LineSegments`) outlines the currently targeted block, hidden when nothing is in range.
+- Hotbar of 8 placeable blocks (grass, dirt, stone, sand, wood, leaves, planks, glass) selectable via number keys 1-8 and the mouse scroll wheel; selection wraps around.
+- Placing is blocked if the target cell isn't air or would overlap the player's own bounding box (prevents self-trapping).
+- Right-click's context menu is suppressed on the canvas.
+- Editing a block immediately re-meshes its chunk (and neighbor chunks too, if the edit sits on a chunk boundary) so face culling stays correct after edits.
+- Break/place now trigger placeholder procedural sound effects (the Audio class was pulled forward from Milestone 5 since it made sense to wire sound feedback at the same time as the interaction).
+
+**Testing:** Extended the Playwright smoke test to click-hold left/right mouse buttons, press a hotbar digit key, and scroll the wheel, then assert zero console errors. Passed. Screenshot confirms hotbar selection updates correctly (digit + wheel combined landed on slot 4/Sand as expected).
+
+**Known bugs / simplifications:**
+- No visual particle effect when breaking a block yet (kept simple — only the Blast Orb in Milestone 6 gets particles).
+- Raycast step size (0.05) is a fixed small increment rather than a DDA/voxel-traversal algorithm; simpler to reason about and fast enough at this range, but not the most efficient approach possible.
+
+## Milestone 3: Performance + infinite world — pending
 ## Milestone 3: Performance + infinite world — pending
 ## Milestone 4: Atmosphere — pending
 ## Milestone 5: Persistence + polish — pending

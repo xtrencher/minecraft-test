@@ -77,7 +77,18 @@ try {
       await page.keyboard.up("KeyW");
       await page.mouse.move(700, 400);
       await page.mouse.move(650, 380);
-      await page.waitForTimeout(1500);
+      await page.waitForTimeout(1000);
+      // Exercise break/place and hotbar input.
+      await page.mouse.down({ button: "left" });
+      await page.waitForTimeout(100);
+      await page.mouse.up({ button: "left" });
+      await page.mouse.down({ button: "right" });
+      await page.waitForTimeout(100);
+      await page.mouse.up({ button: "right" });
+      await page.keyboard.press("Digit3");
+      await page.mouse.wheel(0, 200);
+      await page.keyboard.press("KeyF");
+      await page.waitForTimeout(1000);
     } else {
       errors.push("play button (#play-btn) not found in DOM");
     }

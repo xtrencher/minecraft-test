@@ -3,6 +3,7 @@ import { World, SEA_LEVEL } from "./world.js";
 import { Player } from "./player.js";
 import { UI, isMobileDevice, createBlockOutline } from "./ui.js";
 import { BLOCK } from "./blocks.js";
+import { Audio } from "./audio.js";
 
 // ---------- Seed ----------
 function parseSeedFromURL() {
@@ -89,6 +90,8 @@ player.spawnAt(spawnX, spawnZ);
 const blockOutline = createBlockOutline();
 scene.add(blockOutline);
 
+const audio = new Audio();
+
 // ---------- Pointer lock / menu flow ----------
 let gameState = "start"; // "start" | "playing" | "paused"
 
@@ -97,10 +100,12 @@ function requestLock() {
 }
 
 ui.playBtn.addEventListener("click", () => {
+  audio.ensureStarted();
   requestLock();
 });
 
 ui.resumeBtn.addEventListener("click", () => {
+  audio.ensureStarted();
   requestLock();
 });
 
@@ -133,6 +138,69 @@ ui.copyLinkBtn.addEventListener("click", () => {
   navigator.clipboard?.writeText(url.toString()).catch(() => {});
 });
 
+// ---------- Hotbar selection ----------
+const DIGIT_CODES = ["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7", "Digit8"];
+window.addEventListener("keydown", (e) => {
+  if (gameState !== "playing") return;
+  const idx = DIGIT_CODES.indexOf(e.code);
+  if (idx !== -1) ui.setSelected(idx);
+});
+
+canvas.addEventListener("wheel", (e) => {
+  if (gameState !== "playing") return;
+  ui.setSelected(ui.selectedIndex + (e.deltaY > 0 ? 1 : -1));
+});
+
+// ---------- Breaking / placing blocks ----------
+const raycastOrigin = new THREE.Vector3();
+let currentTarget = null;
+
+function playerAabbOverlaps(bx, by, bz) {
+  const px = player.position.x;
+  const pz = player.position.z;
+  const r = 0.3;
+  const overlapsXZ = bx + 1 > px - r && bx < px + r && bz + 1 > pz - r && bz < pz + r;
+  const overlapsY = by + 1 > player.position.y && by < player.position.y + 1.8;
+  return overlapsXZ && overlapsY;
+}
+
+function updateTargetBlock() {
+  if (gameState !== "playing") {
+    currentTarget = null;
+    blockOutline.visible = false;
+    return;
+  }
+  raycastOrigin.copy(player.getEyePosition());
+  const dir = player.getForwardVector();
+  currentTarget = world.raycast(raycastOrigin, dir, 6);
+  if (currentTarget) {
+    const [bx, by, bz] = currentTarget.block;
+    blockOutline.position.set(bx + 0.5, by + 0.5, bz + 0.5);
+    blockOutline.visible = true;
+  } else {
+    blockOutline.visible = false;
+  }
+}
+
+canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+document.addEventListener("mousedown", (e) => {
+  if (gameState !== "playing" || !currentTarget) return;
+  if (e.button === 0) {
+    const [bx, by, bz] = currentTarget.block;
+    if (world.getBlock(bx, by, bz) !== BLOCK.AIR) {
+      world.setBlock(bx, by, bz, BLOCK.AIR);
+      audio.playBreak();
+    }
+  } else if (e.button === 2) {
+    const [px, py, pz] = currentTarget.place;
+    if (world.getBlock(px, py, pz) === BLOCK.AIR && !playerAabbOverlaps(px, py, pz)) {
+      world.setBlock(px, py, pz, ui.getSelectedBlock());
+      audio.playPlace();
+    }
+  }
+});
+
 canvas.addEventListener("click", () => {
   if (gameState !== "playing") requestLock();
 });
@@ -150,6 +218,7 @@ function animate() {
     world.ensureChunksAround(player.position.x, player.position.z, renderDistance);
   }
   world.processQueues(2, 3);
+  updateTargetBlock();
 
   ui.updateFps(dt);
   renderer.render(scene, camera);
