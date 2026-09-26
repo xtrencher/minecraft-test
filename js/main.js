@@ -4,6 +4,7 @@ import { Player } from "./player.js";
 import { UI, isMobileDevice, createBlockOutline } from "./ui.js";
 import { BLOCK } from "./blocks.js";
 import { Audio } from "./audio.js";
+import { Sky } from "./sky.js";
 
 // ---------- Seed ----------
 function parseSeedFromURL() {
@@ -91,6 +92,7 @@ const blockOutline = createBlockOutline();
 scene.add(blockOutline);
 
 const audio = new Audio();
+const sky = new Sky(scene, ambientLight, sunLight);
 
 // ---------- Pointer lock / menu flow ----------
 let gameState = "start"; // "start" | "playing" | "paused"
@@ -219,6 +221,16 @@ function animate() {
   }
   world.processQueues(2, 3);
   updateTargetBlock();
+  sky.update(dt, player.position);
+
+  // Animate water via opacity/tint pulsing rather than a texture-offset scroll:
+  // the water material shares the block atlas texture with every other block
+  // type, so shifting its UV offset would bleed into neighboring atlas tiles.
+  const waterMat = world.materials.water;
+  const waterT = performance.now() / 1000;
+  waterMat.opacity = 0.62 + Math.sin(waterT * 0.6) * 0.08;
+  const tint = 0.85 + Math.sin(waterT * 0.9) * 0.15;
+  waterMat.color.setRGB(tint * 0.7, tint * 0.85, 1.0);
 
   ui.updateFps(dt);
   renderer.render(scene, camera);
