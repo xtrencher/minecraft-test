@@ -603,3 +603,84 @@ Each plant type is its own geometry with per-vertex colours. All are lit like th
   - Facing a low sun through a gappy leaf wall draws sunbeams.
 
 **53 smoke checks and 32 unit tests pass with zero console errors.**
+
+## Round 3 — final summary
+
+**What changed in this round.**
+
+1. **Phase 1 (bug fixes):**
+   - **Water surface:** the glitch at the surface is gone; the game and the shader now share one definition of "under water".
+   - **Lighting:** ambient occlusion no longer darkens sunlit faces.
+   - **Black edges:** the black NaN pixels along edges seen through water with MSAA are gone.
+   - **Sand and gravel** now fall when nothing supports them.
+   - **Sounds:** almost every sound was rebuilt from shaped noise, and the jump and burp sounds are gone.
+2. **Phase 2 (weapons):**
+   - **Grenade:** the Blast Orb became an item with a charged throw, bounces and a 5-second fuse.
+   - **Pistol:** hitscan shots with sparks and bullet holes.
+   - **Bazooka:** a rocket with five times the grenade's blast radius.
+   - **Distance:** camera shake, sound and damage all fall off with distance from a blast.
+3. **Phase 3 (level of detail):**
+   - **Range:** render distance goes up to 100 chunks (default 20).
+   - **Far terrain:** a quadtree of simplified tiles, built in a Web Worker, surrounds the full-detail area. The land is covered exactly once (no gaps, no overlaps).
+   - **Edits and memory:** player edits show in the far terrain, and memory is freed behind the player.
+4. **Phase 4 (graphics):**
+   - **Textures:** relief textures with normal maps and specular light, plus parallax on Ultra.
+   - **Shadows:** cascaded soft shadows with contact hardening.
+   - **Water:** drawn over the finished world image, for refraction, absorption and reflections.
+   - **Vegetation:** 3D grass and fuller leaves.
+5. **Phase 5 (visual realism):**
+   - **Light:** light shafts and drifting motes under water, and sunbeams through clouds and canopies.
+   - **Air:** mist over water at dawn and dusk, and haze that thins with height.
+   - **Plants:** grass, reeds, ferns and flowers.
+   - **Trees:** four procedural species that grow across chunk borders.
+
+The codebase grew from ~10,800 lines of JavaScript in 34 modules to ~15,200 lines in 46 modules, plus a ~560-line `index.html` and ~2,800 lines of tests. It is still plain ES modules with no build step, it still loads only three.js r160 from the pinned CDN, and it still has no asset files.
+
+**Testing.**
+- **Per phase:** every phase ended with `node --check` on the changed files (plus a strict ES-module parse since Phase 5), both test suites, and a check for zero console errors.
+- **At the end:** **32 unit tests** and **53 browser smoke checks** pass with zero console errors. That is up from 24 and 35 at the end of Round 2.
+- **Real bugs the browser runs caught this round:**
+  - The High/Ultra water shader didn't compile (found by a test render).
+  - New players started on top of trees.
+  - Two syntax errors got past `node --check`.
+- **Test fixes:** some checks depended on test order or timing. I fixed their causes rather than adding retries.
+
+**Known issues and limitations.**
+- **Performance on real GPUs is still unmeasured.** The sandbox renders with a software rasterizer (a few FPS), so I verified correctness and CPU-side costs, not frame rates. Ultra does a lot per frame:
+  - 3 shadow maps (2048² each) with contact-hardening soft shadows;
+  - 4× MSAA HDR, parallax, and a second pass for the water with screen-space reflections;
+  - up to ~6,000 instanced plants and 72-sample sunbeams.
+
+  Ultra is meant for good desktop GPUs; High, Medium and Low scale down step by step. At render distance 64 the far terrain is ~690,000 vertices, and more at 100.
+- **Saved worlds from before Phase 5 grow new trees.** Tree generation changed; the height map, caves and ores didn't.
+  - **Edits:** saved edits are kept, but untouched areas regrow trees in the new shapes.
+  - **Gaps:** old edits apply on top of the new trees, so a tree felled in an old save can leave a gap in a new crown.
+- **Some effects only use what's on screen or skip shadows:**
+  - **Reflections:** on Ultra they only show what's on screen, and fall back to the sky elsewhere.
+  - **Sunbeams** appear only when the sun is on or near the screen.
+  - **Underwater shafts** are computed, not shadowed. They ignore shade on the water surface (from a tree overhanging a pond, say). They do follow the sky light at the eye, so a sealed, flooded cave has none.
+- **Plants grow only near the player:** within 20 blocks on High and 32 on Ultra. Farther grass is the block texture. Plants don't cast shadows.
+- **Distant trees are simple:** the far terrain draws each crown as one or two boxes, and farther out only as a tint of the ground.
+- **Main-thread work:** chunk generation and meshing still run on the main thread (time-budgeted per frame); only the distant tiles are built in a worker.
+- **Unchanged from Round 2:**
+  - Water doesn't flow.
+  - Mob pathfinding is steering, not search.
+  - Mobs and dropped items aren't saved.
+  - Pointer lock quirks remain.
+
+**Honest self-assessment.**
+- *What went well:*
+  - **Root causes first:** the Phase 1 fixes started from root causes reproduced in the sandbox (the two definitions of "under water", AO applied to direct light).
+  - **LOD safety:** exact tests cover the LOD system (flying across the land, every point is drawn exactly once, by a chunk or a tile). That made the hand-over logic safe to change.
+  - **Trees:** trees that cross chunk borders are deterministic without any generation order, and a unit test checks that every block lands.
+  - **Smoke tests:** they kept catching things screenshots would have missed.
+- *What's weaker:*
+  - **Tuning:** I tuned all the visuals from software-rendered screenshots. On a real GPU the balance of haze, mist, bloom and light shafts may need adjusting, and Ultra may be too heavy for mid-range hardware.
+  - **Large files:** `shaders.js` (1,300 lines) and `main.js` are now large; the shaders would be easier to work on split per material.
+  - **Look, not detail:** the plants and trees are procedural approximations that capture the mood of the reference pictures, not their detail.
+- *Scope decisions:* I picked the cheaper version of each effect:
+  - screen-space sunbeams and computed underwater shafts instead of shadow-mapped volumetric light;
+  - instanced plants near the player instead of across the whole view;
+  - boxes for distant tree crowns.
+
+  Each was much cheaper and close enough for the look.
