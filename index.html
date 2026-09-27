@@ -101,7 +101,7 @@
   #orb-indicator {
     position: fixed;
     bottom: 14px;
-    left: calc(50% + 236px);
+    left: calc(50% + 262px);
     width: 48px;
     height: 48px;
     border-radius: 50%;
@@ -192,6 +192,16 @@
   .row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; gap: 10px; }
   .row label { font-size: 13px; opacity: 0.85; }
   .row input[type="range"] { width: 160px; }
+  .row select {
+    background: #1c1f24;
+    border: 1px solid rgba(255,255,255,0.25);
+    color: #fff;
+    padding: 5px 8px;
+    border-radius: 4px;
+    font-size: 13px;
+    width: 178px;
+  }
+  .hint { font-size: 11px; opacity: 0.6; margin: -6px 0 12px 0; line-height: 1.4; }
   .row input[type="text"] {
     background: #1c1f24;
     border: 1px solid rgba(255,255,255,0.2);
@@ -224,7 +234,7 @@
       <div class="subtitle">A tiny procedural voxel world, built for the browser.</div>
       <div class="controls-list">
         <b>WASD</b> move &nbsp; <b>Mouse</b> look &nbsp; <b>Space</b> jump<br/>
-        <b>Left Click</b> break &nbsp; <b>Right Click</b> place &nbsp; <b>1-8 / Scroll</b> hotbar<br/>
+        <b>Left Click</b> break &nbsp; <b>Right Click</b> place &nbsp; <b>1-9 / Scroll</b> hotbar<br/>
         <b>F</b> throw Blast Orb &nbsp; <b>Double-tap Space</b> toggle flight<br/>
         <b>Esc</b> pause menu
       </div>
@@ -243,16 +253,37 @@
         <input type="range" id="render-distance" min="2" max="16" step="1" value="10" />
         <span id="render-distance-value">10</span>
       </div>
+      <div class="row">
+        <label for="graphics-preset">Graphics</label>
+        <select id="graphics-preset">
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+          <option value="ultra">Ultra</option>
+        </select>
+      </div>
+      <div id="graphics-hint" class="hint"></div>
       <div id="pause-seed" style="font-size:12px; opacity:0.7; margin-bottom: 10px;">Seed: <span id="pause-seed-value">-</span></div>
       <div class="controls-list">
         <b>WASD</b> move &nbsp; <b>Mouse</b> look &nbsp; <b>Space</b> jump<br/>
-        <b>Left Click</b> break &nbsp; <b>Right Click</b> place &nbsp; <b>1-8 / Scroll</b> hotbar<br/>
+        <b>Left Click</b> break &nbsp; <b>Right Click</b> place &nbsp; <b>1-9 / Scroll</b> hotbar<br/>
         <b>F</b> throw Blast Orb &nbsp; <b>Double-tap Space</b> toggle flight
       </div>
       <div class="menu-buttons">
         <button class="btn" id="resume-btn">Resume</button>
         <button class="btn secondary" id="copy-link-btn">Copy world link</button>
       </div>
+    </div>
+  </div>
+
+  <div id="webgl-block" class="overlay hidden">
+    <div class="panel">
+      <h2>WebGL 2 Required</h2>
+      <p style="font-size:14px; line-height:1.5; opacity:0.9;">
+        Voxelands needs a browser with WebGL 2 support (any recent version of
+        Chrome, Edge, Firefox or Safari). Please update your browser, or enable
+        hardware acceleration in its settings, and reload the page.
+      </p>
     </div>
   </div>
 

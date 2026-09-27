@@ -1,12 +1,15 @@
 import * as THREE from "three";
-import { World, SEA_LEVEL } from "./world.js";
+import { World, SEA_LEVEL, selectionBox } from "./world.js";
 import { Player } from "./player.js";
 import { UI, isMobileDevice, createBlockOutline } from "./ui.js";
-import { BLOCK } from "./blocks.js";
+import { BLOCK, IS_REPLACEABLE, isSupportedBy } from "./blocks.js";
 import { Audio } from "./audio.js";
 import { Sky } from "./sky.js";
 import { loadEdits, saveEdits, loadSettings, saveSettings } from "./storage.js";
 import { EffectsSystem } from "./effects.js";
+import { PostFX } from "./postfx.js";
+import { PRESETS, applyPreset, normalizePreset } from "./graphics.js";
+import { worldUniforms } from "./shaders.js";
 
 // ---------- Seed ----------
 function parseSeedFromURL() {
@@ -28,13 +31,17 @@ if (isMobileDevice()) {
 
 // ---------- Renderer / scene / camera ----------
 const canvas = document.getElementById("game-canvas");
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance" });
+if (!renderer.capabilities.isWebGL2) {
+  document.getElementById("webgl-block").classList.remove("hidden");
+  throw new Error("Voxelands: WebGL 2 is required.");
+}
 renderer.setSize(window.innerWidth, window.innerHeight);
+// Used only when post-processing is off (Low preset); otherwise the
+// composite pass tone-maps with the same ACES curve.
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
 
 const scene = new THREE.Scene();
-const skyColor = new THREE.Color(0x8fc7f0);
-scene.background = skyColor;
 
 // ---------- Settings ----------
 const DEFAULT_RENDER_DISTANCE = 10;
@@ -49,22 +56,42 @@ function clampRenderDistance(value) {
 }
 
 let renderDistance = clampRenderDistance(settings.renderDistance ?? DEFAULT_RENDER_DISTANCE);
-scene.fog = new THREE.Fog(skyColor.getHex(), 20, renderDistance * 16 * 0.9);
+let graphicsPreset = normalizePreset(settings.graphics);
+
+// Built-in three.js materials (debris, particles) use this fog; the world's
+// own shaders use the shared uniforms in shaders.js (same distances).
+scene.fog = new THREE.Fog(0x9fc3e8, 60, 150);
+
+function updateFogDistances() {
+  const end = (renderDistance - 0.3) * 16;
+  const start = end * 0.72;
+  worldUniforms.uFog.value.set(start, end, 0.0024, 0.0);
+  scene.fog.near = start;
+  scene.fog.far = end;
+}
+updateFogDistances();
 
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
 
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.55);
-scene.add(ambientLight);
-const sunLight = new THREE.DirectionalLight(0xffffff, 0.9);
-sunLight.position.set(50, 100, 30);
+// The light rig never changes shape at runtime (adding/removing lights would
+// force every lit material to recompile): one shadow-casting directional
+// light (sun or moon), one hemisphere light for built-in materials.
+const hemiLight = new THREE.HemisphereLight(0xbfd6ff, 0x3a3228, 1);
+scene.add(hemiLight);
+const sunLight = new THREE.DirectionalLight(0xffffff, 1);
 scene.add(sunLight);
 scene.add(sunLight.target);
 
-window.addEventListener("resize", () => {
+const postfx = new PostFX(renderer);
+const drawingSize = new THREE.Vector2();
+function onResize() {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
-});
+  renderer.getDrawingBufferSize(drawingSize);
+  postfx.setSize(drawingSize.x, drawingSize.y);
+}
+window.addEventListener("resize", onResize);
 
 // ---------- World ----------
 const world = new World(scene, SEED);
@@ -113,9 +140,7 @@ const [spawnX, spawnZ] = findSpawnColumn();
 // showing), instead of freezing the page for seconds at startup.
 const INITIAL_SYNC_RADIUS = 2;
 world.ensureChunksAround(spawnX, spawnZ, INITIAL_SYNC_RADIUS);
-while (world.genQueue.length > 0 || world.remeshQueue.size > 0) {
-  world.processQueues(Infinity);
-}
+while (!world.isIdle) world.processQueues(Infinity);
 world.ensureChunksAround(spawnX, spawnZ, renderDistance);
 
 // Main-thread milliseconds per frame spent generating/meshing chunks. Larger
@@ -124,11 +149,12 @@ const STREAM_BUDGET_PLAYING_MS = 5;
 const STREAM_BUDGET_MENU_MS = 14;
 
 // ---------- UI ----------
-const ui = new UI({ atlasCanvas: world.atlasTexture.image });
+const ui = new UI({ tileCanvases: world.tileCanvases });
 ui.renderDistanceInput.min = String(MIN_RENDER_DISTANCE);
 ui.renderDistanceInput.max = String(MAX_RENDER_DISTANCE);
 ui.renderDistanceInput.value = String(renderDistance);
 ui.renderDistanceValueEl.textContent = String(renderDistance);
+ui.graphicsSelect.value = graphicsPreset;
 ui.showStartMenu(SEED);
 
 // ---------- Player ----------
@@ -139,7 +165,7 @@ const blockOutline = createBlockOutline();
 scene.add(blockOutline);
 
 const audio = new Audio();
-const sky = new Sky(scene, ambientLight, sunLight);
+const sky = new Sky(scene, sunLight, hemiLight);
 const effects = new EffectsSystem(scene, world, audio);
 
 player.onFlightToggle = (enabled) => audio.playFlightToggle(enabled);
@@ -161,6 +187,54 @@ effects.onExplosion = (center, radius) => {
   offset.y = Math.min(offset.y, 13);
   player.applyImpulse(offset);
 };
+
+// ---------- Graphics ----------
+const allWorldMaterials = [world.materials.opaque, world.materials.cutout, world.materials.water, world.materials.cutoutDepth];
+
+function setGraphics(name, { adoptRenderDistance = false } = {}) {
+  graphicsPreset = normalizePreset(name);
+  const preset = applyPreset(graphicsPreset, {
+    renderer,
+    postfx,
+    sunLight,
+    sky,
+    atlas: world.atlas,
+    materials: allWorldMaterials,
+    onResize,
+  });
+  if (adoptRenderDistance) setRenderDistance(preset.renderDistance);
+  ui.graphicsSelect.value = graphicsPreset;
+  ui.graphicsHintEl.textContent = describePreset(graphicsPreset);
+  settings.graphics = graphicsPreset;
+  saveSettings(settings);
+}
+
+function describePreset(name) {
+  const p = PRESETS[name];
+  const parts = [];
+  parts.push(p.shadows ? `${p.shadows}px sun shadows` : "no shadows");
+  parts.push(p.post ? "HDR bloom & color grading" : "no post-processing");
+  if (p.godRays) parts.push("light shafts");
+  if (p.caustics) parts.push("water caustics");
+  return `${parts.join(", ")}. Suggested render distance: ${p.renderDistance}.`;
+}
+
+function setRenderDistance(value) {
+  renderDistance = clampRenderDistance(value);
+  ui.renderDistanceInput.value = String(renderDistance);
+  ui.renderDistanceValueEl.textContent = String(renderDistance);
+  updateFogDistances();
+  settings.renderDistance = renderDistance;
+  saveSettings(settings);
+}
+
+setGraphics(graphicsPreset);
+
+ui.graphicsSelect.addEventListener("change", () => {
+  // Picking a preset also applies its suggested render distance; the slider
+  // can still be changed afterwards.
+  setGraphics(ui.graphicsSelect.value, { adoptRenderDistance: true });
+});
 
 // ---------- Pointer lock / menu flow ----------
 let gameState = "start"; // "start" | "playing" | "paused"
@@ -197,11 +271,7 @@ document.addEventListener("pointerlockchange", () => {
 });
 
 ui.renderDistanceInput.addEventListener("input", () => {
-  renderDistance = clampRenderDistance(ui.renderDistanceInput.value);
-  ui.renderDistanceValueEl.textContent = String(renderDistance);
-  scene.fog.far = renderDistance * 16 * 0.9;
-  settings.renderDistance = renderDistance;
-  saveSettings(settings);
+  setRenderDistance(ui.renderDistanceInput.value);
 });
 
 ui.copyLinkBtn.addEventListener("click", () => {
@@ -211,7 +281,7 @@ ui.copyLinkBtn.addEventListener("click", () => {
 });
 
 // ---------- Hotbar selection ----------
-const DIGIT_CODES = ["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7", "Digit8"];
+const DIGIT_CODES = ["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7", "Digit8", "Digit9"];
 window.addEventListener("keydown", (e) => {
   if (gameState !== "playing") return;
   const idx = DIGIT_CODES.indexOf(e.code);
@@ -253,7 +323,9 @@ function updateTargetBlock() {
   currentTarget = world.raycast(raycastOrigin, dir, 6);
   if (currentTarget) {
     const [bx, by, bz] = currentTarget.block;
-    blockOutline.position.set(bx + 0.5, by + 0.5, bz + 0.5);
+    const box = selectionBox(currentTarget.id);
+    blockOutline.scale.set(box[3] - box[0], box[4] - box[1], box[5] - box[2]);
+    blockOutline.position.set(bx + (box[0] + box[3]) / 2, by + (box[1] + box[4]) / 2, bz + (box[2] + box[5]) / 2);
     blockOutline.visible = true;
   } else {
     blockOutline.visible = false;
@@ -271,9 +343,12 @@ document.addEventListener("mousedown", (e) => {
       audio.playBreak();
     }
   } else if (e.button === 2) {
-    const [px, py, pz] = currentTarget.place;
-    if (world.getBlock(px, py, pz) === BLOCK.AIR && !playerAabbOverlaps(px, py, pz)) {
-      world.setBlock(px, py, pz, ui.getSelectedBlock());
+    const blockId = ui.getSelectedBlock();
+    // Placing onto something replaceable (tall grass) replaces it in place.
+    const target = IS_REPLACEABLE[currentTarget.id] ? currentTarget.block : currentTarget.place;
+    const [px, py, pz] = target;
+    if (IS_REPLACEABLE[world.getBlock(px, py, pz)] && !playerAabbOverlaps(px, py, pz) && isSupportedBy(blockId, world.getBlock(px, py - 1, pz))) {
+      world.setBlock(px, py, pz, blockId);
       audio.playPlace();
     }
   }
@@ -282,6 +357,59 @@ document.addEventListener("mousedown", (e) => {
 canvas.addEventListener("click", () => {
   if (gameState !== "playing") requestLock();
 });
+
+// ---------- Rendering state ----------
+const sunWorldPos = new THREE.Vector3();
+const lookDir = new THREE.Vector3();
+let eyeAdaptation = 1;
+let underwater = false;
+
+function updateEnvironment(dt) {
+  const eye = player.getEyePosition();
+  lookDir.copy(player.getForwardVector());
+  sky.update(dt, eye, lookDir);
+  worldUniforms.uTime.value += dt;
+
+  // Under water: murky blue fog and a tinted, wobbly screen.
+  const eyeBlock = world.getBlock(Math.floor(eye.x), Math.floor(eye.y), Math.floor(eye.z));
+  underwater = eyeBlock === BLOCK.WATER;
+  worldUniforms.uUnderwater.value = underwater ? 1 : 0;
+  const eyeLight = world.lightAt(eye.x, eye.y, eye.z);
+  const wl = Math.max(0.15, (eyeLight.sky / 15) * sky.daylight + 0.1);
+  worldUniforms.uWaterFogColor.value.setRGB(0.02 * wl, 0.11 * wl, 0.16 * wl);
+
+  // Eye adaptation: brighten gradually in dark places (caves, at night), less
+  // so when a torch is nearby.
+  const ambient = Math.max((eyeLight.sky / 15) * (0.25 + 0.75 * sky.daylight), (eyeLight.block / 15) * 0.9);
+  const target = 1 + (1 - ambient) * 0.45;
+  eyeAdaptation += (target - eyeAdaptation) * Math.min(1, dt * 1.5);
+
+  scene.fog.color.copy(sky.horizonColor);
+}
+
+function renderFrame() {
+  const exposure = sky.exposure * eyeAdaptation;
+  const preset = PRESETS[graphicsPreset];
+  sky.material.uniforms.uWriteSkyMask.value = preset.post ? 1 : 0;
+  if (preset.post) {
+    sunWorldPos.copy(camera.position).addScaledVector(worldUniforms.uSunDir.value, 400);
+    const sunUp = THREE.MathUtils.smoothstep(worldUniforms.uSunDir.value.y, -0.02, 0.12);
+    postfx.render(scene, camera, {
+      exposure,
+      sunWorldPos,
+      sunColor: worldUniforms.uSunGlowColor.value,
+      raysStrength: underwater ? 0 : 0.85 * sunUp,
+      underwater,
+      night: worldUniforms.uNight.value,
+      bloomStrength: 0.11,
+      time: worldUniforms.uTime.value,
+    });
+  } else {
+    renderer.toneMappingExposure = exposure;
+    renderer.setRenderTarget(null);
+    renderer.render(scene, camera);
+  }
+}
 
 // ---------- Debug / test hook ----------
 // Exposes live game objects so the headless smoke test (tools/smoke-test.mjs)
@@ -295,7 +423,37 @@ window.__voxelands = {
   scene,
   renderer,
   effects,
+  sky,
+  postfx,
+  uniforms: worldUniforms,
   spawn: { x: spawnX, z: spawnZ },
+  setGraphics,
+  // Renders one frame and returns simple statistics of the image (mean and
+  // standard deviation of luminance, share of near-black pixels). Read back
+  // synchronously right after rendering, while the drawing buffer is valid.
+  captureStats() {
+    renderFrame();
+    const gl = renderer.getContext();
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    const px = new Uint8Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    let sum = 0;
+    let sum2 = 0;
+    let black = 0;
+    const n = w * h;
+    for (let i = 0; i < px.length; i += 4) {
+      const l = (0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2]) / 255;
+      sum += l;
+      sum2 += l * l;
+      if (l < 0.02) black++;
+    }
+    const mean = sum / n;
+    return { mean, std: Math.sqrt(Math.max(0, sum2 / n - mean * mean)), blackFraction: black / n, width: w, height: h };
+  },
+  get graphics() {
+    return graphicsPreset;
+  },
   get gameState() {
     return gameState;
   },
@@ -310,7 +468,8 @@ const MAX_DT = 0.05;
 
 function animate() {
   requestAnimationFrame(animate);
-  const dt = Math.min(clock.getDelta(), MAX_DT);
+  const frameTime = clock.getDelta();
+  const dt = Math.min(frameTime, MAX_DT); // simulation step (clamped after hitches)
 
   if (gameState === "playing") {
     player.update(dt);
@@ -321,24 +480,17 @@ function animate() {
     effects.update(dt);
     effects.shake.apply(camera);
     ui.setOrbCooldown(effects.cooldownFraction());
+  } else {
+    player.syncCamera(); // keep the view behind the menus sensible
   }
   world.processQueues(gameState === "playing" ? STREAM_BUDGET_PLAYING_MS : STREAM_BUDGET_MENU_MS);
 
   if (pendingSave && performance.now() - lastSaveTime > 2000) flushSave();
   updateTargetBlock();
-  sky.update(dt, player.position);
+  updateEnvironment(dt);
 
-  // Animate water via opacity/tint pulsing rather than a texture-offset scroll:
-  // the water material shares the block atlas texture with every other block
-  // type, so shifting its UV offset would bleed into neighboring atlas tiles.
-  const waterMat = world.materials.water;
-  const waterT = performance.now() / 1000;
-  waterMat.opacity = 0.62 + Math.sin(waterT * 0.6) * 0.08;
-  const tint = 0.85 + Math.sin(waterT * 0.9) * 0.15;
-  waterMat.color.setRGB(tint * 0.7, tint * 0.85, 1.0);
-
-  ui.updateFps(dt);
-  renderer.render(scene, camera);
+  ui.updateFps(frameTime); // real frame time, so slow frames aren't hidden by the clamp
+  renderFrame();
 }
 
 animate();

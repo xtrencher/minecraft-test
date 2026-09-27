@@ -210,6 +210,7 @@ export class EffectsSystem {
     const by = Math.floor(center.y);
     const bz = Math.floor(center.z);
     const removed = [];
+    const edits = [];
     for (let dy = -reach; dy <= reach; dy++) {
       for (let dz = -reach; dz <= reach; dz++) {
         for (let dx = -reach; dx <= reach; dx++) {
@@ -226,10 +227,14 @@ export class EffectsSystem {
           const id = world.getBlock(x, y, z);
           // Water absorbs the blast rather than being blown away.
           if (id === BLOCK.AIR || id === BLOCK.WATER) continue;
-          if (world.setBlock(x, y, z, BLOCK.AIR)) removed.push(x, y, z, id);
+          if (!world.getChunk(x >> 4, z >> 4)) continue;
+          removed.push(x, y, z, id);
+          edits.push(x, y, z, BLOCK.AIR);
         }
       }
     }
+    // One bulk edit: a single light update and one rebuild per affected chunk.
+    world.setBlocks(edits);
     return removed;
   }
 
@@ -240,34 +245,34 @@ export class EffectsSystem {
   // crater, a dug tunnel), up to MAX_FLOOD_CELLS blocks.
   _floodCarved(removed) {
     const world = this.world;
-    const carved = [];
-    for (let i = 0; i < removed.length; i += 4) {
-      if (removed[i + 1] <= SEA_LEVEL) carved.push(removed[i], removed[i + 1], removed[i + 2]);
-    }
-    if (carved.length === 0) return;
     const dirs = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
-    // Seeds: carved (now air) cells touching water.
+    // Seeds: carved (now air) cells at or below sea level touching water.
     const queue = [];
-    for (let i = 0; i < carved.length; i += 3) {
-      const x = carved[i];
-      const y = carved[i + 1];
-      const z = carved[i + 2];
+    for (let i = 0; i < removed.length; i += 4) {
+      const x = removed[i];
+      const y = removed[i + 1];
+      const z = removed[i + 2];
+      if (y > SEA_LEVEL) continue;
       if (dirs.some(([dx, dy, dz]) => world.getBlock(x + dx, y + dy, z + dz) === BLOCK.WATER)) queue.push(x, y, z);
     }
-    let filled = 0;
-    while (queue.length > 0 && filled < MAX_FLOOD_CELLS) {
+    if (queue.length === 0) return;
+    const filled = new Set();
+    const edits = [];
+    while (queue.length > 0 && filled.size < MAX_FLOOD_CELLS) {
       const z = queue.pop();
       const y = queue.pop();
       const x = queue.pop();
-      if (world.getBlock(x, y, z) !== BLOCK.AIR) continue; // already filled
-      if (!world.setBlock(x, y, z, BLOCK.WATER)) continue; // chunk not loaded
-      filled++;
+      const key = `${x},${y},${z}`;
+      if (filled.has(key) || world.getBlock(x, y, z) !== BLOCK.AIR || !world.getChunk(x >> 4, z >> 4)) continue;
+      filled.add(key);
+      edits.push(x, y, z, BLOCK.WATER);
       for (const [dx, dy, dz] of dirs) {
         const ny = y + dy;
         if (ny > SEA_LEVEL || ny < 0) continue;
-        if (world.getBlock(x + dx, ny, z + dz) === BLOCK.AIR) queue.push(x + dx, ny, z + dz);
+        if (!filled.has(`${x + dx},${ny},${z + dz}`) && world.getBlock(x + dx, ny, z + dz) === BLOCK.AIR) queue.push(x + dx, ny, z + dz);
       }
     }
+    world.setBlocks(edits);
   }
 
   _explode(position) {

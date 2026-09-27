@@ -117,6 +117,35 @@ try {
     await page.waitForTimeout(1500);
   });
 
+  await check("default graphics preset is Ultra and renders a real image", async () => {
+    const preset = await page.evaluate(() => window.__voxelands.graphics);
+    assert(preset === "ultra", `default preset is ${preset}`);
+    const stats = await page.evaluate(() => window.__voxelands.captureStats());
+    console.log(`        ultra: mean luminance ${stats.mean.toFixed(3)}, std ${stats.std.toFixed(3)}, black ${(stats.blackFraction * 100).toFixed(1)}%`);
+    assert(stats.mean > 0.08 && stats.std > 0.03 && stats.blackFraction < 0.5, `ultra frame looks blank: ${JSON.stringify(stats)}`);
+  });
+
+  // Software rendering (SwiftShader) makes the heavier presets take seconds
+  // per frame, so each preset is checked here, and the functional checks
+  // below run on Low.
+  await check("every graphics preset renders without errors", async () => {
+    for (const name of ["high", "medium", "low", "ultra", "low"]) {
+      const applied = await page.evaluate((n) => {
+        const v = window.__voxelands;
+        v.setGraphics(n);
+        return { preset: v.graphics, shadows: v.renderer.shadowMap.enabled, samples: v.postfx.sceneRT.samples };
+      }, name);
+      assert(applied.preset === name, `preset ${name} not applied (${applied.preset})`);
+      const stats = await page.evaluate(() => window.__voxelands.captureStats());
+      console.log(`        ${name}: shadows=${applied.shadows} msaa=${applied.samples} mean ${stats.mean.toFixed(3)} std ${stats.std.toFixed(3)}`);
+      assert(applied.shadows === (name !== "low"), `${name}: shadow maps ${applied.shadows ? "on" : "off"}`);
+      assert(stats.mean > 0.08 && stats.std > 0.03 && stats.blackFraction < 0.5, `${name} frame looks blank: ${JSON.stringify(stats)}`);
+      await page.screenshot({ path: path.join(__dirname, `screenshot-${name}.png`) }).catch(() => {});
+    }
+    const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("voxelands_v1_settings") || "{}"));
+    assert(saved.graphics === "low", `graphics setting not persisted: ${JSON.stringify(saved)}`);
+  });
+
   await check("default render distance is 10", async () => {
     const value = await page.$eval("#render-distance", (el) => el.value);
     assert(value === "10", `slider value is ${value}, expected 10`);
@@ -125,7 +154,7 @@ try {
   });
 
   await check("Play button locks pointer and starts the game", async () => {
-    await page.click("#play-btn", { timeout: 5000 });
+    await page.click("#play-btn", { timeout: 20000 });
     await page.waitForFunction(() => window.__voxelands.gameState === "playing", null, { timeout: 10000 });
     const cls = await page.$eval("#start-menu", (el) => el.className);
     assert(cls.includes("hidden"), `start menu still visible (class="${cls}")`);
@@ -201,13 +230,62 @@ try {
     assert(live === 6, `render distance is ${live} after slider change, expected 6`);
     const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("voxelands_v1_settings") || "{}"));
     assert(saved.renderDistance === 6, `saved settings: ${JSON.stringify(saved)}`);
+    // The Graphics selector applies a preset and its suggested render distance.
+    await page.selectOption("#graphics-preset", "medium");
+    const med = await page.evaluate(() => ({ g: window.__voxelands.graphics, rd: window.__voxelands.renderDistance, s: JSON.parse(localStorage.getItem("voxelands_v1_settings")) }));
+    assert(med.g === "medium" && med.rd === 8 && med.s.graphics === "medium", `graphics selector: ${JSON.stringify(med)}`);
+    await page.selectOption("#graphics-preset", "low");
     // Restore the default for the rest of the run.
     await page.$eval("#render-distance", (el) => {
       el.value = "10";
       el.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    await page.click("#resume-btn", { timeout: 5000 });
+    await page.click("#resume-btn", { timeout: 20000 });
     await page.waitForFunction(() => window.__voxelands.gameState === "playing", null, { timeout: 10000 });
+  });
+
+  // --- Lighting (Phase 3) ---
+  await check("a placed torch lights its surroundings, with falloff, and removing it restores darkness", async () => {
+    const r = await page.evaluate(() => {
+      const { world, spawn } = window.__voxelands;
+      // A sealed 7x3x7 room 8+ blocks underground, so only the torch lights it.
+      const x0 = spawn.x + 30;
+      const z0 = spawn.z + 30;
+      const y0 = 6;
+      const edits = [];
+      for (let x = -4; x <= 4; x++) for (let z = -4; z <= 4; z++) for (let y = -1; y <= 3; y++) edits.push(x0 + x, y0 + y, z0 + z, 3);
+      for (let x = -3; x <= 3; x++) for (let z = -3; z <= 3; z++) for (let y = 0; y <= 2; y++) edits.push(x0 + x, y0 + y, z0 + z, 0);
+      world.setBlocks(edits);
+      const dark = world.lightAt(x0 + 2, y0, z0);
+      world.setBlock(x0, y0, z0, 17); // torch (emits 14)
+      const at = (dx) => world.lightAt(x0 + dx, y0, z0).block;
+      const lit = { d0: at(0), d1: at(1), d2: at(2), d3: at(3) };
+      world.setBlock(x0, y0, z0, 0);
+      const after = world.lightAt(x0 + 2, y0, z0);
+      return { dark, lit, after };
+    });
+    console.log(`        sealed room: sky ${r.dark.sky}/block ${r.dark.block}; with torch: ${JSON.stringify(r.lit)}; torch removed: block ${r.after.block}`);
+    assert(r.dark.sky === 0 && r.dark.block === 0, "sealed underground room should be completely dark");
+    assert(r.lit.d0 === 14 && r.lit.d1 === 13 && r.lit.d2 === 12 && r.lit.d3 === 11, "torch light should fall off by 1 per block");
+    assert(r.after.block === 0 && r.after.sky === 0, "removing the torch should restore darkness");
+  });
+
+  await check("sky light reaches the surface, and digging a shaft lets it down", async () => {
+    const r = await page.evaluate(() => {
+      const { world, spawn } = window.__voxelands;
+      const x = spawn.x + 25;
+      const z = spawn.z - 25;
+      const top = world.surfaceY(x, z);
+      const above = world.lightAt(x, top + 1, z).sky;
+      const under = world.lightAt(x, top - 3, z).sky;
+      const shaft = [];
+      for (let y = top - 3; y <= top; y++) shaft.push(x, y, z, 0);
+      world.setBlocks(shaft);
+      const bottom = world.lightAt(x, top - 3, z).sky;
+      return { above, under, bottom };
+    });
+    console.log(`        sky light above ground ${r.above}, 3 below ${r.under}, shaft bottom after digging ${r.bottom}`);
+    assert(r.above === 15 && r.under === 0 && r.bottom === 15, "sky light should be 15 in the open, 0 underground, 15 down an open shaft");
   });
 
   await check("walking forward on the ground moves the player forward", async () => {

@@ -163,11 +163,17 @@ export class Player {
     return allowed;
   }
 
+  // Points the camera from the player's eyes along the current yaw/pitch.
+  syncCamera() {
+    this.camera.rotation.order = "YXZ";
+    this.camera.rotation.set(this.pitch, this.yaw, 0);
+    this.camera.position.copy(this.getEyePosition());
+  }
+
   update(dt) {
     if (!this.enabled) return;
     this.camera.rotation.order = "YXZ";
-    this.camera.rotation.y = this.yaw;
-    this.camera.rotation.x = this.pitch;
+    this.camera.rotation.set(this.pitch, this.yaw, 0);
 
     this.jumpEvent = false;
     let moveX = 0;

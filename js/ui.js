@@ -1,5 +1,6 @@
 import * as THREE from "three";
-import { BLOCK_INFO, HOTBAR, TILE_SIZE, tileCanvasXY } from "./blocks.js";
+import { BLOCK_INFO, HOTBAR } from "./blocks.js";
+import { drawBlockIcon } from "./textures.js";
 
 export function isMobileDevice() {
   const coarse = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
@@ -9,8 +10,8 @@ export function isMobileDevice() {
 }
 
 export class UI {
-  constructor({ atlasCanvas }) {
-    this.atlasCanvas = atlasCanvas;
+  constructor({ tileCanvases }) {
+    this.tileCanvases = tileCanvases;
     this.hotbarEl = document.getElementById("hotbar");
     this.fpsEl = document.getElementById("fps-counter");
     this.crosshairEl = document.getElementById("crosshair");
@@ -25,6 +26,8 @@ export class UI {
     this.resumeBtn = document.getElementById("resume-btn");
     this.copyLinkBtn = document.getElementById("copy-link-btn");
     this.orbIndicatorEl = document.getElementById("orb-indicator");
+    this.graphicsSelect = document.getElementById("graphics-preset");
+    this.graphicsHintEl = document.getElementById("graphics-hint");
     this._orbCooldownShown = -1;
 
     this.selectedIndex = 0;
@@ -46,15 +49,8 @@ export class UI {
       slot.appendChild(label);
 
       const info = BLOCK_INFO[blockId];
-      const tile = info.faces.side;
-      const [sx, sy] = tileCanvasXY(tile);
-
-      const iconCanvas = document.createElement("canvas");
-      iconCanvas.width = 32;
-      iconCanvas.height = 32;
-      const ctx = iconCanvas.getContext("2d");
-      ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(this.atlasCanvas, sx, sy, TILE_SIZE, TILE_SIZE, 0, 0, 32, 32);
+      const iconCanvas = drawBlockIcon(this.tileCanvases, info, 32);
+      iconCanvas.title = info.name;
       slot.appendChild(iconCanvas);
 
       this.hotbarEl.appendChild(slot);
