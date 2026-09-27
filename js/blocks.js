@@ -82,6 +82,7 @@ const DEFAULTS = {
   replaceable: false, // placing a block into this cell just replaces it
   support: null, // "solid": needs a solid block below; "soil": needs grass/dirt below
   liquid: false,
+  gravity: false, // falls when nothing solid is underneath (sand, gravel)
   // Mining (survival): hardness (-1 = unbreakable), the tool type that mines
   // it fastest, and the minimum tool tier needed to get drops (0 = by hand).
   hardness: 1,
@@ -96,7 +97,7 @@ const DEFS = {
   [BLOCK.GRASS]: { name: "Grass Block", faces: { top: "grass_top", bottom: "dirt", side: "grass_side" }, hardness: 0.6, tool: "shovel", sound: "grass" },
   [BLOCK.DIRT]: { name: "Dirt", faces: "dirt", hardness: 0.5, tool: "shovel", sound: "dirt" },
   [BLOCK.STONE]: { name: "Stone", faces: "stone", hardness: 1.5, tool: "pickaxe", minTier: 1 },
-  [BLOCK.SAND]: { name: "Sand", faces: "sand", hardness: 0.5, tool: "shovel", sound: "sand" },
+  [BLOCK.SAND]: { name: "Sand", faces: "sand", hardness: 0.5, tool: "shovel", sound: "sand", gravity: true },
   [BLOCK.WATER]: {
     name: "Water",
     faces: "water",
@@ -115,7 +116,7 @@ const DEFS = {
   [BLOCK.GLASS]: { name: "Glass", faces: "glass", render: RENDER.CUTOUT, opaque: false, skyPass: true, hardness: 0.3, sound: "glass" },
   [BLOCK.COBBLESTONE]: { name: "Cobblestone", faces: "cobblestone", hardness: 2, tool: "pickaxe", minTier: 1 },
   [BLOCK.BEDROCK]: { name: "Bedrock", faces: "bedrock", hardness: -1 },
-  [BLOCK.GRAVEL]: { name: "Gravel", faces: "gravel", hardness: 0.6, tool: "shovel", sound: "sand" },
+  [BLOCK.GRAVEL]: { name: "Gravel", faces: "gravel", hardness: 0.6, tool: "shovel", sound: "sand", gravity: true },
   [BLOCK.COAL_ORE]: { name: "Coal Ore", faces: "coal_ore", hardness: 3, tool: "pickaxe", minTier: 1 },
   [BLOCK.IRON_ORE]: { name: "Iron Ore", faces: "iron_ore", hardness: 3, tool: "pickaxe", minTier: 2 },
   [BLOCK.GOLD_ORE]: { name: "Gold Ore", faces: "gold_ore", hardness: 3, tool: "pickaxe", minTier: 3 },
@@ -226,6 +227,7 @@ export const EMISSIVE = table((b) => (b.emissive ? 1 : 0));
 export const IS_LIQUID = table((b) => (b.liquid ? 1 : 0));
 export const IS_SELECTABLE = table((b) => (b.selectable ? 1 : 0));
 export const IS_REPLACEABLE = table((b) => (b.replaceable ? 1 : 0));
+export const HAS_GRAVITY = table((b) => (b.gravity ? 1 : 0));
 for (let id = 0; id < 256; id++) {
   if (!BLOCK_INFO[id]) {
     IS_OPAQUE[id] = 1;

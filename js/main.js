@@ -18,6 +18,8 @@ import { ItemEntities } from "./entities.js";
 import { HeldItem } from "./held-item.js";
 import { Interaction } from "./interaction.js";
 import { MobManager } from "./mobs.js";
+import { isUnderwater, surfaceHeight } from "./water.js";
+import { FallingBlocks } from "./falling.js";
 
 // ---------- Seed ----------
 function parseSeedFromURL() {
@@ -171,6 +173,7 @@ held.resize(camera.aspect);
 const interaction = new Interaction({ scene, world, player, inventory, entities, audio, effects, held });
 const invScreen = new InventoryScreen({ icons, inventory, audio });
 const mobs = new MobManager({ scene, world, player, entities, audio, effects, sky });
+const falling = new FallingBlocks(scene, world);
 interaction.combat = mobs;
 
 // The creative starter hotbar (the classic building blocks).
@@ -267,6 +270,7 @@ interaction.onChange = markInventoryChanged;
 invScreen.onChange = markInventoryChanged;
 invScreen.onDrop = (stack) => interaction.throwStack(stack);
 world.onBlockPopped = (x, y, z, id) => interaction.blockPopped(x, y, z, id);
+falling.onBreak = (x, y, z, id) => interaction.blockPopped(x, y, z, id);
 
 entities.onPickup = (item) => {
   if (player.dead) return item.count;
@@ -590,9 +594,9 @@ function updateEnvironment(dt) {
   sky.update(dt, eye, lookDir);
   worldUniforms.uTime.value += dt;
 
-  // Under water: murky blue fog and a tinted, wobbly screen.
-  const eyeBlock = world.getBlock(Math.floor(eye.x), Math.floor(eye.y), Math.floor(eye.z));
-  underwater = eyeBlock === BLOCK.WATER;
+  // Under water (below the drawn, waving surface): murky blue fog and a
+  // tinted, wobbly screen.
+  underwater = isUnderwater(world, eye.x, eye.y, eye.z, worldUniforms.uTime.value, worldUniforms.uWaveStrength.value);
   worldUniforms.uUnderwater.value = underwater ? 1 : 0;
   const eyeLight = world.lightAt(eye.x, eye.y, eye.z);
   heldLight = eyeLight;
@@ -665,6 +669,9 @@ window.__voxelands = {
   interaction,
   invScreen,
   mobs,
+  falling,
+  audio,
+  water: { isUnderwater, surfaceHeight },
   hud,
   held,
   uniforms: worldUniforms,
@@ -726,13 +733,13 @@ function animate() {
     player.update(dt);
     world.ensureChunksAround(player.position.x, player.position.z, renderDistance);
     if (player.stepEvent) audio.playFootstep(BLOCK_INFO[player.stepBlock]?.sound);
-    if (player.jumpEvent) audio.playJump();
     if (player.splashEvent) audio.playSplash();
     effects.listener.copy(player.getEyePosition());
     effects.update(dt);
     effects.shake.apply(camera);
     entities.update(dt, player);
     mobs.update(dt);
+    falling.update(dt);
     ui.setOrbCooldown(effects.cooldownFraction());
   } else {
     player.syncCamera(); // keep the view behind the menus sensible

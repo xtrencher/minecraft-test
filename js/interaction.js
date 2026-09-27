@@ -388,7 +388,6 @@ export class Interaction {
       if (this.eating >= EAT_TIME) {
         this.player.heal(info.food);
         this.inventory.consumeSelected(1);
-        this.audio.playBurp();
         this.eating = 0;
         this._changed();
       }

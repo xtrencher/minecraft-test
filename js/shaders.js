@@ -91,16 +91,41 @@ float skyCurve(float l) { return pow(l, 1.7); }
 // Classic voxel-game light curve: bright near the source, falling off fast.
 float torchCurve(float l) { return l / (4.0 - 3.0 * l); }
 
+// How much the shadow map can be trusted here: 1 well inside the shadow
+// camera's frustum, fading to 0 at its edges and beyond (and 0 when there
+// are no shadow maps at all, as on the Low preset).
+float shadowCoverage() {
+  #if defined(WORLD_LIT) && defined(USE_SHADOWMAP) && NUM_DIR_LIGHT_SHADOWS > 0
+    vec3 c = vDirectionalShadowCoord[0].xyz / vDirectionalShadowCoord[0].w;
+    vec2 e = min(c.xy, 1.0 - c.xy);
+    return smoothstep(0.0, 0.06, min(e.x, e.y)) * step(c.z, 1.0);
+  #else
+    return 0.0;
+  #endif
+}
+
+// sky / blk: voxel sky and block light (0-1) at the surface; ao: ambient
+// occlusion (0 = fully occluded corner, 1 = open); shadow: the shadow map.
 vec3 worldLighting(vec3 N, float sky, float blk, float ao, float shadow) {
+  // Interpolated light values can overshoot their 0-1 range (MSAA shades
+  // edge pixels outside thin triangles): clamp, or pow() and the torch
+  // curve turn them into NaN / infinity.
+  sky = clamp(sky, 0.0, 1.0);
+  blk = clamp(blk, 0.0, 1.0);
+  ao = clamp(ao, 0.0, 1.0);
   float ndl = max(dot(N, uLightDir), 0.0);
+  // Direct sun/moon light is decided by the shadow map where it covers the
+  // scene. Beyond it, the voxel sky light stands in, so distant caves and
+  // overhangs stay dark. Ambient occlusion only darkens ambient light: in
+  // sunlight, a corner isn't darker, it's only darker in the shade.
   float skyVis = smoothstep(0.55, 0.95, sky);
-  vec3 direct = uLightColor * ndl * shadow * skyVis;
+  float visible = mix(skyVis, shadow, shadowCoverage());
+  vec3 direct = uLightColor * ndl * visible;
   vec3 hemi = mix(uAmbientGround, uAmbientSky, N.y * 0.5 + 0.5);
   float aoF = 0.32 + 0.68 * ao;
-  vec3 indirect = hemi * skyCurve(sky) + uTorchColor * torchCurve(blk) + vec3(0.006, 0.007, 0.01);
-  vec3 light = direct * (0.55 + 0.45 * aoF) + indirect * aoF;
+  vec3 indirect = (hemi * skyCurve(sky) + uTorchColor * torchCurve(blk) + vec3(0.006, 0.007, 0.01)) * aoF;
   // Slight per-axis shading so walls in full shade still read as distinct faces.
-  return light * (1.0 - abs(N.x) * 0.07);
+  return (direct + indirect) * (1.0 - abs(N.x) * 0.07);
 }
 `;
 
@@ -123,6 +148,7 @@ vec3 pointLighting(vec3 N, vec3 viewPos) {
 `;
 
 const FRAGMENT_LIGHT_INCLUDES = /* glsl */ `
+#define WORLD_LIT
 #include <common>
 #include <packing>
 #include <bsdfs>
@@ -141,8 +167,8 @@ attribute vec4 aExtra; // texture layer, water depth*16
 varying vec3 vTexCoord;
 varying vec3 vWorldPos;
 varying vec3 vNormal;
-varying vec2 vLight;
-varying float vAo;
+centroid varying vec2 vLight;
+centroid varying float vAo;
 flat varying float vFlags;
 varying vec3 vViewPosition;
 uniform float uTime;
@@ -191,8 +217,8 @@ uniform float uCaustics;
 varying vec3 vTexCoord;
 varying vec3 vWorldPos;
 varying vec3 vNormal;
-varying vec2 vLight;
-varying float vAo;
+centroid varying vec2 vLight;
+centroid varying float vAo;
 flat varying float vFlags;
 varying vec3 vViewPosition;
 ${FRAGMENT_LIGHT_INCLUDES}
@@ -292,8 +318,8 @@ attribute vec4 aData;
 attribute vec4 aExtra;
 varying vec3 vWorldPos;
 varying vec3 vNormal;
-varying vec2 vLight;
-varying float vDepth;
+centroid varying vec2 vLight;
+centroid varying float vDepth;
 varying vec3 vViewPosition;
 varying vec2 vUv;
 uniform float uTime;
@@ -316,6 +342,7 @@ void main() {
   int flags = int(aData.w + 0.5);
   vec3 objectNormal = FACE_NORMALS[ni];
   vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+  // Keep in sync with js/water.js (surfaceHeight).
   if ((flags & 4) != 0) worldPosition.y += waveHeight(worldPosition.xz, uTime) - 0.06 * uWaveStrength;
   vec4 mvPosition = viewMatrix * worldPosition;
   gl_Position = projectionMatrix * mvPosition;
@@ -335,8 +362,8 @@ uniform highp sampler2DArray uAtlas;
 uniform float uWaterLayer;
 varying vec3 vWorldPos;
 varying vec3 vNormal;
-varying vec2 vLight;
-varying float vDepth;
+centroid varying vec2 vLight;
+centroid varying float vDepth;
 varying vec3 vViewPosition;
 varying vec2 vUv;
 ${FRAGMENT_LIGHT_INCLUDES}
@@ -365,7 +392,11 @@ void main() {
   bool top = vNormal.y > 0.5;
   vec3 N = top ? waterNormal(vWorldPos.xz, uTime) : vNormal;
   vec3 V = normalize(cameraPosition - vWorldPos);
-  bool fromBelow = dot(V, vNormal) < 0.0;
+  // Seen from below exactly when the camera is under the drawn surface
+  // (decided once per frame on the CPU with the same wave function), not
+  // per fragment: near the waterline, wave crests rise above the eye, and a
+  // per-fragment test drew them as bands of "underside" water.
+  bool fromBelow = uUnderwater > 0.5;
   if (fromBelow) N = -N;
   float shadow = getShadowMask();
   float skyL = vLight.x;

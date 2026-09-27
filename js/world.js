@@ -78,6 +78,7 @@ export class World {
 
     this.onEdit = null; // () => void, after any recorded edit
     this.onBlockPopped = null; // (x, y, z, id) when a torch/plant loses its support
+    this.onBlocksChanged = null; // (flat [x, y, z, ...]) after every edit batch
   }
 
   key(cx, cz) {
@@ -161,6 +162,7 @@ export class World {
       if (c.meshed) this.editRemeshQueue.add(c);
     }
     if (recordEdit && this.onEdit) this.onEdit();
+    if (this.onBlocksChanged) this.onBlocksChanged(changed);
     return changed.length / 3;
   }
 

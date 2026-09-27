@@ -359,6 +359,92 @@ try {
     assert(r.above === 15 && r.under === 0 && r.bottom === 15, "sky light should be 15 in the open, 0 underground, 15 down an open shaft");
   });
 
+  await check("lighting: ambient occlusion never dims direct sunlight, and out-of-range light values stay finite", async () => {
+    // Compiles the game's real lighting function (WORLD_COMMON) into a tiny
+    // shader and evaluates it for chosen inputs on the GPU.
+    const r = await page.evaluate(async () => {
+      const { THREE, renderer, uniforms } = window.__voxelands;
+      const { WORLD_COMMON } = await import("./js/shaders.js");
+      const cases = [
+        // [sky, blk, ao, shadow]
+        [1, 0, 1, 1],
+        [1, 0, 0, 1],
+        [-0.4, 1.6, -0.5, 1], // what MSAA can extrapolate at triangle edges
+        [1.3, -0.2, 2, 1],
+      ];
+      const rt = new THREE.WebGLRenderTarget(cases.length, 1, { type: THREE.FloatType });
+      const saved = { sky: uniforms.uAmbientSky.value.clone(), ground: uniforms.uAmbientGround.value.clone(), dir: uniforms.uLightDir.value.clone(), color: uniforms.uLightColor.value.clone() };
+      // Direct light only: ambient off, sun straight along +X at intensity 1.
+      uniforms.uAmbientSky.value.set(0, 0, 0);
+      uniforms.uAmbientGround.value.set(0, 0, 0);
+      uniforms.uLightDir.value.set(1, 0, 0);
+      uniforms.uLightColor.value.set(1, 1, 1);
+      const mat = new THREE.ShaderMaterial({
+        uniforms: { ...uniforms, uCases: { value: cases.map((c) => new THREE.Vector4(...c)) } },
+        vertexShader: "void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }",
+        fragmentShader: `#include <common>\n${WORLD_COMMON}\nuniform vec4 uCases[${cases.length}];\nvoid main() {\n  vec4 c = uCases[int(gl_FragCoord.x)];\n  vec3 l = worldLighting(vec3(1.0, 0.0, 0.0), c.x, c.y, c.z, c.w);\n  gl_FragColor = vec4(l, (any(isnan(l)) || any(isinf(l))) ? 1.0 : 0.0);\n}`,
+      });
+      const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat);
+      const scene = new THREE.Scene();
+      scene.add(quad);
+      const cam = new THREE.Camera();
+      renderer.setRenderTarget(rt);
+      renderer.render(scene, cam);
+      const px = new Float32Array(cases.length * 4);
+      renderer.readRenderTargetPixels(rt, 0, 0, cases.length, 1, px);
+      renderer.setRenderTarget(null);
+      uniforms.uAmbientSky.value.copy(saved.sky);
+      uniforms.uAmbientGround.value.copy(saved.ground);
+      uniforms.uLightDir.value.copy(saved.dir);
+      uniforms.uLightColor.value.copy(saved.color);
+      rt.dispose();
+      mat.dispose();
+      return [...px];
+    });
+    const lum = (i) => r[i * 4];
+    const bad = (i) => r[i * 4 + 3] > 0.5 || !Number.isFinite(r[i * 4]);
+    console.log(`        direct light on a face: open corner ${lum(0).toFixed(3)}, fully occluded corner ${lum(1).toFixed(3)}; extrapolated inputs -> ${lum(2).toFixed(3)}, ${lum(3).toFixed(3)}`);
+    // (A tiny constant ambient floor still takes AO: allow 1%.)
+    assert(Math.abs(lum(0) - lum(1)) < 0.01 * lum(0) && lum(0) > 0.5, "ambient occlusion must not change direct sunlight");
+    assert(!bad(2) && !bad(3), "out-of-range light inputs must not produce NaN/Inf");
+    const decl = await page.evaluate(() => {
+      const m = window.__voxelands.world.materials;
+      return m.opaque.fragmentShader.includes("centroid varying vec2 vLight") && m.water.fragmentShader.includes("centroid varying vec2 vLight");
+    });
+    assert(decl, "per-vertex light should use centroid interpolation");
+  });
+
+  await check("water: just above the drawn surface is not 'under water', just below is", async () => {
+    const r = await page.evaluate(() => {
+      const { world, spawn, uniforms, water } = window.__voxelands;
+      let spot = null;
+      for (let rad = 5; rad < 150 && !spot; rad += 3) {
+        for (let a = 0; a < 24 && !spot; a++) {
+          const x = Math.round(spawn.x + Math.cos((a / 24) * 6.283) * rad);
+          const z = Math.round(spawn.z + Math.sin((a / 24) * 6.283) * rad);
+          if (world.getBlock(x, 24, z) === 5 && world.getBlock(x, 25, z) === 0 && world.getBlock(x, 22, z) === 5) spot = { x: x + 0.5, z: z + 0.5 };
+        }
+      }
+      if (!spot) return null;
+      const t = uniforms.uTime.value;
+      const ws = uniforms.uWaveStrength.value;
+      const surf = water.surfaceHeight(24, spot.x, spot.z, t, ws);
+      return {
+        surf,
+        above: water.isUnderwater(world, spot.x, surf + 0.03, spot.z, t, ws),
+        topOfCell: water.isUnderwater(world, spot.x, 24.99, spot.z, t, ws),
+        below: water.isUnderwater(world, spot.x, surf - 0.03, spot.z, t, ws),
+        deep: water.isUnderwater(world, spot.x, 23.5, spot.z, t, ws),
+      };
+    });
+    if (!r) {
+      console.log("        (no open sea found near spawn; skipped)");
+      return;
+    }
+    console.log(`        surface at y=${r.surf.toFixed(3)}: above ${r.above}, top of the block ${r.topOfCell}, below ${r.below}, deeper ${r.deep}`);
+    assert(!r.above && !r.topOfCell && r.below && r.deep, "under-water test must follow the drawn surface, not the block grid");
+  });
+
   await check("walking forward on the ground moves the player forward", async () => {
     await page.evaluate(() => {
       window.__voxelands.player.yaw = 0;
@@ -542,6 +628,106 @@ try {
     for (const p of result.pockets.slice(0, 5)) console.log(`        pocket ${JSON.stringify(p)}`);
     assert(result.removed > 50, "expected the sea floor to be carved");
     assert(result.pockets.length === 0, `${result.pockets.length} air cells left touching water below sea level`);
+  });
+
+  // --- Loose blocks and sounds ---
+  await check("sand and gravel fall: a column drops together and stacks, gravel breaks on a torch", async () => {
+    // Let sand disturbed by earlier blasts finish falling first.
+    await page.waitForFunction(() => window.__voxelands.falling.active === 0, null, { timeout: 60000, polling: 50 });
+    const site = await setupArena(page, 12, -12, 40);
+    await page.evaluate(({ x, y, z }) => {
+      const { world } = window.__voxelands;
+      const e = [];
+      for (let k = 1; k <= 3; k++) e.push(x, y + k, z - 3, 3); // stone pillar
+      for (let k = 4; k <= 9; k++) e.push(x, y + k, z - 3, 4); // 6 sand on top
+      e.push(x + 2, y + 1, z - 3, 17, x + 2, y + 2, z - 3, 3, x + 2, y + 3, z - 3, 12); // torch, stone, gravel
+      world.setBlocks(e);
+    }, site);
+    const still = await page.evaluate(() => window.__voxelands.falling.active);
+    assert(still === 0, "supported sand must not fall");
+    await page.evaluate(({ x, y, z }) => {
+      const { world } = window.__voxelands;
+      world.setBlocks([x, y + 1, z - 3, 0, x, y + 2, z - 3, 0, x, y + 3, z - 3, 0, x + 2, y + 2, z - 3, 0]);
+    }, site);
+    await page.waitForFunction(() => window.__voxelands.falling.active > 0, null, { timeout: 10000, polling: 16 });
+    const falling = await page.evaluate(() => window.__voxelands.falling.active);
+    await page.waitForFunction(() => window.__voxelands.falling.active === 0, null, { timeout: 60000, polling: 50 });
+    const r = await page.evaluate(({ x, y, z }) => {
+      const { world } = window.__voxelands;
+      const col = [];
+      for (let k = 0; k <= 9; k++) col.push(world.getBlock(x, y + k, z - 3));
+      return { col, torch: [world.getBlock(x + 2, y + 1, z - 3), world.getBlock(x + 2, y + 2, z - 3), world.getBlock(x + 2, y + 3, z - 3)] };
+    }, site);
+    console.log(`        ${falling} blocks fell; column now ${JSON.stringify(r.col)}; torch column ${JSON.stringify(r.torch)}`);
+    assert(JSON.stringify(r.col) === "[3,4,4,4,4,4,4,0,0,0]", "the whole sand column should land stacked on the floor");
+    assert(JSON.stringify(r.torch) === "[17,0,0]", "gravel landing on a torch should break, leaving the torch");
+  });
+
+  await check("explosions: loose blocks animate up to a cap, the rest settle at once, nothing floats", async () => {
+    const r = await page.evaluate(() => {
+      const v = window.__voxelands;
+      const { world, spawn, THREE, falling, effects } = v;
+      const x0 = spawn.x - 30;
+      const z0 = spawn.z - 30;
+      const y = 30;
+      const e = [];
+      for (let dx = -12; dx <= 12; dx++) for (let dz = -12; dz <= 12; dz++) for (let yy = y; yy <= y + 20; yy++) e.push(x0 + dx, yy, z0 + dz, yy < y + 8 ? 3 : yy < y + 14 ? 4 : 0);
+      world.setBlocks(e);
+      falling.update(0.016);
+      const before = falling.settledInstantly;
+      effects._explode(new THREE.Vector3(x0 + 0.5, y + 8, z0 + 0.5));
+      const t0 = performance.now();
+      falling.update(0.016);
+      window.__sandArea = { x0, z0, y };
+      return { active: falling.active, settled: falling.settledInstantly - before, ms: performance.now() - t0 };
+    });
+    console.log(`        blast in a sand bank: ${r.active} blocks animating, ${r.settled} settled at once (${r.ms.toFixed(1)} ms)`);
+    assert(r.active > 0 && r.active <= 64 && r.settled > 0, `expected a capped number of falling blocks: ${JSON.stringify(r)}`);
+    await page.waitForFunction(() => window.__voxelands.falling.active === 0, null, { timeout: 120000, polling: 100 });
+    const floating = await page.evaluate(() => {
+      const { world } = window.__voxelands;
+      const s = window.__sandArea;
+      let n = 0;
+      for (let dx = -12; dx <= 12; dx++) {
+        for (let dz = -12; dz <= 12; dz++) {
+          for (let yy = s.y + 1; yy <= s.y + 20; yy++) {
+            const id = world.getBlock(s.x0 + dx, yy, s.z0 + dz);
+            const below = world.getBlock(s.x0 + dx, yy - 1, s.z0 + dz);
+            if ((id === 4 || id === 12) && (below === 0 || below === 5)) n++;
+          }
+        }
+      }
+      return n;
+    });
+    assert(floating === 0, `${floating} sand blocks left floating`);
+  });
+
+  await check("sound effects all play; the jump and burp sounds are gone", async () => {
+    const r = await page.evaluate(() => {
+      const a = window.__voxelands.audio;
+      a.ensureStarted();
+      const failed = [];
+      const calls = { playBreak: ["stone"], playPlace: ["glass"], playDig: ["wood"], playFootstep: ["sand"], playPickup: [], playClick: [], playCraft: [], playEat: [], playToolBreak: [], playHurt: [], playDeath: [], playSplash: [], playFlightToggle: [true], playThrow: [], playHit: [true], playSwing: [], playExplosion: [40] };
+      for (const [k, args] of Object.entries(calls)) {
+        try {
+          a[k](...args);
+        } catch (e) {
+          failed.push(`${k}: ${e.message}`);
+        }
+      }
+      for (const kind of ["fluffalo", "hoplet", "mossback", "zombie"]) {
+        for (const ev of ["idle", "hurt", "death", "attack"]) {
+          try {
+            a.playMob(kind, ev, 4);
+          } catch (e) {
+            failed.push(`${kind}/${ev}: ${e.message}`);
+          }
+        }
+      }
+      return { failed, jump: typeof a.playJump, burp: typeof a.playBurp };
+    });
+    assert(r.failed.length === 0, `sounds failed: ${r.failed.join("; ")}`);
+    assert(r.jump === "undefined" && r.burp === "undefined", "jump and burp sounds should be removed");
   });
 
   // --- Survival (Phase 4) ---
