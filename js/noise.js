@@ -72,6 +72,40 @@ export class Noise {
     return Noise.lerp(v, x1, x2) * 0.7;
   }
 
+  // Classic 3D Perlin noise, roughly in range [-1, 1] (used for caves).
+  perlin3(x, y, z) {
+    const X = Math.floor(x) & 255;
+    const Y = Math.floor(y) & 255;
+    const Z = Math.floor(z) & 255;
+    x -= Math.floor(x);
+    y -= Math.floor(y);
+    z -= Math.floor(z);
+    const u = Noise.fade(x);
+    const v = Noise.fade(y);
+    const w = Noise.fade(z);
+    const p = this.perm;
+    const A = p[X] + Y;
+    const AA = p[A] + Z;
+    const AB = p[A + 1] + Z;
+    const B = p[X + 1] + Y;
+    const BA = p[B] + Z;
+    const BB = p[B + 1] + Z;
+    const g = Noise.grad3;
+    const L = Noise.lerp;
+    return L(
+      w,
+      L(v, L(u, g(p[AA], x, y, z), g(p[BA], x - 1, y, z)), L(u, g(p[AB], x, y - 1, z), g(p[BB], x - 1, y - 1, z))),
+      L(v, L(u, g(p[AA + 1], x, y, z - 1), g(p[BA + 1], x - 1, y, z - 1)), L(u, g(p[AB + 1], x, y - 1, z - 1), g(p[BB + 1], x - 1, y - 1, z - 1)))
+    );
+  }
+
+  static grad3(hash, x, y, z) {
+    const h = hash & 15;
+    const u = h < 8 ? x : y;
+    const v = h < 4 ? y : h === 12 || h === 14 ? x : z;
+    return ((h & 1) === 0 ? u : -u) + ((h & 2) === 0 ? v : -v);
+  }
+
   // Fractal Brownian motion built from perlin2, normalized to roughly [-1, 1].
   fbm2(x, y, octaves = 4, persistence = 0.5, lacunarity = 2, scale = 1) {
     let amp = 1;

@@ -1,281 +1,454 @@
-import * as THREE from "three";
-import { Noise, hash2 } from "./noise.js";
-import { BLOCK, isSolid, createMaterials, buildTextureAtlas } from "./blocks.js";
-import { Chunk, CHUNK_SIZE, WORLD_HEIGHT } from "./chunk.js";
+// The voxel world: chunk streaming, block access and edits, lighting,
+// meshing, persistence of edits, and ray casting.
+//
+// Chunk pipeline: a chunk is *generated* (terrain + saved edits + light)
+// within renderDistance + 1.5 chunks, and *meshed* once all 8 of its
+// neighbors are generated (meshing reads a 1-block border from them for
+// face culling, ambient occlusion and smooth light). So each chunk is
+// normally meshed exactly once, and the border of loaded terrain is never
+// visible with wrong faces or lighting.
+import {
+  BLOCK,
+  BLOCK_INFO,
+  IS_SOLID,
+  IS_SELECTABLE,
+  SHAPE_OF,
+  SHAPE,
+  TILE,
+  isSupportedBy,
+} from "./blocks.js";
+import { Chunk } from "./chunk.js";
+import { CHUNK_SIZE, WORLD_HEIGHT, SEA_LEVEL, blockIndex, floorDiv } from "./constants.js";
+import { setEdit } from "./storage.js";
+import { TerrainGenerator } from "./terrain.js";
+import { LightEngine, sampleLight } from "./light.js";
+import { meshChunk } from "./mesher.js";
+import { buildBlockTextures } from "./textures.js";
+import { createChunkMaterials } from "./shaders.js";
 
-export const SEA_LEVEL = 24;
-const BASE_HEIGHT = 26;
-const AMPLITUDE = 14;
-const TREE_CHANCE = 0.02;
+export { SEA_LEVEL };
 
-function floorDiv(a, b) {
-  return Math.floor(a / b);
+// Numeric chunk-map keys (much cheaper than strings in the hot paths).
+const KEY_OFFSET = 1048576; // 2^20 chunks each way
+function numKey(cx, cz) {
+  return (cx + KEY_OFFSET) * 2097152 + (cz + KEY_OFFSET);
+}
+
+// Selection boxes for non-cube shapes: [minX, minY, minZ, maxX, maxY, maxZ].
+const SELECTION = {
+  [SHAPE.CUBE]: [0, 0, 0, 1, 1, 1],
+  [SHAPE.CROSS]: [0.15, 0, 0.15, 0.85, 0.8, 0.85],
+  [SHAPE.TORCH]: [6 / 16, 0, 6 / 16, 10 / 16, 11 / 16, 10 / 16],
+};
+
+export function selectionBox(id) {
+  return SELECTION[SHAPE_OF[id]] || SELECTION[SHAPE.CUBE];
 }
 
 export class World {
   constructor(scene, seed) {
     this.scene = scene;
     this.seed = seed >>> 0;
-    this.noise = new Noise(this.seed);
-    this.chunks = new Map();
-    this.edits = new Map(); // "wx,wy,wz" -> blockId
-    this.dirty = false;
+    this.terrain = new TerrainGenerator(this.seed);
+    this.chunks = new Map(); // numKey -> Chunk
+    // Player/explosion edits on top of generated terrain, grouped per chunk:
+    // Map<chunkKey string, Map<localBlockIndex, blockId>> (see storage.js).
+    this.edits = new Map();
+    this.dirtyEditChunks = new Set(); // chunk keys with edits not yet saved
 
-    const { texture } = buildTextureAtlas();
-    this.atlasTexture = texture;
-    this.materials = createMaterials(texture);
+    const { texture, canvases, blockColors } = buildBlockTextures();
+    this.atlas = texture;
+    this.tileCanvases = canvases;
+    this.blockColors = blockColors; // blockId -> [r,g,b] sRGB 0-1
+    this.materials = createChunkMaterials(texture, TILE.water);
+    this.light = new LightEngine(this);
 
-    this.genQueue = [];
-    this.genQueued = new Set();
-    this.remeshQueue = new Set();
+    this.genQueue = []; // { cx, cz, dist }
+    this.genQueued = new Set(); // numKeys
+    this.meshQueue = []; // chunks awaiting their first mesh
+    this.meshQueued = new Set();
+    this.remeshQueue = new Set(); // rebuilds from background light changes (budgeted)
+    this.editRemeshQueue = new Set(); // rebuilds from block edits (next frame, unbudgeted)
+    this.stats = { lastEditRemeshCount: 0, lastEditRemeshMs: 0, meshes: 0, generated: 0 };
+    this._nb = new Array(9).fill(null);
+    this._planCx = null;
+    this._planCz = null;
+    this._planR = null;
+    this.meshRadius = 0;
 
-    this.onEdit = null; // callback(wx,wy,wz,id)
+    this.onEdit = null; // () => void, after any recorded edit
+    this.onBlockPopped = null; // (x, y, z, id) when a torch/plant loses its support
   }
 
   key(cx, cz) {
-    return cx + "," + cz;
+    return numKey(cx, cz);
   }
 
   getChunk(cx, cz) {
-    return this.chunks.get(this.key(cx, cz));
+    return this.chunks.get(numKey(cx, cz));
   }
 
   heightAt(wx, wz) {
-    const n = this.noise.fbm2(wx, wz, 4, 0.5, 2, 1 / 80);
-    return Math.floor(BASE_HEIGHT + n * AMPLITUDE);
+    return this.terrain.heightAt(wx, wz);
   }
 
   getBlock(wx, wy, wz) {
-    if (wy < 0) return BLOCK.STONE;
+    if (wy < 0) return BLOCK.BEDROCK;
     if (wy >= WORLD_HEIGHT) return BLOCK.AIR;
-    const cx = floorDiv(wx, CHUNK_SIZE);
-    const cz = floorDiv(wz, CHUNK_SIZE);
-    const chunk = this.getChunk(cx, cz);
+    wx = Math.floor(wx);
+    wz = Math.floor(wz);
+    const chunk = this.chunks.get(numKey(wx >> 4, wz >> 4));
     if (!chunk) return BLOCK.AIR;
-    const lx = wx - cx * CHUNK_SIZE;
-    const lz = wz - cz * CHUNK_SIZE;
-    return chunk.getBlock(lx, wy, lz);
+    return chunk.blocks[(Math.floor(wy) << 8) | ((wz & 15) << 4) | (wx & 15)];
   }
 
   isSolidAt(wx, wy, wz) {
-    return isSolid(this.getBlock(wx, wy, wz));
+    return IS_SOLID[this.getBlock(wx, wy, wz)] === 1;
   }
 
-  setBlock(wx, wy, wz, id, { recordEdit = true, remesh = true } = {}) {
-    if (wy < 0 || wy >= WORLD_HEIGHT) return false;
-    const cx = floorDiv(wx, CHUNK_SIZE);
-    const cz = floorDiv(wz, CHUNK_SIZE);
-    const chunk = this.getChunk(cx, cz);
-    if (!chunk) return false;
-    const lx = wx - cx * CHUNK_SIZE;
-    const lz = wz - cz * CHUNK_SIZE;
-    chunk.setBlock(lx, wy, lz, id);
+  // Light at a block position: { sky, block } (0-15).
+  lightAt(wx, wy, wz) {
+    return sampleLight(this, Math.floor(wx), Math.floor(wy), Math.floor(wz));
+  }
 
-    if (recordEdit) {
-      this.edits.set(`${wx},${wy},${wz}`, id);
-      this.dirty = true;
-      if (this.onEdit) this.onEdit();
+  // Highest y whose block is solid in column (wx, wz), or -1.
+  surfaceY(wx, wz) {
+    for (let y = WORLD_HEIGHT - 1; y >= 0; y--) if (this.isSolidAt(wx, y, wz)) return y;
+    return -1;
+  }
+
+  setBlock(wx, wy, wz, id, opts) {
+    return this.setBlocks([wx, wy, wz, id], opts) > 0;
+  }
+
+  // Bulk edit: `list` is a flat [x, y, z, id, ...] array. Blocks in unloaded
+  // chunks are skipped. Torches/plants left without support pop off. Light
+  // is updated once for the whole batch, and every affected chunk (plus
+  // border neighbors) is queued for a rebuild. Returns the number of blocks
+  // that actually changed.
+  setBlocks(list, { recordEdit = true } = {}) {
+    const changed = [];
+    const apply = (x, y, z, id) => {
+      if (y < 0 || y >= WORLD_HEIGHT) return false;
+      const chunk = this.getChunk(x >> 4, z >> 4);
+      if (!chunk) return false;
+      const lx = x & 15;
+      const lz = z & 15;
+      const idx = blockIndex(lx, y, lz);
+      if (chunk.blocks[idx] === id) return false;
+      chunk.blocks[idx] = id;
+      changed.push(x, y, z);
+      if (recordEdit) {
+        setEdit(this.edits, chunk.cx, chunk.cz, idx, id);
+        this.dirtyEditChunks.add(chunk.key);
+      }
+      this._queueEditRemesh(chunk, lx, lz);
+      return true;
+    };
+    for (let i = 0; i < list.length; i += 4) apply(Math.floor(list[i]), Math.floor(list[i + 1]), Math.floor(list[i + 2]), list[i + 3]);
+    // Blocks that needed support from a block that just changed pop off.
+    for (let i = 0; i < changed.length; i += 3) {
+      const x = changed[i];
+      const y = changed[i + 1] + 1;
+      const z = changed[i + 2];
+      const above = this.getBlock(x, y, z);
+      if (BLOCK_INFO[above]?.support && !isSupportedBy(above, this.getBlock(x, y - 1, z))) {
+        if (apply(x, y, z, BLOCK.AIR) && this.onBlockPopped) this.onBlockPopped(x, y, z, above);
+      }
+    }
+    if (changed.length === 0) return 0;
+    for (const c of this.light.applyChanges(changed)) {
+      if (c.meshed) this.editRemeshQueue.add(c);
+    }
+    if (recordEdit && this.onEdit) this.onEdit();
+    return changed.length / 3;
+  }
+
+  _queueEditRemesh(chunk, lx, lz) {
+    if (chunk.meshed) this.editRemeshQueue.add(chunk);
+    const dx = lx === 0 ? -1 : lx === 15 ? 1 : 0;
+    const dz = lz === 0 ? -1 : lz === 15 ? 1 : 0;
+    if (dx === 0 && dz === 0) return;
+    const add = (cx, cz) => {
+      const n = this.getChunk(cx, cz);
+      if (n && n.meshed) this.editRemeshQueue.add(n);
+    };
+    if (dx) add(chunk.cx + dx, chunk.cz);
+    if (dz) add(chunk.cx, chunk.cz + dz);
+    if (dx && dz) add(chunk.cx + dx, chunk.cz + dz);
+  }
+
+  // ---------- Streaming ----------
+
+  // Plans chunk loading/unloading around the player. Cheap to call every
+  // frame: re-planning only runs when the player crosses into another chunk
+  // or the render distance changes.
+  ensureChunksAround(px, pz, renderDistance) {
+    const pcx = floorDiv(px, CHUNK_SIZE);
+    const pcz = floorDiv(pz, CHUNK_SIZE);
+    if (pcx === this._planCx && pcz === this._planCz && renderDistance === this._planR) return;
+    this._planCx = pcx;
+    this._planCz = pcz;
+    this._planR = renderDistance;
+    this.meshRadius = renderDistance;
+
+    const meshR2 = renderDistance * renderDistance;
+    const dataR = renderDistance + 1.5; // covers the 8 neighbors of every meshed chunk
+    const dataR2 = dataR * dataR;
+    const dist2 = (cx, cz) => (cx - pcx) * (cx - pcx) + (cz - pcz) * (cz - pcz);
+
+    this.genQueue = this.genQueue.filter((e) => {
+      e.dist = dist2(e.cx, e.cz);
+      if (e.dist > dataR2) {
+        this.genQueued.delete(numKey(e.cx, e.cz));
+        return false;
+      }
+      return true;
+    });
+    const reach = Math.ceil(dataR);
+    for (let dx = -reach; dx <= reach; dx++) {
+      for (let dz = -reach; dz <= reach; dz++) {
+        const d = dx * dx + dz * dz;
+        if (d > dataR2) continue;
+        const k = numKey(pcx + dx, pcz + dz);
+        if (!this.chunks.has(k) && !this.genQueued.has(k)) {
+          this.genQueue.push({ cx: pcx + dx, cz: pcz + dz, dist: d });
+          this.genQueued.add(k);
+        }
+      }
+    }
+    this.genQueue.sort((a, b) => a.dist - b.dist);
+
+    // Unload far chunks.
+    const unloadR = renderDistance + 3;
+    for (const [k, chunk] of this.chunks) {
+      if (dist2(chunk.cx, chunk.cz) > unloadR * unloadR) {
+        this.scene.remove(chunk.group);
+        chunk.dispose();
+        this.chunks.delete(k);
+        this.remeshQueue.delete(chunk);
+        this.editRemeshQueue.delete(chunk);
+      }
     }
 
-    if (remesh) {
-      this.remeshQueue.add(chunk);
-      // Also remesh neighbor chunks if the edit is on a chunk boundary.
-      if (lx === 0) this._queueRemeshAt(cx - 1, cz);
-      if (lx === CHUNK_SIZE - 1) this._queueRemeshAt(cx + 1, cz);
-      if (lz === 0) this._queueRemeshAt(cx, cz - 1);
-      if (lz === CHUNK_SIZE - 1) this._queueRemeshAt(cx, cz + 1);
+    // Rebuild the mesh queue: ready, unmeshed chunks within range, nearest first.
+    this.meshQueue = [];
+    this.meshQueued.clear();
+    for (const chunk of this.chunks.values()) {
+      if (!chunk.meshed && dist2(chunk.cx, chunk.cz) <= meshR2 && this._isReady(chunk)) {
+        this.meshQueue.push(chunk);
+        this.meshQueued.add(chunk);
+      }
+    }
+    this.meshQueue.sort((a, b) => dist2(a.cx, a.cz) - dist2(b.cx, b.cz));
+  }
+
+  _isReady(chunk) {
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (!this.chunks.has(numKey(chunk.cx + dx, chunk.cz + dz))) return false;
+      }
     }
     return true;
   }
 
-  _queueRemeshAt(cx, cz) {
-    const c = this.getChunk(cx, cz);
-    if (c) this.remeshQueue.add(c);
+  _dist2(chunk) {
+    const dx = chunk.cx - this._planCx;
+    const dz = chunk.cz - this._planCz;
+    return dx * dx + dz * dz;
   }
 
-  ensureChunksAround(px, pz, renderDistance) {
-    const pcx = floorDiv(px, CHUNK_SIZE);
-    const pcz = floorDiv(pz, CHUNK_SIZE);
-    const wanted = new Set();
+  _inMeshRange(chunk) {
+    return this._planCx !== null && this._dist2(chunk) <= this.meshRadius * this.meshRadius;
+  }
 
-    for (let dx = -renderDistance; dx <= renderDistance; dx++) {
-      for (let dz = -renderDistance; dz <= renderDistance; dz++) {
-        if (dx * dx + dz * dz > renderDistance * renderDistance) continue;
-        const cx = pcx + dx;
-        const cz = pcz + dz;
-        wanted.add(this.key(cx, cz));
-        if (!this.chunks.has(this.key(cx, cz)) && !this.genQueued.has(this.key(cx, cz))) {
-          this.genQueue.push({ cx, cz, dist: dx * dx + dz * dz });
-          this.genQueued.add(this.key(cx, cz));
-        }
-      }
+  // Generates and meshes queued chunks until `budgetMs` of main-thread time
+  // has been spent this frame (always at least one unit of work if any is
+  // pending). Chunks changed by block edits are rebuilt first and without a
+  // budget, so the player sees their own edits immediately.
+  processQueues(budgetMs = 4) {
+    const start = performance.now();
+    if (this.editRemeshQueue.size > 0) {
+      for (const chunk of this.editRemeshQueue) this._buildMesh(chunk);
+      this.stats.lastEditRemeshCount = this.editRemeshQueue.size;
+      this.stats.lastEditRemeshMs = performance.now() - start;
+      this.editRemeshQueue.clear();
     }
 
-    this.genQueue.sort((a, b) => a.dist - b.dist);
-
-    const unloadDist = renderDistance + 2;
-    for (const [key, chunk] of this.chunks) {
-      const dx = chunk.cx - pcx;
-      const dz = chunk.cz - pcz;
-      if (dx * dx + dz * dz > unloadDist * unloadDist) {
-        this.scene.remove(chunk.group);
-        chunk.dispose();
-        this.chunks.delete(key);
+    let didWork = false;
+    while (!didWork || performance.now() - start < budgetMs) {
+      // Drop stale mesh-queue entries (already meshed or unloaded).
+      while (this.meshQueue.length > 0) {
+        const c = this.meshQueue[0];
+        if (!c.meshed && this.chunks.get(numKey(c.cx, c.cz)) === c) break;
+        this.meshQueued.delete(this.meshQueue.shift());
+      }
+      const nextMesh = this.meshQueue[0];
+      const nextGen = this.genQueue[0];
+      // Prefer meshing nearby ready chunks over generating farther ones.
+      if (nextMesh && (!nextGen || this._dist2(nextMesh) <= nextGen.dist + 2)) {
+        this.meshQueue.shift();
+        this._buildMesh(nextMesh);
+      } else if (nextGen) {
+        this.genQueue.shift();
+        this.genQueued.delete(numKey(nextGen.cx, nextGen.cz));
+        this._generate(nextGen.cx, nextGen.cz);
+      } else if (this.remeshQueue.size > 0) {
+        const chunk = this.remeshQueue.values().next().value;
         this.remeshQueue.delete(chunk);
+        if (chunk.meshed) this._buildMesh(chunk);
+      } else {
+        break;
+      }
+      didWork = true;
+    }
+  }
+
+  // Synchronously generates (radius r + 1) and meshes (radius r) the chunks
+  // around a world position, so the player can be placed there right away
+  // (at startup, or when respawning far from where they died).
+  prepareArea(wx, wz, r = 2) {
+    const pcx = floorDiv(Math.floor(wx), CHUNK_SIZE);
+    const pcz = floorDiv(Math.floor(wz), CHUNK_SIZE);
+    for (let dz = -r - 1; dz <= r + 1; dz++) {
+      for (let dx = -r - 1; dx <= r + 1; dx++) this._generate(pcx + dx, pcz + dz);
+    }
+    for (let dz = -r; dz <= r; dz++) {
+      for (let dx = -r; dx <= r; dx++) {
+        const chunk = this.getChunk(pcx + dx, pcz + dz);
+        if (chunk && (!chunk.meshed || this.remeshQueue.has(chunk))) this._buildMesh(chunk);
       }
     }
   }
 
-  processQueues(maxGenPerFrame = 1, maxRemeshPerFrame = 2) {
-    let generated = 0;
-    while (generated < maxGenPerFrame && this.genQueue.length > 0) {
-      const { cx, cz } = this.genQueue.shift();
-      const key = this.key(cx, cz);
-      this.genQueued.delete(key);
-      if (this.chunks.has(key)) continue;
-      const chunk = new Chunk(cx, cz, this);
-      this.generateTerrain(chunk);
-      this.applyStoredEdits(chunk);
-      chunk.generated = true;
-      chunk.buildMesh(this.materials);
-      this.chunks.set(key, chunk);
-      this.scene.add(chunk.group);
-
-      // Neighboring chunks may now have newly-hidden/exposed boundary faces.
-      for (const [ncx, ncz] of [[cx - 1, cz], [cx + 1, cz], [cx, cz - 1], [cx, cz + 1]]) {
-        const n = this.getChunk(ncx, ncz);
-        if (n) this.remeshQueue.add(n);
-      }
-      generated++;
-    }
-
-    let remeshed = 0;
-    if (this.remeshQueue.size > 0) {
-      for (const chunk of this.remeshQueue) {
-        if (remeshed >= maxRemeshPerFrame) break;
-        chunk.buildMesh(this.materials);
-        this.remeshQueue.delete(chunk);
-        remeshed++;
-      }
-    }
+  // True once every chunk within the render distance is generated and meshed.
+  get isIdle() {
+    return this.genQueue.length === 0 && this.meshQueue.length === 0 && this.editRemeshQueue.size === 0;
   }
 
-  generateTerrain(chunk) {
-    const baseX = chunk.cx * CHUNK_SIZE;
-    const baseZ = chunk.cz * CHUNK_SIZE;
-
-    for (let lz = 0; lz < CHUNK_SIZE; lz++) {
-      for (let lx = 0; lx < CHUNK_SIZE; lx++) {
-        const wx = baseX + lx;
-        const wz = baseZ + lz;
-        const h = this.heightAt(wx, wz);
-        const isBeach = h <= SEA_LEVEL + 1;
-
-        for (let ly = 0; ly < WORLD_HEIGHT; ly++) {
-          let id = BLOCK.AIR;
-          if (ly > h) {
-            id = ly <= SEA_LEVEL ? BLOCK.WATER : BLOCK.AIR;
-          } else if (ly === h) {
-            id = isBeach ? BLOCK.SAND : BLOCK.GRASS;
-          } else if (ly > h - 4) {
-            id = isBeach ? BLOCK.SAND : BLOCK.DIRT;
-          } else {
-            id = BLOCK.STONE;
-          }
-          if (id !== BLOCK.AIR) chunk.setBlock(lx, ly, lz, id);
+  _generate(cx, cz) {
+    const k = numKey(cx, cz);
+    if (this.chunks.has(k)) return;
+    const chunk = new Chunk(cx, cz);
+    this.terrain.generate(chunk);
+    this.applyStoredEdits(chunk);
+    this.chunks.set(k, chunk);
+    chunk.generated = true;
+    this.stats.generated++;
+    for (const c of this.light.initChunk(chunk)) {
+      if (c.meshed) this.remeshQueue.add(c);
+    }
+    this.scene.add(chunk.group);
+    // This chunk, or a neighbor that was waiting on it, may now be meshable.
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const n = this.chunks.get(numKey(cx + dx, cz + dz));
+        if (n && !n.meshed && !this.meshQueued.has(n) && this._inMeshRange(n) && this._isReady(n)) {
+          this.meshQueue.push(n);
+          this.meshQueued.add(n);
         }
       }
     }
-
-    // Trees: only rooted well inside the chunk so canopies never cross chunk borders.
-    for (let lz = 3; lz < CHUNK_SIZE - 3; lz++) {
-      for (let lx = 3; lx < CHUNK_SIZE - 3; lx++) {
-        const wx = baseX + lx;
-        const wz = baseZ + lz;
-        const h = this.heightAt(wx, wz);
-        if (h <= SEA_LEVEL + 1 || h >= WORLD_HEIGHT - 10) continue;
-        const r = hash2(this.seed, wx, wz);
-        if (r >= TREE_CHANCE) continue;
-        this.placeTree(chunk, lx, h, lz, r);
-      }
-    }
   }
 
-  placeTree(chunk, lx, h, lz, r) {
-    const trunkHeight = 4 + Math.floor(r * 30000) % 3;
-    for (let i = 1; i <= trunkHeight; i++) {
-      chunk.setBlock(lx, h + i, lz, BLOCK.WOOD);
+  _buildMesh(chunk) {
+    const nb = this._nb;
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) nb[(dz + 1) * 3 + (dx + 1)] = this.chunks.get(numKey(chunk.cx + dx, chunk.cz + dz)) || null;
     }
-    const canopyCenterY = h + trunkHeight;
-    for (let dy = -2; dy <= 1; dy++) {
-      const radius = dy >= 1 ? 1 : 2;
-      for (let dx = -radius; dx <= radius; dx++) {
-        for (let dz = -radius; dz <= radius; dz++) {
-          if (dx * dx + dz * dz > radius * radius + 0.5) continue;
-          const lx2 = lx + dx;
-          const lz2 = lz + dz;
-          const ly2 = canopyCenterY + dy;
-          if (!chunk.inBounds(lx2, ly2, lz2)) continue;
-          if (chunk.getBlock(lx2, ly2, lz2) === BLOCK.AIR) {
-            chunk.setBlock(lx2, ly2, lz2, BLOCK.LEAVES);
-          }
-        }
-      }
-    }
+    chunk.applyMesh(meshChunk(nb), this.materials);
+    chunk.meshed = true;
+    this.meshQueued.delete(chunk);
+    this.remeshQueue.delete(chunk);
+    this.stats.meshes++;
   }
 
   applyStoredEdits(chunk) {
-    if (this.edits.size === 0) return;
-    const baseX = chunk.cx * CHUNK_SIZE;
-    const baseZ = chunk.cz * CHUNK_SIZE;
-    for (const [key, id] of this.edits) {
-      const [wx, wy, wz] = key.split(",").map(Number);
-      const cx = floorDiv(wx, CHUNK_SIZE);
-      const cz = floorDiv(wz, CHUNK_SIZE);
-      if (cx !== chunk.cx || cz !== chunk.cz) continue;
-      chunk.setBlock(wx - baseX, wy, wz - baseZ, id);
-    }
+    const map = this.edits.get(chunk.key);
+    if (!map) return;
+    for (const [index, id] of map) chunk.blocks[index] = id;
   }
 
-  loadEdits(editsArray) {
-    // editsArray: flat [wx,wy,wz,id, ...]
-    for (let i = 0; i < editsArray.length; i += 4) {
-      const wx = editsArray[i];
-      const wy = editsArray[i + 1];
-      const wz = editsArray[i + 2];
-      const id = editsArray[i + 3];
-      this.edits.set(`${wx},${wy},${wz}`, id);
-    }
+  // Replaces the in-memory edits with ones loaded from storage (called before
+  // any chunk is generated, so they're applied as chunks stream in).
+  loadEdits(edits) {
+    this.edits = edits;
   }
 
-  serializeEdits() {
-    const out = [];
-    for (const [key, id] of this.edits) {
-      const [wx, wy, wz] = key.split(",").map(Number);
-      out.push(wx, wy, wz, id);
-    }
-    return out;
-  }
-
-  // Simple incremental voxel raycast. Returns { block:[x,y,z], place:[x,y,z], normal } or null.
-  raycast(origin, direction, maxDistance = 6, step = 0.05) {
-    const pos = origin.clone();
+  // Voxel traversal ray cast (Amanatides & Woo). Returns
+  // { block: [x,y,z], place: [x,y,z], normal: [x,y,z], id, distance } for
+  // the first selectable block (non-cube blocks use their selection box), or null.
+  raycast(origin, direction, maxDistance = 6) {
     const dir = direction.clone().normalize();
-    let prevBlock = null;
-    for (let t = 0; t < maxDistance; t += step) {
-      const bx = Math.floor(pos.x);
-      const by = Math.floor(pos.y);
-      const bz = Math.floor(pos.z);
-      const id = this.getBlock(bx, by, bz);
-      if (isSolid(id)) {
-        return {
-          block: [bx, by, bz],
-          place: prevBlock ?? [bx, by, bz],
-        };
+    let x = Math.floor(origin.x);
+    let y = Math.floor(origin.y);
+    let z = Math.floor(origin.z);
+    const stepX = dir.x > 0 ? 1 : -1;
+    const stepY = dir.y > 0 ? 1 : -1;
+    const stepZ = dir.z > 0 ? 1 : -1;
+    const tDeltaX = dir.x !== 0 ? Math.abs(1 / dir.x) : Infinity;
+    const tDeltaY = dir.y !== 0 ? Math.abs(1 / dir.y) : Infinity;
+    const tDeltaZ = dir.z !== 0 ? Math.abs(1 / dir.z) : Infinity;
+    let tMaxX = dir.x !== 0 ? (stepX > 0 ? x + 1 - origin.x : origin.x - x) * tDeltaX : Infinity;
+    let tMaxY = dir.y !== 0 ? (stepY > 0 ? y + 1 - origin.y : origin.y - y) * tDeltaY : Infinity;
+    let tMaxZ = dir.z !== 0 ? (stepZ > 0 ? z + 1 - origin.z : origin.z - z) * tDeltaZ : Infinity;
+    let normal = null;
+    let t = 0;
+    while (t <= maxDistance) {
+      const id = this.getBlock(x, y, z);
+      if (IS_SELECTABLE[id]) {
+        const hitT = SHAPE_OF[id] === SHAPE.CUBE ? t : rayBox(origin, dir, x, y, z, selectionBox(id));
+        if (hitT !== null && hitT <= maxDistance) {
+          const n = normal || [0, 0, 0];
+          return {
+            block: [x, y, z],
+            place: normal ? [x + n[0], y + n[1], z + n[2]] : [x, y, z],
+            normal: n,
+            id,
+            distance: hitT,
+          };
+        }
       }
-      prevBlock = [bx, by, bz];
-      pos.addScaledVector(dir, step);
+      if (tMaxX < tMaxY && tMaxX < tMaxZ) {
+        x += stepX;
+        t = tMaxX;
+        tMaxX += tDeltaX;
+        normal = [-stepX, 0, 0];
+      } else if (tMaxY < tMaxZ) {
+        y += stepY;
+        t = tMaxY;
+        tMaxY += tDeltaY;
+        normal = [0, -stepY, 0];
+      } else {
+        z += stepZ;
+        t = tMaxZ;
+        tMaxZ += tDeltaZ;
+        normal = [0, 0, -stepZ];
+      }
     }
     return null;
   }
+}
+
+// Ray vs. an axis-aligned box inside block (bx, by, bz); returns the entry t or null.
+function rayBox(origin, dir, bx, by, bz, box) {
+  let tmin = 0;
+  let tmax = Infinity;
+  const o = [origin.x, origin.y, origin.z];
+  const d = [dir.x, dir.y, dir.z];
+  const lo = [bx + box[0], by + box[1], bz + box[2]];
+  const hi = [bx + box[3], by + box[4], bz + box[5]];
+  for (let a = 0; a < 3; a++) {
+    if (Math.abs(d[a]) < 1e-9) {
+      if (o[a] < lo[a] || o[a] > hi[a]) return null;
+      continue;
+    }
+    let t1 = (lo[a] - o[a]) / d[a];
+    let t2 = (hi[a] - o[a]) / d[a];
+    if (t1 > t2) [t1, t2] = [t2, t1];
+    tmin = Math.max(tmin, t1);
+    tmax = Math.min(tmax, t2);
+    if (tmin > tmax) return null;
+  }
+  return tmin;
 }

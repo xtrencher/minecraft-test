@@ -1,6 +1,6 @@
-// Block definitions and procedurally-generated pixel-art texture atlas.
-import * as THREE from "three";
-import { mulberry32 } from "./noise.js";
+// Block registry: pure data (no three.js), shared by terrain generation,
+// lighting, meshing, physics and UI. Block ids are persisted in saves, so
+// existing ids must never change meaning; new blocks get new ids.
 
 export const BLOCK = Object.freeze({
   AIR: 0,
@@ -13,255 +13,267 @@ export const BLOCK = Object.freeze({
   LEAVES: 7,
   PLANKS: 8,
   GLASS: 9,
+  COBBLESTONE: 10,
+  BEDROCK: 11,
+  GRAVEL: 12,
+  COAL_ORE: 13,
+  IRON_ORE: 14,
+  GOLD_ORE: 15,
+  DIAMOND_ORE: 16,
+  TORCH: 17,
+  LUMEN: 18,
+  CRAFTING_TABLE: 19,
+  TALL_GRASS: 20,
+  FLOWER_RED: 21,
+  FLOWER_YELLOW: 22,
+  BRICKS: 23,
+  WOOL: 24,
 });
 
-export const TILE = Object.freeze({
-  GRASS_TOP: 0,
-  GRASS_SIDE: 1,
-  DIRT: 2,
-  STONE: 3,
-  SAND: 4,
-  WOOD_SIDE: 5,
-  WOOD_TOP: 6,
-  LEAVES: 7,
-  PLANKS: 8,
-  GLASS: 9,
-  WATER: 10,
-});
+// Texture layers of the block texture array, in order. Painted procedurally
+// by textures.js; a block face refers to a layer by name.
+export const TILE_NAMES = [
+  "grass_top",
+  "grass_side",
+  "dirt",
+  "stone",
+  "sand",
+  "wood_side",
+  "wood_top",
+  "leaves",
+  "planks",
+  "glass",
+  "water",
+  "cobblestone",
+  "bedrock",
+  "gravel",
+  "coal_ore",
+  "iron_ore",
+  "gold_ore",
+  "diamond_ore",
+  "torch",
+  "lumen",
+  "crafting_table_top",
+  "crafting_table_side",
+  "crafting_table_front",
+  "tall_grass",
+  "flower_red",
+  "flower_yellow",
+  "bricks",
+  "wool",
+];
+export const TILE = Object.freeze(Object.fromEntries(TILE_NAMES.map((name, i) => [name, i])));
 
-export const TILE_SIZE = 16;
-export const TILES_PER_ROW = 8;
-export const ATLAS_SIZE = TILE_SIZE * TILES_PER_ROW;
+// Render buckets and shapes (numeric for use in hot loops).
+export const RENDER = Object.freeze({ NONE: 0, OPAQUE: 1, CUTOUT: 2, WATER: 3 });
+export const SHAPE = Object.freeze({ CUBE: 0, CROSS: 1, TORCH: 2 });
 
-// Per-block face tile lookup: { top, bottom, side }
-export const BLOCK_INFO = {
-  [BLOCK.GRASS]: { name: "Grass", opaque: true, transparent: false, liquid: false, faces: { top: TILE.GRASS_TOP, bottom: TILE.DIRT, side: TILE.GRASS_SIDE } },
-  [BLOCK.DIRT]: { name: "Dirt", opaque: true, transparent: false, liquid: false, faces: { top: TILE.DIRT, bottom: TILE.DIRT, side: TILE.DIRT } },
-  [BLOCK.STONE]: { name: "Stone", opaque: true, transparent: false, liquid: false, faces: { top: TILE.STONE, bottom: TILE.STONE, side: TILE.STONE } },
-  [BLOCK.SAND]: { name: "Sand", opaque: true, transparent: false, liquid: false, faces: { top: TILE.SAND, bottom: TILE.SAND, side: TILE.SAND } },
-  [BLOCK.WATER]: { name: "Water", opaque: false, transparent: true, liquid: true, faces: { top: TILE.WATER, bottom: TILE.WATER, side: TILE.WATER } },
-  [BLOCK.WOOD]: { name: "Wood", opaque: true, transparent: false, liquid: false, faces: { top: TILE.WOOD_TOP, bottom: TILE.WOOD_TOP, side: TILE.WOOD_SIDE } },
-  [BLOCK.LEAVES]: { name: "Leaves", opaque: false, transparent: true, cutout: true, liquid: false, faces: { top: TILE.LEAVES, bottom: TILE.LEAVES, side: TILE.LEAVES } },
-  [BLOCK.PLANKS]: { name: "Planks", opaque: true, transparent: false, liquid: false, faces: { top: TILE.PLANKS, bottom: TILE.PLANKS, side: TILE.PLANKS } },
-  [BLOCK.GLASS]: { name: "Glass", opaque: false, transparent: true, cutout: true, liquid: false, faces: { top: TILE.GLASS, bottom: TILE.GLASS, side: TILE.GLASS } },
+const DEFAULTS = {
+  render: RENDER.OPAQUE,
+  shape: SHAPE.CUBE,
+  solid: true, // collides with players/mobs/projectiles
+  opaque: true, // hides neighboring faces, blocks light, casts ambient occlusion
+  lightFilter: 0, // extra light lost passing through (non-opaque blocks only)
+  skyPass: false, // full-strength sky light passes straight down without loss
+  emission: 0, // light level emitted (0-15)
+  emissive: false, // renders glowing (independent of the light it emits)
+  wave: false, // sways in the wind
+  selectable: true, // can be targeted by the crosshair
+  replaceable: false, // placing a block into this cell just replaces it
+  support: null, // "solid": needs a solid block below; "soil": needs grass/dirt below
+  liquid: false,
+  // Mining (survival): hardness (-1 = unbreakable), the tool type that mines
+  // it fastest, and the minimum tool tier needed to get drops (0 = by hand).
+  hardness: 1,
+  tool: null, // "pickaxe" | "axe" | "shovel"
+  minTier: 0,
+  sound: "stone", // stone | wood | grass | dirt | sand | glass | cloth | plant
 };
 
-export const HOTBAR = [BLOCK.GRASS, BLOCK.DIRT, BLOCK.STONE, BLOCK.SAND, BLOCK.WOOD, BLOCK.LEAVES, BLOCK.PLANKS, BLOCK.GLASS];
+// faces: a tile name for all faces, or { top, bottom, side, front? }.
+const DEFS = {
+  [BLOCK.AIR]: { name: "Air", render: RENDER.NONE, solid: false, opaque: false, skyPass: true, selectable: false, replaceable: true, faces: "stone" },
+  [BLOCK.GRASS]: { name: "Grass Block", faces: { top: "grass_top", bottom: "dirt", side: "grass_side" }, hardness: 0.6, tool: "shovel", sound: "grass" },
+  [BLOCK.DIRT]: { name: "Dirt", faces: "dirt", hardness: 0.5, tool: "shovel", sound: "dirt" },
+  [BLOCK.STONE]: { name: "Stone", faces: "stone", hardness: 1.5, tool: "pickaxe", minTier: 1 },
+  [BLOCK.SAND]: { name: "Sand", faces: "sand", hardness: 0.5, tool: "shovel", sound: "sand" },
+  [BLOCK.WATER]: {
+    name: "Water",
+    faces: "water",
+    render: RENDER.WATER,
+    solid: false,
+    opaque: false,
+    lightFilter: 1,
+    selectable: false,
+    replaceable: true,
+    liquid: true,
+    hardness: -1,
+  },
+  [BLOCK.WOOD]: { name: "Log", faces: { top: "wood_top", bottom: "wood_top", side: "wood_side" }, hardness: 2, tool: "axe", sound: "wood" },
+  [BLOCK.LEAVES]: { name: "Leaves", faces: "leaves", render: RENDER.CUTOUT, opaque: false, lightFilter: 1, wave: true, hardness: 0.2, sound: "grass" },
+  [BLOCK.PLANKS]: { name: "Planks", faces: "planks", hardness: 2, tool: "axe", sound: "wood" },
+  [BLOCK.GLASS]: { name: "Glass", faces: "glass", render: RENDER.CUTOUT, opaque: false, skyPass: true, hardness: 0.3, sound: "glass" },
+  [BLOCK.COBBLESTONE]: { name: "Cobblestone", faces: "cobblestone", hardness: 2, tool: "pickaxe", minTier: 1 },
+  [BLOCK.BEDROCK]: { name: "Bedrock", faces: "bedrock", hardness: -1 },
+  [BLOCK.GRAVEL]: { name: "Gravel", faces: "gravel", hardness: 0.6, tool: "shovel", sound: "sand" },
+  [BLOCK.COAL_ORE]: { name: "Coal Ore", faces: "coal_ore", hardness: 3, tool: "pickaxe", minTier: 1 },
+  [BLOCK.IRON_ORE]: { name: "Iron Ore", faces: "iron_ore", hardness: 3, tool: "pickaxe", minTier: 2 },
+  [BLOCK.GOLD_ORE]: { name: "Gold Ore", faces: "gold_ore", hardness: 3, tool: "pickaxe", minTier: 3 },
+  [BLOCK.DIAMOND_ORE]: { name: "Diamond Ore", faces: "diamond_ore", hardness: 3, tool: "pickaxe", minTier: 3 },
+  [BLOCK.TORCH]: {
+    name: "Torch",
+    faces: "torch",
+    render: RENDER.CUTOUT,
+    shape: SHAPE.TORCH,
+    solid: false,
+    opaque: false,
+    skyPass: true,
+    emission: 14,
+    emissive: true,
+    support: "solid",
+    hardness: 0,
+    sound: "wood",
+  },
+  [BLOCK.LUMEN]: { name: "Lumen Crystal", faces: "lumen", emission: 15, emissive: true, hardness: 0.3, sound: "glass" },
+  [BLOCK.CRAFTING_TABLE]: {
+    name: "Crafting Table",
+    faces: { top: "crafting_table_top", bottom: "planks", side: "crafting_table_side", front: "crafting_table_front" },
+    hardness: 2.5,
+    tool: "axe",
+    sound: "wood",
+  },
+  [BLOCK.TALL_GRASS]: {
+    name: "Tall Grass",
+    faces: "tall_grass",
+    render: RENDER.CUTOUT,
+    shape: SHAPE.CROSS,
+    solid: false,
+    opaque: false,
+    skyPass: true,
+    wave: true,
+    replaceable: true,
+    support: "soil",
+    hardness: 0,
+    sound: "plant",
+  },
+  [BLOCK.FLOWER_RED]: {
+    name: "Red Blossom",
+    faces: "flower_red",
+    render: RENDER.CUTOUT,
+    shape: SHAPE.CROSS,
+    solid: false,
+    opaque: false,
+    skyPass: true,
+    wave: true,
+    support: "soil",
+    hardness: 0,
+    sound: "plant",
+  },
+  [BLOCK.FLOWER_YELLOW]: {
+    name: "Sunpetal",
+    faces: "flower_yellow",
+    render: RENDER.CUTOUT,
+    shape: SHAPE.CROSS,
+    solid: false,
+    opaque: false,
+    skyPass: true,
+    wave: true,
+    support: "soil",
+    hardness: 0,
+    sound: "plant",
+  },
+  [BLOCK.BRICKS]: { name: "Bricks", faces: "bricks", hardness: 2, tool: "pickaxe", minTier: 1 },
+  [BLOCK.WOOL]: { name: "Wool", faces: "wool", hardness: 0.8, sound: "cloth" },
+};
 
-export function isOpaque(id) {
-  if (id === BLOCK.AIR) return false;
-  const info = BLOCK_INFO[id];
-  return info ? info.opaque : true;
+// Face order used everywhere: +X, -X, +Y (top), -Y (bottom), +Z, -Z.
+export const FACE = Object.freeze({ PX: 0, NX: 1, PY: 2, NY: 3, PZ: 4, NZ: 5 });
+
+export const BLOCK_INFO = {};
+for (const [idStr, def] of Object.entries(DEFS)) {
+  const id = Number(idStr);
+  const info = { id, ...DEFAULTS, ...def };
+  const f = typeof def.faces === "string" ? { top: def.faces, bottom: def.faces, side: def.faces } : def.faces;
+  const side = TILE[f.side];
+  // Per-face tile layer in FACE order. A "front" face (crafting table) is
+  // shown on +Z and -Z; the other sides use "side".
+  const front = f.front ? TILE[f.front] : side;
+  info.faceTiles = [side, side, TILE[f.top], TILE[f.bottom], front, front];
+  info.faces = { top: TILE[f.top], bottom: TILE[f.bottom], side };
+  for (const t of info.faceTiles) {
+    if (t === undefined) throw new Error(`Block ${info.name}: unknown texture tile in ${JSON.stringify(def.faces)}`);
+  }
+  BLOCK_INFO[id] = info;
 }
 
-export function isTransparent(id) {
-  if (id === BLOCK.AIR) return false;
-  const info = BLOCK_INFO[id];
-  return info ? !!info.transparent : false;
+// ---------- Flat lookup tables for hot loops (indexed by block id) ----------
+function table(fn) {
+  const t = new Uint8Array(256);
+  for (const info of Object.values(BLOCK_INFO)) t[info.id] = fn(info);
+  return t;
+}
+
+// Unknown ids (e.g. from a newer save) behave like opaque, solid stone.
+export const IS_OPAQUE = table((b) => (b.opaque ? 1 : 0));
+export const IS_SOLID = table((b) => (b.solid ? 1 : 0));
+export const LIGHT_FILTER = table((b) => b.lightFilter);
+export const SKY_PASS = table((b) => (b.skyPass ? 1 : 0));
+export const EMISSION = table((b) => b.emission);
+export const RENDER_TYPE = table((b) => b.render);
+export const SHAPE_OF = table((b) => b.shape);
+export const WAVES = table((b) => (b.wave ? 1 : 0));
+export const EMISSIVE = table((b) => (b.emissive ? 1 : 0));
+export const IS_LIQUID = table((b) => (b.liquid ? 1 : 0));
+export const IS_SELECTABLE = table((b) => (b.selectable ? 1 : 0));
+export const IS_REPLACEABLE = table((b) => (b.replaceable ? 1 : 0));
+for (let id = 0; id < 256; id++) {
+  if (!BLOCK_INFO[id]) {
+    IS_OPAQUE[id] = 1;
+    IS_SOLID[id] = 1;
+    RENDER_TYPE[id] = RENDER.OPAQUE;
+    IS_SELECTABLE[id] = 1;
+  }
+}
+// FACE_TILES[id * 6 + face] = texture layer.
+export const FACE_TILES = new Uint8Array(256 * 6);
+for (let id = 0; id < 256; id++) {
+  const info = BLOCK_INFO[id] || BLOCK_INFO[BLOCK.STONE];
+  for (let f = 0; f < 6; f++) FACE_TILES[id * 6 + f] = info.faceTiles[f];
+}
+
+export function isOpaque(id) {
+  return IS_OPAQUE[id] === 1;
 }
 
 export function isSolid(id) {
-  if (id === BLOCK.AIR) return false;
-  const info = BLOCK_INFO[id];
-  if (!info) return true;
-  return !info.liquid;
+  return IS_SOLID[id] === 1;
 }
 
-function tileXY(tileIndex) {
-  const col = tileIndex % TILES_PER_ROW;
-  const row = Math.floor(tileIndex / TILES_PER_ROW);
-  return [col * TILE_SIZE, row * TILE_SIZE];
+export function isTransparent(id) {
+  return id !== BLOCK.AIR && IS_OPAQUE[id] === 0;
 }
 
-// Canvas pixel-space coordinates of a tile (for drawImage crops, e.g. UI icons).
-export function tileCanvasXY(tileIndex) {
-  return tileXY(tileIndex);
+export function blockName(id) {
+  return BLOCK_INFO[id]?.name ?? `Block #${id}`;
 }
 
-function rectRand(rand, min, max) {
-  return min + rand() * (max - min);
+// Whether block `id` placed at a cell is supported by `belowId` underneath.
+export function isSupportedBy(id, belowId) {
+  const support = BLOCK_INFO[id]?.support;
+  if (!support) return true;
+  if (support === "soil") return belowId === BLOCK.GRASS || belowId === BLOCK.DIRT;
+  return IS_SOLID[belowId] === 1 && IS_OPAQUE[belowId] === 1;
 }
 
-function drawSpeckled(ctx, x, y, base, variance, rand, alpha = 255) {
-  for (let py = 0; py < TILE_SIZE; py++) {
-    for (let px = 0; px < TILE_SIZE; px++) {
-      const v = (rand() - 0.5) * variance;
-      const r = Math.max(0, Math.min(255, base[0] + v));
-      const g = Math.max(0, Math.min(255, base[1] + v));
-      const b = Math.max(0, Math.min(255, base[2] + v));
-      ctx.fillStyle = `rgba(${r | 0},${g | 0},${b | 0},${alpha / 255})`;
-      ctx.fillRect(x + px, y + py, 1, 1);
-    }
-  }
-}
-
-function drawGrassTop(ctx, x, y, rand) {
-  drawSpeckled(ctx, x, y, [86, 158, 58], 40, rand);
-}
-
-function drawGrassSide(ctx, x, y, rand) {
-  drawSpeckled(ctx, x, y, [122, 88, 58], 30, rand);
-  for (let px = 0; px < TILE_SIZE; px++) {
-    const edge = 3 + Math.floor(rand() * 2);
-    for (let py = 0; py < edge; py++) {
-      const v = (rand() - 0.5) * 40;
-      const r = Math.max(0, Math.min(255, 86 + v));
-      const g = Math.max(0, Math.min(255, 158 + v));
-      const b = Math.max(0, Math.min(255, 58 + v));
-      ctx.fillStyle = `rgb(${r | 0},${g | 0},${b | 0})`;
-      ctx.fillRect(x + px, y + py, 1, 1);
-    }
-  }
-}
-
-function drawDirt(ctx, x, y, rand) {
-  drawSpeckled(ctx, x, y, [122, 88, 58], 30, rand);
-}
-
-function drawStone(ctx, x, y, rand) {
-  drawSpeckled(ctx, x, y, [128, 128, 132], 26, rand);
-  for (let i = 0; i < 10; i++) {
-    const px = Math.floor(rand() * TILE_SIZE);
-    const py = Math.floor(rand() * TILE_SIZE);
-    const c = 90 + Math.floor(rand() * 20);
-    ctx.fillStyle = `rgb(${c},${c},${c + 2})`;
-    ctx.fillRect(x + px, y + py, 1, 1);
-  }
-}
-
-function drawSand(ctx, x, y, rand) {
-  drawSpeckled(ctx, x, y, [222, 202, 145], 18, rand);
-}
-
-function drawWoodSide(ctx, x, y, rand) {
-  drawSpeckled(ctx, x, y, [117, 84, 51], 14, rand);
-  for (let px = 0; px < TILE_SIZE; px += 3) {
-    for (let py = 0; py < TILE_SIZE; py++) {
-      const v = (rand() - 0.5) * 20 - 10;
-      const r = Math.max(0, Math.min(255, 90 + v));
-      const g = Math.max(0, Math.min(255, 62 + v));
-      const b = Math.max(0, Math.min(255, 38 + v));
-      ctx.fillStyle = `rgb(${r | 0},${g | 0},${b | 0})`;
-      ctx.fillRect(x + px, y + py, 1, 1);
-    }
-  }
-}
-
-function drawWoodTop(ctx, x, y, rand) {
-  const cx = x + TILE_SIZE / 2;
-  const cy = y + TILE_SIZE / 2;
-  drawSpeckled(ctx, x, y, [200, 170, 120], 12, rand);
-  for (let r = 1; r < 8; r += 2) {
-    ctx.strokeStyle = `rgba(120,85,50,0.8)`;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-}
-
-function drawLeaves(ctx, x, y, rand) {
-  // Leave transparent by default; fill ~72% of pixels for a leafy, gappy look.
-  for (let py = 0; py < TILE_SIZE; py++) {
-    for (let px = 0; px < TILE_SIZE; px++) {
-      if (rand() < 0.72) {
-        const v = (rand() - 0.5) * 40;
-        const g = Math.max(0, Math.min(255, 110 + v));
-        ctx.fillStyle = `rgba(${40 + (v * 0.3) | 0},${g | 0},${30},1)`;
-        ctx.fillRect(x + px, y + py, 1, 1);
-      }
-    }
-  }
-}
-
-function drawPlanks(ctx, x, y, rand) {
-  drawSpeckled(ctx, x, y, [186, 140, 90], 14, rand);
-  ctx.fillStyle = "rgba(110,75,45,0.55)";
-  for (let py = 3; py < TILE_SIZE; py += 4) {
-    ctx.fillRect(x, y + py, TILE_SIZE, 1);
-  }
-  ctx.fillRect(x + 4, y, 1, 4);
-  ctx.fillRect(x + 12, y + 4, 1, 4);
-  ctx.fillRect(x + 8, y + 8, 1, 4);
-  ctx.fillRect(x + 2, y + 12, 1, 4);
-}
-
-function drawGlass(ctx, x, y, rand) {
-  ctx.fillStyle = "rgba(200,230,235,0.28)";
-  ctx.fillRect(x, y, TILE_SIZE, TILE_SIZE);
-  ctx.fillStyle = "rgba(255,255,255,0.55)";
-  ctx.fillRect(x, y, TILE_SIZE, 1);
-  ctx.fillRect(x, y, 1, TILE_SIZE);
-  ctx.fillStyle = "rgba(80,110,115,0.5)";
-  ctx.fillRect(x, y + TILE_SIZE - 1, TILE_SIZE, 1);
-  ctx.fillRect(x + TILE_SIZE - 1, y, 1, TILE_SIZE);
-  ctx.fillStyle = "rgba(255,255,255,0.4)";
-  ctx.fillRect(x + 3, y + 3, 2, 2);
-  ctx.fillRect(x + 9, y + 8, 2, 2);
-}
-
-function drawWater(ctx, x, y, rand) {
-  drawSpeckled(ctx, x, y, [55, 110, 200], 20, rand, 235);
-}
-
-export function buildTextureAtlas() {
-  const canvas = document.createElement("canvas");
-  canvas.width = ATLAS_SIZE;
-  canvas.height = ATLAS_SIZE;
-  const ctx = canvas.getContext("2d");
-  const rand = mulberry32(1337);
-
-  const drawers = [
-    [TILE.GRASS_TOP, drawGrassTop],
-    [TILE.GRASS_SIDE, drawGrassSide],
-    [TILE.DIRT, drawDirt],
-    [TILE.STONE, drawStone],
-    [TILE.SAND, drawSand],
-    [TILE.WOOD_SIDE, drawWoodSide],
-    [TILE.WOOD_TOP, drawWoodTop],
-    [TILE.LEAVES, drawLeaves],
-    [TILE.PLANKS, drawPlanks],
-    [TILE.GLASS, drawGlass],
-    [TILE.WATER, drawWater],
-  ];
-
-  for (const [tile, fn] of drawers) {
-    const [x, y] = tileXY(tile);
-    fn(ctx, x, y, rand);
-  }
-
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.magFilter = THREE.NearestFilter;
-  texture.minFilter = THREE.NearestFilter;
-  texture.generateMipmaps = false;
-  texture.wrapS = THREE.ClampToEdgeWrapping;
-  texture.wrapT = THREE.ClampToEdgeWrapping;
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.needsUpdate = true;
-  return { texture, canvas };
-}
-
-export function createMaterials(atlasTexture) {
-  const opaque = new THREE.MeshLambertMaterial({ map: atlasTexture, vertexColors: true });
-  const cutout = new THREE.MeshLambertMaterial({ map: atlasTexture, vertexColors: true, transparent: true, alphaTest: 0.4, side: THREE.DoubleSide });
-  const water = new THREE.MeshLambertMaterial({ map: atlasTexture, vertexColors: true, transparent: true, opacity: 0.68, depthWrite: false, side: THREE.DoubleSide });
-  return { opaque, cutout, water };
-}
-
-// UV rect [u0, v0, u1, v1] for a tile index (v flipped because canvas y grows downward).
-export function tileUV(tileIndex) {
-  const col = tileIndex % TILES_PER_ROW;
-  const row = Math.floor(tileIndex / TILES_PER_ROW);
-  const u0 = (col * TILE_SIZE) / ATLAS_SIZE;
-  const u1 = ((col + 1) * TILE_SIZE) / ATLAS_SIZE;
-  const v0 = 1 - ((row + 1) * TILE_SIZE) / ATLAS_SIZE;
-  const v1 = 1 - (row * TILE_SIZE) / ATLAS_SIZE;
-  return [u0, v0, u1, v1];
-}
-
-// Small inset to avoid texture bleeding at tile edges when sampled at grazing angles.
-const INSET = 0.5 / ATLAS_SIZE;
-export function tileUVInset(tileIndex) {
-  const [u0, v0, u1, v1] = tileUV(tileIndex);
-  return [u0 + INSET, v0 + INSET, u1 - INSET, v1 - INSET];
-}
+// Blocks placeable from the (pre-inventory) hotbar.
+export const HOTBAR = [
+  BLOCK.GRASS,
+  BLOCK.DIRT,
+  BLOCK.STONE,
+  BLOCK.COBBLESTONE,
+  BLOCK.PLANKS,
+  BLOCK.WOOD,
+  BLOCK.GLASS,
+  BLOCK.TORCH,
+  BLOCK.LUMEN,
+];

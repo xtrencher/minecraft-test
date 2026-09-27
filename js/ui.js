@@ -1,6 +1,3 @@
-import * as THREE from "three";
-import { BLOCK_INFO, HOTBAR, TILE_SIZE, tileCanvasXY } from "./blocks.js";
-
 export function isMobileDevice() {
   const coarse = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
   const touch = navigator.maxTouchPoints > 0 && !window.matchMedia("(pointer: fine)").matches;
@@ -8,12 +5,17 @@ export function isMobileDevice() {
   return (coarse && ua) || (touch && ua);
 }
 
+const MODE_HINTS = {
+  survival: "Health, fall damage and drowning. Mine with tools, collect drops, craft, eat to heal.",
+  creative: "Unlimited blocks from the E palette, instant mining, flight (double-tap Space), no damage.",
+};
+
+// Menus (start / pause), the FPS counter and the Blast Orb indicator. The
+// hotbar, hearts and death screen live in hud.js.
 export class UI {
-  constructor({ atlasCanvas }) {
-    this.atlasCanvas = atlasCanvas;
-    this.hotbarEl = document.getElementById("hotbar");
+  constructor() {
+    this.hudEl = document.getElementById("hud");
     this.fpsEl = document.getElementById("fps-counter");
-    this.crosshairEl = document.getElementById("crosshair");
     this.startMenuEl = document.getElementById("start-menu");
     this.pauseMenuEl = document.getElementById("pause-menu");
     this.mobileBlockEl = document.getElementById("mobile-block");
@@ -24,50 +26,24 @@ export class UI {
     this.playBtn = document.getElementById("play-btn");
     this.resumeBtn = document.getElementById("resume-btn");
     this.copyLinkBtn = document.getElementById("copy-link-btn");
-
-    this.selectedIndex = 0;
-    this._buildHotbar();
+    this.orbIndicatorEl = document.getElementById("orb-indicator");
+    this.graphicsSelect = document.getElementById("graphics-preset");
+    this.graphicsHintEl = document.getElementById("graphics-hint");
+    this.modeSelect = document.getElementById("mode-select");
+    this.modeHintEl = document.getElementById("mode-hint");
+    this.pauseModeSelect = document.getElementById("pause-mode-select");
+    this.pauseModeHintEl = document.getElementById("pause-mode-hint");
+    this._orbCooldownShown = -1;
 
     this._fpsFrames = 0;
     this._fpsTimer = 0;
   }
 
-  _buildHotbar() {
-    this.hotbarEl.innerHTML = "";
-    this.slotEls = [];
-    HOTBAR.forEach((blockId, i) => {
-      const slot = document.createElement("div");
-      slot.className = "hotbar-slot";
-      const label = document.createElement("div");
-      label.className = "key-label";
-      label.textContent = String(i + 1);
-      slot.appendChild(label);
-
-      const info = BLOCK_INFO[blockId];
-      const tile = info.faces.side;
-      const [sx, sy] = tileCanvasXY(tile);
-
-      const iconCanvas = document.createElement("canvas");
-      iconCanvas.width = 32;
-      iconCanvas.height = 32;
-      const ctx = iconCanvas.getContext("2d");
-      ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(this.atlasCanvas, sx, sy, TILE_SIZE, TILE_SIZE, 0, 0, 32, 32);
-      slot.appendChild(iconCanvas);
-
-      this.hotbarEl.appendChild(slot);
-      this.slotEls.push(slot);
-    });
-    this.setSelected(0);
-  }
-
-  setSelected(index) {
-    this.selectedIndex = ((index % HOTBAR.length) + HOTBAR.length) % HOTBAR.length;
-    this.slotEls.forEach((el, i) => el.classList.toggle("selected", i === this.selectedIndex));
-  }
-
-  getSelectedBlock() {
-    return HOTBAR[this.selectedIndex];
+  setModeShown(mode) {
+    this.modeSelect.value = mode;
+    this.pauseModeSelect.value = mode;
+    this.modeHintEl.textContent = MODE_HINTS[mode] || "";
+    this.pauseModeHintEl.textContent = MODE_HINTS[mode] || "";
   }
 
   updateFps(dt) {
@@ -82,9 +58,16 @@ export class UI {
   }
 
   showHud(show) {
-    this.hotbarEl.classList.toggle("hidden", !show);
-    this.fpsEl.classList.toggle("hidden", !show);
-    this.crosshairEl.classList.toggle("hidden", !show);
+    this.hudEl.classList.toggle("hidden", !show);
+  }
+
+  // fraction: 1 = just thrown, 0 = ready to throw again.
+  setOrbCooldown(fraction) {
+    const rounded = Math.round(fraction * 100) / 100;
+    if (rounded === this._orbCooldownShown) return; // skip redundant DOM writes
+    this._orbCooldownShown = rounded;
+    this.orbIndicatorEl.style.setProperty("--cd", String(rounded));
+    this.orbIndicatorEl.classList.toggle("cooling", rounded > 0);
   }
 
   showStartMenu(seed) {
@@ -110,13 +93,4 @@ export class UI {
   showMobileBlock() {
     this.mobileBlockEl.classList.remove("hidden");
   }
-}
-
-export function createBlockOutline() {
-  const geometry = new THREE.BoxGeometry(1.002, 1.002, 1.002);
-  const edges = new THREE.EdgesGeometry(geometry);
-  const material = new THREE.LineBasicMaterial({ color: 0x000000, linewidth: 2, depthTest: true });
-  const outline = new THREE.LineSegments(edges, material);
-  outline.visible = false;
-  return outline;
 }

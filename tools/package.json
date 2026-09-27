@@ -5,10 +5,13 @@
   "description": "Headless browser smoke test tooling for Voxelands (not part of the shipped game).",
   "type": "module",
   "scripts": {
-    "test": "node smoke-test.mjs"
+    "test": "node unit-tests.mjs && node smoke-test.mjs",
+    "test:unit": "node unit-tests.mjs",
+    "test:smoke": "node smoke-test.mjs"
   },
   "devDependencies": {
     "playwright-core": "^1.47.0",
-    "serve": "^14.2.1"
+    "serve": "^14.2.1",
+    "three": "0.160.0"
   }
 }
