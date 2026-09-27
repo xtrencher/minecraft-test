@@ -481,6 +481,119 @@ try {
     await waitStreamed();
   });
 
+  // --- Graphics upgrade (Round 3, Phase 4) ---
+  await check("graphics presets: shadow cascades, relief textures, water, grass and leaves scale from Low to Ultra", async () => {
+    const expect = {
+      low: { cascades: 0, normal: false, pom: false, screenWater: false, ssr: false, grass: 0, leaves: false },
+      medium: { cascades: 1, normal: false, pom: false, screenWater: false, ssr: false, grass: 0, leaves: false },
+      high: { cascades: 2, normal: true, pom: false, screenWater: true, ssr: false, grass: 1, leaves: true },
+      ultra: { cascades: 3, normal: true, pom: true, screenWater: true, ssr: true, grass: 2, leaves: true },
+    };
+    for (const name of ["low", "medium", "high", "ultra"]) {
+      const got = await page.evaluate((n) => {
+        const v = window.__voxelands;
+        v.setGraphics(n);
+        const m = v.world.materials;
+        return {
+          cascades: v.sky.shadowLights.filter((l) => l.castShadow).length,
+          normal: "USE_NORMALMAP" in m.opaque.defines,
+          pom: "USE_POM" in m.opaque.defines,
+          screenWater: "WATER_SCREEN" in m.water.defines && !m.water.transparent && v.postfx.screenWater,
+          ssr: "WATER_SSR" in m.water.defines,
+          grass: v.grass.density,
+          leaves: v.world.meshOptions.fancyLeaves,
+        };
+      }, name);
+      assert(JSON.stringify(got) === JSON.stringify(expect[name]), `${name}: ${JSON.stringify(got)}`);
+    }
+    await page.evaluate(() => window.__voxelands.setGraphics("low"));
+  });
+
+  await check("Ultra: soft shadow cascades, relief textures, see-through water, 3D grass and fuller leaves all render", async () => {
+    // A test pool on a grass field: shallow water over white wool on the
+    // left, 12 blocks of water on the right.
+    const a = await page.evaluate(() => {
+      const v = window.__voxelands;
+      const { world, player, spawn } = v;
+      const x0 = spawn.x + 26;
+      const z0 = spawn.z - 26;
+      const y = 48;
+      world.prepareArea(x0, z0, 1);
+      const e = [];
+      for (let dx = -10; dx <= 10; dx++) {
+        for (let dz = -12; dz <= 8; dz++) {
+          for (let yy = y - 13; yy < y; yy++) e.push(x0 + dx, yy, z0 + dz, 3);
+          e.push(x0 + dx, y, z0 + dz, 1);
+          for (let dy = 1; dy <= 10; dy++) e.push(x0 + dx, y + dy, z0 + dz, 0);
+        }
+      }
+      for (let dx = -5; dx <= 5; dx++) {
+        for (let dz = -10; dz <= -2; dz++) {
+          const deep = dx > 0;
+          if (dx === 0) continue; // a stone divider
+          for (let yy = deep ? y - 11 : y; yy <= y; yy++) e.push(x0 + dx, yy, z0 + dz, 5);
+          if (!deep) e.push(x0 + dx, y - 1, z0 + dz, 24); // white wool floor
+        }
+      }
+      e.push(x0 + 6, y + 1, z0 + 4, 7, x0 + 6, y + 2, z0 + 4, 7); // two leaf blocks
+      world.setBlocks(e, { recordEdit: false });
+      // A short view distance keeps Ultra affordable in the software renderer.
+      v.setRenderDistance(6);
+      v.setGraphics("ultra");
+      v.sky.setSunAngle(Math.PI * 0.4);
+      v.setMode("creative"); // to hover over the pool
+      player.flying = true;
+      player.velocity.set(0, 0, 0);
+      player.position.set(x0 + 0.5, y + 7, z0 + 1.5);
+      player.yaw = 0;
+      player.pitch = -1.1;
+      return { x: x0, y, z: z0 };
+    });
+    await page.waitForFunction(() => window.__voxelands.world.isIdle && window.__voxelands.world.remeshQueue.size === 0, null, { timeout: 300000, polling: 250 });
+    const [shallow, deep, grass] = await page.evaluate(() => window.__voxelands.samplePixels([[0.36, 0.42], [0.64, 0.42], [0.5, 0.92]]));
+    const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    const r = await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      const { world } = v;
+      const chunk = world.getChunk(Math.floor((x + 6) / 16), Math.floor((z + 4) / 16));
+      const count = () => chunk.meshes.cutout.geometry.attributes.position.count;
+      const fancy = count();
+      world.setMeshOptions({ fancyLeaves: false });
+      world.prepareArea(x + 6, z + 4, 0); // rebuilds that chunk now
+      const plain = count();
+      world.setMeshOptions({ fancyLeaves: true });
+      world.prepareArea(x + 6, z + 4, 0);
+      return {
+        grass: v.grass.count,
+        maps: v.sky.shadowLights.filter((l) => l.castShadow && l.shadow.map).length,
+        fancy,
+        plain,
+      };
+    }, a);
+    console.log(`        pool: shallow ${JSON.stringify(shallow)} (lum ${lum(shallow).toFixed(0)}), deep ${JSON.stringify(deep)} (lum ${lum(deep).toFixed(0)}), grass ${JSON.stringify(grass)}`);
+    console.log(`        ${r.grass} grass tufts, ${r.maps} shadow maps rendered, leaf chunk ${r.plain} -> ${r.fancy} vertices with fuller leaves`);
+    assert(lum(shallow) > lum(deep) * 1.4, "the white floor should show through shallow water, deep water should be dark");
+    assert(deep[2] > deep[0] * 1.3, `deep water should be blue: ${JSON.stringify(deep)}`);
+    assert(r.maps === 3, `expected 3 shadow cascades rendered, got ${r.maps}`);
+    assert(r.grass > 100, `expected grass tufts around the player, got ${r.grass}`);
+    assert(r.fancy > r.plain, "fuller leaves should add leaf cards");
+    const low = await page.evaluate(() => {
+      const v = window.__voxelands;
+      v.setGraphics("low");
+      v.grass.update(v.player.position);
+      return { visible: v.grass.mesh.visible, cascades: v.sky.shadowLights.filter((l) => l.castShadow).length };
+    });
+    assert(!low.visible && low.cascades === 0, `Low should turn the extras off: ${JSON.stringify(low)}`);
+    await page.evaluate(() => {
+      const v = window.__voxelands;
+      v.setRenderDistance(20);
+      v.player.flying = false;
+      v.player.spawnAt(v.spawn.x, v.spawn.z);
+      v.setMode("survival");
+    });
+    await waitStreamed();
+  });
+
   // --- Lighting (Phase 3) ---
   await check("a placed torch lights its surroundings, with falloff, and removing it restores darkness", async () => {
     const r = await page.evaluate(() => {

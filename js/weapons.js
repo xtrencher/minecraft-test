@@ -8,6 +8,7 @@ import { BLOCK, IS_SOLID } from "./blocks.js";
 import { grenadeGeometry, rocketGeometry } from "./models.js";
 import { createEntityMaterial, bindEntityLight } from "./shaders.js";
 import { GRENADE_RADIUS, BAZOOKA_RADIUS } from "./effects.js";
+import { LAYER_FX } from "./layers.js";
 
 export const THROW_CHARGE_TIME = 1.5; // seconds to a full-strength throw
 const THROW_SPEED_MIN = 6;
@@ -293,6 +294,7 @@ export class WeaponSystem {
     const mesh = new THREE.Mesh(this._rocketGeo, this.material);
     mesh.castShadow = true;
     const exhaust = new THREE.Sprite(this._exhaustMat);
+    exhaust.layers.set(LAYER_FX);
     exhaust.position.set(0, 0, 0.36);
     exhaust.scale.setScalar(0.7);
     mesh.add(exhaust);

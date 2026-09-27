@@ -25,6 +25,7 @@ import { WeaponSystem } from "./weapons.js";
 import { BulletHoles } from "./decals.js";
 import { GRENADE_RADIUS } from "./effects.js";
 import { LodSystem } from "./lod.js";
+import { GrassField } from "./grass.js";
 
 // ---------- Seed ----------
 function parseSeedFromURL() {
@@ -80,6 +81,7 @@ let graphicsPreset = normalizePreset(settings.graphics);
 scene.fog = new THREE.Fog(0x9fc3e8, 60, 150);
 
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+camera.layers.enableAll(); // world, water and effects (postfx.js splits them into passes when needed)
 
 // Fog ends at the render distance; the far plane reaches past it (and past
 // the sky dome) so distant terrain isn't clipped before it has faded out.
@@ -99,9 +101,20 @@ updateViewDistance();
 // light (sun or moon), one hemisphere light for built-in materials.
 const hemiLight = new THREE.HemisphereLight(0xbfd6ff, 0x3a3228, 1);
 scene.add(hemiLight);
+hemiLight.layers.enableAll(); // lights shine in every render pass (see layers.js)
 const sunLight = new THREE.DirectionalLight(0xffffff, 1);
+sunLight.layers.enableAll();
 scene.add(sunLight);
 scene.add(sunLight.target);
+// Two more sun shadow cascades (larger, coarser maps). They give no light
+// of their own; only their shadow maps are used (see SUN_SHADOW in shaders.js).
+const cascadeLights = [1, 2].map(() => {
+  const light = new THREE.DirectionalLight(0xffffff, 0);
+  light.layers.enableAll();
+  scene.add(light);
+  scene.add(light.target);
+  return light;
+});
 
 const postfx = new PostFX(renderer);
 const drawingSize = new THREE.Vector2();
@@ -119,9 +132,13 @@ window.addEventListener("resize", onResize);
 // ---------- World ----------
 const world = new World(scene, SEED);
 world.loadEdits(loadEdits(SEED));
+postfx.setWaterMaterial(world.materials.water);
+world.meshOptions.fancyLeaves = PRESETS[graphicsPreset].fancyLeaves; // before the first chunks are meshed
 // Decides which chunks are meshed and shown, and draws the land beyond them.
 const lod = new LodSystem(scene, world, SEED);
 lod.configure({ renderDistance, detailDistance: PRESETS[graphicsPreset].detailDistance });
+// 3D grass blades near the player (High/Ultra).
+const grass = new GrassField(scene, world);
 
 // Plans chunk streaming and LOD tiles around a position (cheap when nothing changed).
 function streamAround(x, z) {
@@ -183,7 +200,7 @@ ui.graphicsSelect.value = graphicsPreset;
 const player = new Player(camera, world, canvas);
 const inventory = new Inventory();
 const audio = new Audio();
-const sky = new Sky(scene, sunLight, hemiLight);
+const sky = new Sky(scene, sunLight, hemiLight, cascadeLights);
 const effects = new EffectsSystem(scene, world, audio);
 const icons = new IconCache(world.tileCanvases);
 const hud = new Hud({ icons, inventory });
@@ -440,7 +457,7 @@ ui.modeSelect.addEventListener("change", () => setMode(ui.modeSelect.value));
 ui.pauseModeSelect.addEventListener("change", () => setMode(ui.pauseModeSelect.value));
 
 // ---------- Graphics ----------
-const allWorldMaterials = [world.materials.opaque, world.materials.cutout, world.materials.water, world.materials.cutoutDepth, lod.material];
+const allWorldMaterials = [world.materials.opaque, world.materials.cutout, world.materials.water, world.materials.cutoutDepth, lod.material, grass.material];
 
 function setGraphics(name, { adoptRenderDistance = false } = {}) {
   graphicsPreset = normalizePreset(name);
@@ -451,9 +468,12 @@ function setGraphics(name, { adoptRenderDistance = false } = {}) {
     sky,
     atlas: world.atlas,
     materials: allWorldMaterials,
+    chunkMaterials: world.materials,
     onResize,
   });
   lod.configure({ detailDistance: preset.detailDistance });
+  grass.configure({ density: preset.grass, radius: preset.grass >= 2 ? 24 : 16 });
+  world.setMeshOptions({ fancyLeaves: preset.fancyLeaves });
   if (adoptRenderDistance) setRenderDistance(preset.renderDistance);
   ui.graphicsSelect.value = graphicsPreset;
   ui.graphicsHintEl.textContent = describePreset(graphicsPreset);
@@ -464,7 +484,11 @@ function setGraphics(name, { adoptRenderDistance = false } = {}) {
 function describePreset(name) {
   const p = PRESETS[name];
   const parts = [];
-  parts.push(p.shadows ? `${p.shadows}px sun shadows` : "no shadows");
+  if (p.cascades.length === 0) parts.push("no shadows");
+  else parts.push(`${p.cascades.length > 1 ? `${p.cascades.length}-cascade` : "basic"} ${p.shadowQuality === 3 ? "soft " : ""}sun shadows`);
+  if (p.normalMap) parts.push(p.pom ? "3D parallax textures" : "normal-mapped textures");
+  if (p.water !== "simple") parts.push(p.water === "ssr" ? "reflective, refractive water" : "refractive water");
+  if (p.grass) parts.push("3D grass");
   parts.push(p.post ? "HDR bloom & color grading" : "no post-processing");
   if (p.godRays) parts.push("light shafts");
   if (p.caustics) parts.push("water caustics");
@@ -710,6 +734,7 @@ window.__voxelands = {
   decals,
   audio,
   lod,
+  grass,
   streamAround,
   water: { isUnderwater, surfaceHeight },
   hud,
@@ -724,6 +749,27 @@ window.__voxelands = {
   // Renders one frame and returns simple statistics of the image (mean and
   // standard deviation of luminance, share of near-black pixels). Read back
   // synchronously right after rendering, while the drawing buffer is valid.
+  // Renders a frame and returns the average [r, g, b] (0-255) of a 5x5
+  // pixel box at each [x, y] (0-1, from the top left).
+  samplePixels(points) {
+    renderFrame();
+    const gl = renderer.getContext();
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    const px = new Uint8Array(4);
+    return points.map(([sx, sy]) => {
+      const sum = [0, 0, 0];
+      for (let dy = -2; dy <= 2; dy++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          const x = Math.min(w - 1, Math.max(0, Math.round(sx * w) + dx));
+          const y = Math.min(h - 1, Math.max(0, Math.round((1 - sy) * h) + dy));
+          gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+          for (let k = 0; k < 3; k++) sum[k] += px[k] / 25;
+        }
+      }
+      return sum.map(Math.round);
+    });
+  },
   captureStats() {
     renderFrame();
     const gl = renderer.getContext();
@@ -789,6 +835,7 @@ function animate() {
   streamAround(player.position.x, player.position.z);
   world.processQueues(gameState === "playing" ? STREAM_BUDGET_PLAYING_MS : STREAM_BUDGET_MENU_MS);
   lod.update();
+  grass.update(player.position);
 
   interaction.updateTarget(gameState === "playing");
   if (gameState === "playing") interaction.update(dt);

@@ -90,12 +90,14 @@ export class World {
     this.edits = new Map();
     this.dirtyEditChunks = new Set(); // chunk keys with edits not yet saved
 
-    const { texture, canvases, blockColors, facePalette } = buildBlockTextures();
+    const { texture, reliefTexture, canvases, blockColors, facePalette } = buildBlockTextures();
     this.atlas = texture;
+    this.relief = reliefTexture;
     this.tileCanvases = canvases;
     this.blockColors = blockColors; // blockId -> [r,g,b] sRGB 0-1
     this.facePalette = facePalette; // linear top/side colors per block (distant terrain)
-    this.materials = createChunkMaterials(texture, TILE.water);
+    this.materials = createChunkMaterials(texture, TILE.water, reliefTexture);
+    this.meshOptions = { fancyLeaves: false }; // see mesher.js; setMeshOptions() rebuilds
     this.light = new LightEngine(this);
 
     this.genQueue = []; // { cx, cz, dist }
@@ -315,6 +317,15 @@ export class World {
     return n;
   }
 
+  // Changes how chunks are meshed (e.g. fancy leaves) and queues every
+  // meshed chunk for a rebuild (spread over frames by processQueues).
+  setMeshOptions(options) {
+    const next = { ...this.meshOptions, ...options };
+    if (Object.keys(next).every((k) => next[k] === this.meshOptions[k])) return;
+    this.meshOptions = next;
+    for (const chunk of this.chunks.values()) if (chunk.meshed) this.remeshQueue.add(chunk);
+  }
+
   // True if the current plan wants chunk (cx, cz) meshed.
   wantsMesh(cx, cz) {
     return this._meshSet.has(numKey(cx, cz));
@@ -446,8 +457,9 @@ export class World {
     for (let dz = -1; dz <= 1; dz++) {
       for (let dx = -1; dx <= 1; dx++) nb[(dz + 1) * 3 + (dx + 1)] = this.chunks.get(numKey(chunk.cx + dx, chunk.cz + dz)) || null;
     }
-    chunk.applyMesh(meshChunk(nb), this.materials);
+    chunk.applyMesh(meshChunk(nb, this.meshOptions), this.materials);
     chunk.meshed = true;
+    chunk.meshCount = (chunk.meshCount || 0) + 1; // lets caches of chunk contents (grass.js) notice rebuilds
     this.meshQueued.delete(chunk);
     this.remeshQueue.delete(chunk);
     this.stats.meshes++;

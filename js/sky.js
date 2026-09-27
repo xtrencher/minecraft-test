@@ -122,20 +122,26 @@ function lerpKeys(keys, e, field, out) {
   return out.setRGB(ca[0] + (cb[0] - ca[0]) * t, ca[1] + (cb[1] - ca[1]) * t, ca[2] + (cb[2] - ca[2]) * t);
 }
 
+// Depth range of the shadow cameras (blocks), centered on the player.
+export const SHADOW_DEPTH = 360;
+
 function smoothstep(a, b, x) {
   const t = THREE.MathUtils.clamp((x - a) / (b - a), 0, 1);
   return t * t * (3 - 2 * t);
 }
 
 export class Sky {
-  constructor(scene, sunLight, hemiLight) {
+  // cascadeLights: extra shadow-only directional lights (intensity 0) for
+  // the larger shadow cascades; sunLight is the finest cascade and the one
+  // that lights three's built-in materials.
+  constructor(scene, sunLight, hemiLight, cascadeLights = []) {
     this.scene = scene;
     this.sunLight = sunLight;
     this.hemiLight = hemiLight;
+    this.shadowLights = [sunLight, ...cascadeLights];
     this.time = this._timeForAngle(START_ANGLE);
     this.sunAngle = START_ANGLE;
-    this.shadowExtent = 64;
-    this.shadowMapSize = 2048;
+    this.cascades = [{ extent: 64, mapSize: 2048 }];
 
     this.material = createSkyMaterial();
     this.dome = new THREE.Mesh(new THREE.SphereGeometry(500, 32, 16), this.material);
@@ -218,41 +224,54 @@ export class Sky {
     // Night is dark, but the eye adapts a bit (like in classic voxel games).
     this.exposure = THREE.MathUtils.lerp(1.1, 0.8, smoothstep(-0.15, 0.25, e));
 
-    this._placeShadowLight(center, forward);
+    for (let i = 0; i < this.cascades.length; i++) this._placeShadowLight(this.shadowLights[i], this.cascades[i], center, forward);
     this.dome.position.copy(center);
   }
 
-  // Centers the shadow camera a little ahead of the player and snaps it to
+  // Centers a shadow camera a little ahead of the player and snaps it to
   // whole shadow-map texels so shadow edges don't crawl as the player moves.
-  _placeShadowLight(center, forward) {
-    const light = this.sunLight;
+  _placeShadowLight(light, cascade, center, forward) {
     const dir = worldUniforms.uLightDir.value;
     const c = this._center.copy(center);
     if (forward) {
-      c.x += forward.x * this.shadowExtent * 0.35;
-      c.z += forward.z * this.shadowExtent * 0.35;
+      c.x += forward.x * cascade.extent * 0.35;
+      c.z += forward.z * cascade.extent * 0.35;
     }
     const right = this._right.set(0, 1, 0).cross(dir).normalize();
     const up = this._up.copy(dir).cross(right).normalize();
-    const texel = (2 * this.shadowExtent) / this.shadowMapSize;
+    const texel = (2 * cascade.extent) / cascade.mapSize;
     const r = Math.round(c.dot(right) / texel) * texel;
     const v = Math.round(c.dot(up) / texel) * texel;
     const f = c.dot(dir);
     light.target.position.set(0, 0, 0).addScaledVector(right, r).addScaledVector(up, v).addScaledVector(dir, f);
-    light.position.copy(light.target.position).addScaledVector(dir, 180);
+    light.position.copy(light.target.position).addScaledVector(dir, SHADOW_DEPTH / 2);
     light.target.updateMatrixWorld();
   }
 
-  configureShadows(extent, mapSize) {
-    this.shadowExtent = extent;
-    this.shadowMapSize = mapSize;
-    const cam = this.sunLight.shadow.camera;
-    cam.left = -extent;
-    cam.right = extent;
-    cam.top = extent;
-    cam.bottom = -extent;
-    cam.near = 1;
-    cam.far = 360;
-    cam.updateProjectionMatrix();
+  // cascades: [{ extent, mapSize }] from the finest to the largest (at most
+  // one per shadow light). Only the first cascades.length lights cast shadows.
+  configureShadows(cascades) {
+    this.cascades = cascades.slice(0, this.shadowLights.length);
+    this.shadowLights.forEach((light, i) => {
+      const cascade = this.cascades[i];
+      light.castShadow = !!cascade;
+      if (!cascade) return;
+      light.shadow.mapSize.set(cascade.mapSize, cascade.mapSize);
+      const texel = (2 * cascade.extent) / cascade.mapSize;
+      light.shadow.bias = -0.0003;
+      light.shadow.normalBias = texel * 1.2;
+      if (light.shadow.map) {
+        light.shadow.map.dispose();
+        light.shadow.map = null;
+      }
+      const cam = light.shadow.camera;
+      cam.left = -cascade.extent;
+      cam.right = cascade.extent;
+      cam.top = cascade.extent;
+      cam.bottom = -cascade.extent;
+      cam.near = 1;
+      cam.far = SHADOW_DEPTH;
+      cam.updateProjectionMatrix();
+    });
   }
 }

@@ -3,6 +3,7 @@
 // no per-particle meshes or materials are created or disposed at runtime,
 // and when a pool is full the oldest particle is recycled.
 import * as THREE from "three";
+import { LAYER_FX } from "./layers.js";
 
 const GRAVITY = -24;
 
@@ -179,6 +180,7 @@ export class BillboardPool {
       defines: additive ? { ADDITIVE: "" } : {},
     });
     this.mesh = new THREE.Mesh(geometry, material);
+    this.mesh.layers.set(LAYER_FX); // after the water (see layers.js)
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = additive ? 12 : 11;
     scene.add(this.mesh);

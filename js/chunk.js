@@ -2,6 +2,7 @@
 import * as THREE from "three";
 import { BLOCK } from "./blocks.js";
 import { CHUNK_SIZE, WORLD_HEIGHT, blockIndex, chunkKey } from "./constants.js";
+import { LAYER_WATER } from "./layers.js";
 
 export { CHUNK_SIZE, WORLD_HEIGHT, blockIndex };
 
@@ -69,6 +70,7 @@ export class Chunk {
     mesh.castShadow = castShadow;
     mesh.receiveShadow = true;
     if (depthMaterial) mesh.customDepthMaterial = depthMaterial;
+    if (kind === "water") mesh.layers.set(LAYER_WATER); // drawn in its own pass (see postfx.js)
     mesh.matrixAutoUpdate = false;
     mesh.updateMatrix();
     this.group.add(mesh);

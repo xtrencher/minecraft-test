@@ -191,13 +191,41 @@ function paintDirt(t, salt = 0) {
     t.set(x + w - 1, y + 1, hex(0x3d2a1c));
   }
   for (let i = 0; i < 22; i++) t.set(Math.floor(t.rand() * TEX), Math.floor(t.rand() * TEX), hex(0x35241a));
+  // Thin, wandering roots.
+  for (let i = 0; i < 3; i++) {
+    let x = Math.floor(t.rand() * TEX);
+    let y = Math.floor(t.rand() * TEX);
+    const len = 4 + Math.floor(t.rand() * 5);
+    for (let k = 0; k < len; k++) {
+      t.set(x, y, hex(0x4a3222));
+      x += t.rand() < 0.6 ? 1 : 0;
+      y += t.rand() < 0.5 ? 1 : 0;
+    }
+  }
+  // A few grey flint chips with a bright edge.
+  for (let i = 0; i < 4; i++) {
+    const x = Math.floor(t.rand() * TEX);
+    const y = Math.floor(t.rand() * TEX);
+    t.set(x, y, hex(0x8a8580));
+    t.set(x + 1, y, hex(0x6d6965));
+    t.set(x, y - 1, hex(0xb3aea7));
+  }
 }
 
 function paintGrassTop(t) {
   t.forEach((x, y) => {
-    const f = t.fbm(x, y, 4, 3) * 0.55 + t.rand() * 0.45;
+    // Broad clumps (light and dark patches) under the fine speckle.
+    const clump = t.fbm(x, y, 2, 2, 21) - 0.5;
+    const f = t.fbm(x, y, 4, 3) * 0.5 + t.rand() * 0.42 + clump * 0.35;
     t.set(x, y, ramp(P.grass, f));
   });
+  // Shadowed gaps between clumps of blades.
+  for (let i = 0; i < 26; i++) {
+    const x = Math.floor(t.rand() * TEX);
+    const y = Math.floor(t.rand() * TEX);
+    t.set(x, y, P.grass[0]);
+    if (t.rand() < 0.5) t.set(x + 1, y, P.grass[1]);
+  }
   // Blades: short vertical strokes, lighter at the tip.
   for (let i = 0; i < 110; i++) {
     const x = Math.floor(t.rand() * TEX);
@@ -258,6 +286,13 @@ function paintStone(t, salt = 0) {
     }
   }
   for (let i = 0; i < 18; i++) t.set(Math.floor(t.rand() * TEX), Math.floor(t.rand() * TEX), hex(0xa9a9af));
+  // Faint strata: gently wavy darker bands running across the rock.
+  t.forEach((x, y) => {
+    const band = Math.sin((y + Math.sin(x * 0.3 + t.noise(x, 0, 4, 13) * 4) * 1.6) * 0.7);
+    if (band > 0.93) t.shade(x, y, 0.9);
+  });
+  // Mica specks that catch the light.
+  for (let i = 0; i < 7; i++) t.set(Math.floor(t.rand() * TEX), Math.floor(t.rand() * TEX), hex(0xc4c6cf));
 }
 
 function paintCobblestone(t) {
@@ -284,10 +319,28 @@ function paintCobblestone(t) {
 
 function paintSand(t) {
   t.forEach((x, y) => {
-    const ripple = Math.sin((y + t.fbm(x, y, 4, 2, 4) * 7) * 0.75) * 0.12;
-    const f = t.fbm(x, y, 8, 2) * 0.35 + t.rand() * 0.5 + ripple + 0.1;
+    const phase = (y + t.fbm(x, y, 4, 2, 4) * 7) * 0.75;
+    const ripple = Math.sin(phase) * 0.12;
+    // Crests lit on their windward side, shaded on the lee side.
+    const slope = Math.cos(phase) * 0.07;
+    const f = t.fbm(x, y, 8, 2) * 0.35 + t.rand() * 0.45 + ripple + slope + 0.12;
     t.set(x, y, ramp(P.sand, f));
   });
+  // Coarse grains: a dark pixel with a light one beside it.
+  for (let i = 0; i < 14; i++) {
+    const x = Math.floor(t.rand() * TEX);
+    const y = Math.floor(t.rand() * TEX);
+    t.set(x, y, hex(0xb49c68));
+    t.set(x + 1, y, hex(0xf6ead0));
+  }
+  // Tiny pale shell fragments.
+  for (let i = 0; i < 3; i++) {
+    const x = Math.floor(t.rand() * TEX);
+    const y = Math.floor(t.rand() * TEX);
+    t.set(x, y, hex(0xfbf3e3));
+    t.set(x + 1, y, hex(0xe9d9c0));
+    t.set(x, y + 1, hex(0xd9c6a4));
+  }
   for (let i = 0; i < 22; i++) t.set(Math.floor(t.rand() * TEX), Math.floor(t.rand() * TEX), hex(0xad9563));
   for (let i = 0; i < 12; i++) t.set(Math.floor(t.rand() * TEX), Math.floor(t.rand() * TEX), hex(0xf8eed0));
 }
@@ -397,9 +450,17 @@ function paintLeaves(t) {
     t.set(x + 1, y + 1, scaleRgb(c, 0.72));
     if (f > 0.7) t.set(x, y, scaleRgb(c, 1.18));
   }
+  // Some leaves catch the sun: a bright tip and a darker midrib.
+  for (let i = 0; i < 18; i++) {
+    const x = Math.floor(t.rand() * TEX);
+    const y = Math.floor(t.rand() * TEX);
+    t.set(x, y, P.leaves[6]);
+    t.set(x + 1, y + 1, P.leaves[5]);
+    t.set(x + 1, y, P.leaves[2]);
+  }
   // Gaps between leaves let light (and the sky) through.
   t.forEach((x, y) => {
-    if (t.noise(x, y, 8, 11) * 0.7 + t.rand() * 0.3 < 0.2) t.set(x, y, [0, 0, 0], 0);
+    if (t.noise(x, y, 8, 11) * 0.7 + t.rand() * 0.3 < 0.17) t.set(x, y, [0, 0, 0], 0);
   });
 }
 
@@ -655,6 +716,129 @@ export function paintTile(name) {
   return t.data;
 }
 
+// ---------- Relief: height, normal and roughness maps ----------
+//
+// Each tile also gets a relief map (for the High/Ultra terrain shader's
+// normal mapping, parallax and specular light), stored as RGBA bytes:
+//   r, g: the tangent-space normal's x and y (u right, v up), 0.5 = flat
+//   b:    height (1 = top, 0 = deepest), for parallax occlusion mapping
+//   a:    roughness (0 = glossy, 1 = matte)
+// Heights come from each material's own structure where it has one (the
+// stone's mottling, the domes of cobbles and gravel, sand ripples), plus
+// brightness: in these pixel-art textures, light pixels are the raised
+// bits (pebbles, blades, leaf clusters) and dark ones the cracks and gaps.
+
+const RELIEF = {
+  // name: [bump strength, base roughness, weight of brightness in the height]
+  grass_top: [2.2, 0.72, 1],
+  grass_side: [2.0, 0.85, 1],
+  dirt: [2.2, 0.95, 1],
+  stone: [2.6, 0.72, 0.45],
+  cobblestone: [3.2, 0.78, 0.25],
+  sand: [1.6, 0.9, 0.5],
+  gravel: [3.0, 0.82, 0.3],
+  leaves: [2.4, 0.5, 1],
+  wood_side: [3.0, 0.88, 1],
+  wood_top: [1.6, 0.8, 1],
+  planks: [2.0, 0.66, 1],
+  bricks: [2.6, 0.85, 1],
+  bedrock: [3.0, 0.85, 1],
+  coal_ore: [2.6, 0.72, 0.6],
+  iron_ore: [2.6, 0.6, 0.6],
+  gold_ore: [2.6, 0.5, 0.6],
+  diamond_ore: [2.6, 0.4, 0.6],
+  glass: [0.6, 0.08, 1],
+  lumen: [2.2, 0.3, 1],
+  wool: [1.4, 1.0, 1],
+};
+
+function luminance(p, i) {
+  return (0.2126 * p[i] + 0.7152 * p[i + 1] + 0.0722 * p[i + 2]) / 255;
+}
+
+// Structural height (0-1) for materials that have a shape beyond their
+// brightness, or null.
+function structureHeight(name, t) {
+  const h = new Float32Array(TEX * TEX);
+  const wrap = (d) => (d > TEX / 2 ? d - TEX : d < -TEX / 2 ? d + TEX : d);
+  if (name === "stone" || name.endsWith("_ore")) {
+    t.forEach((x, y) => (h[y * TEX + x] = t.fbm(x, y, 2, 4, 0) * 0.8 + t.noise(x, y, 16, 5) * 0.2));
+  } else if (name === "cobblestone" || name === "gravel") {
+    const vor = name === "cobblestone" ? t.voronoi(13, 1) : t.voronoi(30, 2);
+    const size = name === "cobblestone" ? 4.5 : 2.6;
+    t.forEach((x, y) => {
+      const v = vor(x, y);
+      const edge = Math.min(1, (v.d2 - v.d1) / size);
+      const r = Math.hypot(wrap(x + 0.5 - v.cx), wrap(y + 0.5 - v.cy)) / (size * 1.6);
+      h[y * TEX + x] = Math.sqrt(edge) * 0.75 + Math.max(0, 1 - r) * 0.25; // rounded stones, low mortar
+    });
+  } else if (name === "sand") {
+    t.forEach((x, y) => (h[y * TEX + x] = Math.sin((y + t.fbm(x, y, 4, 2, 4) * 7) * 0.75) * 0.5 + 0.5));
+  } else {
+    return null;
+  }
+  return h;
+}
+
+function paintRelief(name, t) {
+  const [strength, rough, lumWeight] = RELIEF[name] || [1.2, 0.85, 1];
+  const p = t.data;
+  const structure = structureHeight(name, t);
+  const height = new Float32Array(TEX * TEX);
+  for (let y = 0; y < TEX; y++) {
+    for (let x = 0; x < TEX; x++) {
+      const i = y * TEX + x;
+      if (p[i * 4 + 3] < 128) {
+        height[i] = 0; // holes in leaves and plants
+        continue;
+      }
+      const lum = luminance(p, i * 4);
+      height[i] = structure ? structure[i] * (1 - lumWeight) + lum * lumWeight : lum;
+    }
+  }
+  // Normalize to the full 0-1 range so every material uses the whole depth.
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (let i = 0; i < height.length; i++) {
+    if (p[i * 4 + 3] < 128) continue;
+    lo = Math.min(lo, height[i]);
+    hi = Math.max(hi, height[i]);
+  }
+  const span = hi - lo > 1e-4 ? hi - lo : 1;
+  for (let i = 0; i < height.length; i++) height[i] = p[i * 4 + 3] < 128 ? 0 : (height[i] - lo) / span;
+  const hAt = (x, y) => height[((y + TEX) % TEX) * TEX + ((x + TEX) % TEX)];
+  const out = new Uint8Array(TEX * TEX * 4);
+  for (let y = 0; y < TEX; y++) {
+    for (let x = 0; x < TEX; x++) {
+      const i = y * TEX + x;
+      // Canvas rows go down, texture v goes up: d/dv = -d/dy.
+      const du = (hAt(x + 1, y) - hAt(x - 1, y)) * 0.5;
+      const dv = -(hAt(x, y + 1) - hAt(x, y - 1)) * 0.5;
+      let nx = -du * strength;
+      let ny = -dv * strength;
+      const len = Math.hypot(nx, ny, 1);
+      nx /= len;
+      ny /= len;
+      const lum = luminance(p, i * 4);
+      out[i * 4] = Math.round((nx * 0.5 + 0.5) * 255);
+      out[i * 4 + 1] = Math.round((ny * 0.5 + 0.5) * 255);
+      out[i * 4 + 2] = Math.round(height[i] * 255);
+      // Raised, lighter bits are a little smoother (worn), crevices rougher.
+      out[i * 4 + 3] = Math.round(clamp01(rough + (0.5 - height[i]) * 0.16 - (lum - 0.5) * 0.08) * 255);
+    }
+  }
+  return out;
+}
+
+// Pixels and relief map of one tile.
+function paintTileWithRelief(name) {
+  const painter = PAINTERS[name];
+  if (!painter) throw new Error(`No texture painter for tile "${name}"`);
+  const t = new Tile(name);
+  painter(t);
+  return { pixels: t.data, relief: paintRelief(name, t) };
+}
+
 function tileCanvas(pixels) {
   const canvas = document.createElement("canvas");
   canvas.width = TEX;
@@ -665,6 +849,7 @@ function tileCanvas(pixels) {
 
 // Builds every block tile. Returns:
 //   texture: THREE.DataArrayTexture (one layer per TILE_NAMES entry)
+//   reliefTexture: the matching normal / height / roughness layers
 //   canvases: tile name -> 32x32 canvas (for UI icons)
 //   blockColors: block id -> [r, g, b] (sRGB 0-1) average visible color
 //   facePalette: { top, side }: Float32Array(256 * 3), each block's average
@@ -677,15 +862,17 @@ const SRGB_TO_LINEAR = new Float32Array(256).map((_, i) => {
 export function buildBlockTextures() {
   const layers = TILE_NAMES.length;
   const data = new Uint8Array(TEX * TEX * 4 * layers);
+  const reliefData = new Uint8Array(TEX * TEX * 4 * layers);
   const canvases = {};
   const tileAvg = [];
   const tileLinear = [];
   for (let l = 0; l < layers; l++) {
-    const pixels = paintTile(TILE_NAMES[l]);
+    const { pixels, relief } = paintTileWithRelief(TILE_NAMES[l]);
     // DataArrayTexture rows start at v = 0 (the bottom), canvas rows at the
     // top, so flip vertically while copying.
     for (let y = 0; y < TEX; y++) {
       data.set(pixels.subarray(y * TEX * 4, (y + 1) * TEX * 4), (l * TEX * TEX + (TEX - 1 - y) * TEX) * 4);
+      reliefData.set(relief.subarray(y * TEX * 4, (y + 1) * TEX * 4), (l * TEX * TEX + (TEX - 1 - y) * TEX) * 4);
     }
     canvases[TILE_NAMES[l]] = tileCanvas(pixels);
     let r = 0;
@@ -725,6 +912,19 @@ export function buildBlockTextures() {
   texture.wrapT = THREE.RepeatWrapping;
   texture.needsUpdate = true;
 
+  // Relief (normal, height, roughness): linear data, crisp per pixel like
+  // the colors, so every texel reads as a tiny bevelled facet.
+  const reliefTexture = new THREE.DataArrayTexture(reliefData, TEX, TEX, layers);
+  reliefTexture.format = THREE.RGBAFormat;
+  reliefTexture.type = THREE.UnsignedByteType;
+  reliefTexture.colorSpace = THREE.NoColorSpace;
+  reliefTexture.magFilter = THREE.NearestFilter;
+  reliefTexture.minFilter = THREE.NearestMipmapLinearFilter;
+  reliefTexture.generateMipmaps = true;
+  reliefTexture.wrapS = THREE.RepeatWrapping;
+  reliefTexture.wrapT = THREE.RepeatWrapping;
+  reliefTexture.needsUpdate = true;
+
   const blockColors = {};
   for (const info of Object.values(BLOCK_INFO)) {
     const top = tileAvg[info.faces.top];
@@ -736,7 +936,7 @@ export function buildBlockTextures() {
     facePalette.top.set(tileLinear[info.faces.top], info.id * 3);
     facePalette.side.set(tileLinear[info.faces.side], info.id * 3);
   }
-  return { texture, canvases, blockColors, facePalette };
+  return { texture, reliefTexture, canvases, blockColors, facePalette };
 }
 
 // Draws a block as a small isometric cube icon (or a flat sprite for

@@ -1,6 +1,10 @@
 // HDR post-processing pipeline (used by the Medium, High and Ultra presets):
 //
-//   scene -> HDR render target (half float, MSAA)
+//   scene -> HDR render target (half float, MSAA). With screen-space water
+//            (High/Ultra) in two passes: the world (layer 0), then the
+//            water (layer 1), which reads the resolved world color and
+//            depth for refraction, absorption and reflections, then the
+//            transparent effects (layer 2) on top of both.
 //         -> bloom: bright-pass + 13-tap downsample chain, tent upsample
 //            chain accumulating every level (soft, wide glow)
 //         -> light shafts (Ultra/High): radial blur toward the sun of the
@@ -9,6 +13,7 @@
 //            three.js uses on the Low preset), color grade, vignette,
 //            underwater tint / damage flash, dithering, sRGB output.
 import * as THREE from "three";
+import { LAYER_WORLD, LAYER_WATER, LAYER_FX } from "./layers.js";
 
 const FS_VERTEX = /* glsl */ `
 varying vec2 vUv;
@@ -188,6 +193,11 @@ export class PostFX {
 
     const rtOpts = { type: this.hdrType, depthBuffer: false, stencilBuffer: false, magFilter: THREE.LinearFilter, minFilter: THREE.LinearFilter };
     this.sceneRT = new THREE.WebGLRenderTarget(1, 1, { ...rtOpts, depthBuffer: true, samples: 4 });
+    // The MSAA depth is resolved into this texture too (read by the water pass).
+    this.sceneRT.depthTexture = new THREE.DepthTexture(1, 1);
+    this.sceneRT.depthTexture.type = THREE.UnsignedIntType;
+    this.waterMaterial = null; // set by setWaterMaterial()
+    this.screenWater = false;
     this.bloomRTs = [];
     for (let i = 0; i < 6; i++) this.bloomRTs.push(new THREE.WebGLRenderTarget(1, 1, rtOpts));
     this.raysRT = new THREE.WebGLRenderTarget(1, 1, rtOpts);
@@ -240,11 +250,21 @@ export class PostFX {
     this._sunNdc = new THREE.Vector3();
   }
 
-  configure({ msaa = 4, bloomLevels = 5, godRays = false } = {}) {
+  // The chunk water material, which gets the world image and depth in the
+  // two-pass mode.
+  setWaterMaterial(material) {
+    this.waterMaterial = material;
+  }
+
+  // screenWater: draw water in its own pass over the resolved world (needs
+  // MSAA, so the pass can read the world image while drawing into the
+  // multisampled buffer).
+  configure({ msaa = 4, bloomLevels = 5, godRays = false, screenWater = false } = {}) {
     if (this.sceneRT.samples !== msaa) {
       this.sceneRT.dispose();
       this.sceneRT.samples = msaa;
     }
+    this.screenWater = screenWater && msaa > 0;
     this.bloomLevels = Math.max(0, Math.min(this.bloomRTs.length, bloomLevels));
     this.godRays = godRays;
     const defines = {};
@@ -283,7 +303,28 @@ export class PostFX {
     const prevAutoClear = r.autoClear;
     r.setRenderTarget(this.sceneRT);
     r.autoClear = true;
-    r.render(scene, camera);
+    if (this.screenWater && this.waterMaterial) {
+      const mask = camera.layers.mask;
+      camera.layers.set(LAYER_WORLD);
+      r.render(scene, camera); // resolves color and depth for the water pass
+      const u = this.waterMaterial.uniforms;
+      u.tSceneColor.value = this.sceneRT.texture;
+      u.tSceneDepth.value = this.sceneRT.depthTexture;
+      u.uScreenSize.value.set(this.width, this.height);
+      u.uCamNear.value = camera.near;
+      u.uCamFar.value = camera.far;
+      u.uProjection.value.copy(camera.projectionMatrix);
+      camera.layers.set(LAYER_WATER);
+      camera.layers.enable(LAYER_FX);
+      r.autoClear = false;
+      const autoShadow = r.shadowMap.autoUpdate;
+      r.shadowMap.autoUpdate = false; // reuse this frame's shadow maps
+      r.render(scene, camera);
+      r.shadowMap.autoUpdate = autoShadow;
+      camera.layers.mask = mask;
+    } else {
+      r.render(scene, camera);
+    }
     if (overlay) {
       r.autoClear = false;
       r.clearDepth();

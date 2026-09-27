@@ -5,6 +5,7 @@
 // radius; shake and sound fall off smoothly with the listener's distance.
 // Also owns the shared particle pools and the persistent dynamic lights.
 import * as THREE from "three";
+import { LAYER_FX } from "./layers.js";
 import { BLOCK } from "./blocks.js";
 import { SEA_LEVEL, WORLD_HEIGHT } from "./constants.js";
 import { DebrisPool, BillboardPool } from "./particles.js";
@@ -95,6 +96,8 @@ export class EffectsSystem {
     this.flashLight = new THREE.PointLight(0xffb060, 0, 60, 1.3); // explosion flash
     this.muzzleLight = new THREE.PointLight(0xffc070, 0, 12, 1.8); // gun muzzle flash
     scene.add(this.projectileLight, this.flashLight, this.muzzleLight);
+    // Lights shine in every render pass (world, water, effects).
+    for (const light of [this.projectileLight, this.flashLight, this.muzzleLight]) light.layers.enableAll();
     this._flashTime = Infinity;
     this._flashPower = 0;
     this._muzzleTime = Infinity;
@@ -114,6 +117,7 @@ export class EffectsSystem {
       );
       ring.rotation.x = -Math.PI / 2;
       ring.visible = false;
+      ring.layers.set(LAYER_FX);
       ring.userData.age = Infinity;
       ring.userData.radius = GRENADE_RADIUS;
       scene.add(ring);

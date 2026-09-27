@@ -481,3 +481,52 @@ New smoke checks:
 The test arenas that are built at an offset from spawn now load their chunks first (`prepareArea`), because with the smaller detail area on Low they may lie outside it.
 
 **49 smoke checks and 30 unit tests pass with zero console errors.**
+
+## Phase 4: Graphics upgrade — DONE
+
+**Relief textures (High and Ultra).**
+- **Relief maps:** every block texture now has a matching relief map (a second texture array): a tangent-space normal, a height and a roughness per pixel. The heights come from each material's own structure where it has one: the stone's mottling, the domes of cobbles and gravel (from the same Voronoi cells that paint them), and the sand's ripples. Brightness fills in the rest, because in these pixel-art textures light pixels are the raised bits (pebbles, blades, leaf clusters) and dark ones the cracks.
+- **Lighting:** the terrain shader turns the relief into per-pixel normals, with each face's tangent frame taken from the mesher's UV layout, so bumps catch and lose the sun. A GGX specular highlight follows each pixel's roughness: leaves and ore get a sheen, while dirt stays matte.
+- **Parallax (Ultra):** parallax occlusion mapping (up to 28 steps, refined between the last two) gives nearby pixels real depth, fading out between 10 and 20 blocks.
+- **Richer textures:** grass has clumps and shaded gaps; dirt has roots and flint chips; stone has faint strata and mica specks; sand has lit ripple crests, coarse grains and shell bits; leaves have sunlit leaflets.
+
+**Cascaded, soft sun shadows.**
+- **Cascades:**
+  - Ultra: 3 shadow maps of growing size (±22, ±64 and ±180 blocks, 2048² each).
+  - High: 2 maps (±28 and ±110).
+  - Medium: 1 map.
+  - Each map is snapped to its own texel grid. Each pixel uses the finest map that covers it and blends into the next near its edge. Beyond all of them the voxel sky light takes over, as before. The extra cascade lights give no light of their own, so three's built-in materials don't get lit three times.
+- **Soft edges:** filtering is done in the shader, over a Poisson disc rotated per pixel (interleaved gradient noise), with 6, 12 or 16 taps depending on the preset. On Ultra the finest cascade uses percentage-closer soft shadows: it first searches for the occluder, then widens the filter with its distance. A post's shadow is crisp where it meets the ground and soft farther away, like a real sun.
+
+**Water (High and Ultra).** The frame is now drawn in two passes (new `js/layers.js`):
+1. **The world**, without water. Its colour and depth are resolved from the multisampled buffer (depth into a depth texture).
+2. **The water**, which reads that image, followed by transparent effects (smoke, sparks, exhaust) on top. The second pass reuses the frame's shadow maps.
+
+The water shader:
+- **Refraction:** bends what's behind by the wave normals (without borrowing pixels from anything in front of the water).
+- **Absorption:** uses the real thickness of water along the view ray (from the depth buffer), with red absorbed first. Shallows are clear and turquoise, over the sand and seabed caustics; depths fade to deep blue.
+- **Reflections:** on Ultra, screen-space reflections march the reflected ray through the depth buffer (48 steps, 5 refinement steps, fading at the screen edges); on High, and wherever that misses, the sky is reflected.
+- **Fresnel and glint:** a fresnel blend between the two, plus the sun glint.
+- **Foam:** where the water gets shallow along the view ray, so it follows shores and anything standing in the water.
+- **From below:** the world above shows through Snell's window, and total internal reflection shows beyond it.
+
+Low and Medium keep the cheaper blended water.
+
+**Vegetation (High and Ultra).**
+- **3D grass:** instanced tufts of thin blades on grass blocks with air above: 1 per block within 16 blocks on High, 2 within 24 on Ultra. They are lit like the terrain (voxel light, sun shadows, light through the blades), sway in the wind, bend away from the player's feet, and shrink away toward the edge so they never pop. Each chunk's grass tops are cached until the chunk is rebuilt.
+- **Fuller leaves:** each leaf block on the outside of a canopy gets two extra leaf cards at a random angle. They stay within the block's height, so flat canopy tops don't sprout fins, and poke out past its edges and corners, which breaks up the cube silhouette. They sway with the leaves, and toggling the preset rebuilds chunks gradually.
+
+**Low stays light.** Low has no shadow maps, no post-processing, no relief sampling, the old water, no grass and no leaf cards. Its frame is the same as before, apart from the richer textures.
+
+**Bug found by the probe.** The first High/Ultra run failed because the new water shader used `projectionMatrix` in the fragment stage, which three.js only declares for vertex shaders. The shader didn't compile, so water on those presets broke. The projection is now passed as its own uniform.
+
+**Testing.** Two new smoke checks:
+- **Presets:** each preset sets the right number of cascades, relief textures, parallax, water mode, grass level and leaf cards.
+- **Ultra functional check:** a purpose-built pool with a white floor under 1 block of water on one side and 12 blocks on the other.
+  - **Water:** the shallow half shows the floor through the water (luminance 229) while the deep half is dark blue (57).
+  - **Rendering:** all 3 shadow cascades render, there are 2,824 grass tufts around the player, and fuller leaves add cards to a leaf chunk.
+  - **Low:** switching back turns the extras off.
+
+I also checked every feature visually in the sandbox on a relief test wall, a floating leaf slab, a pool with a sloping sandy seabed and markers, and underwater views.
+
+**51 smoke checks and 30 unit tests pass with zero console errors.**

@@ -310,6 +310,46 @@ function emitCross(b, x, y, z, wx, wz, id, pi) {
   }
 }
 
+// Fancy leaves (High/Ultra): two extra leaf "cards" through every leaf
+// block on the outside of a canopy, turned to a random angle and a little
+// larger than the block, so canopies look fuller and their silhouettes
+// break up instead of reading as stacked cubes. They sway with the leaves
+// and take the brightest light around the block (leaves themselves block
+// sky light).
+const NEIGHBOR_STEPS = [OX, -OX, OY, -OY, OZ, -OZ];
+function emitLeafCards(b, x, y, z, wx, wz, id, pi) {
+  const layer = FACE_TILES[id * 6 + 2];
+  let sky = 0;
+  let blk = 0;
+  for (const step of NEIGHBOR_STEPS) {
+    const l = padLight[pi + step];
+    sky = Math.max(sky, l >> 4);
+    blk = Math.max(blk, l & 15);
+  }
+  sky *= 17;
+  blk *= 17;
+  const flags = WAVES[id] ? FLAG.WAVE : 0;
+  const up = 2 * 4 + 3;
+  const angle = hash01(wx, y, wz) * Math.PI;
+  // Within the block's height (no fins above a flat canopy top), but wider
+  // than the block, so the cards poke out past its edges and corners.
+  const half = 0.66 + hash01(wz, y, wx) * 0.1;
+  const cx = x + 0.5 + (hash01(wx + 3, y, wz) - 0.5) * 0.16;
+  const cz = z + 0.5 + (hash01(wx, y, wz + 5) - 0.5) * 0.16;
+  const y0 = y + 0.02;
+  const y1 = y + 0.98;
+  for (let k = 0; k < 2; k++) {
+    const a = angle + k * (Math.PI / 2);
+    const dx = Math.cos(a) * half;
+    const dz = Math.sin(a) * half;
+    b.vertex(cx - dx, y0, cz - dz, 0, 0, up, sky, blk, flags, layer, 0);
+    b.vertex(cx - dx, y1, cz - dz, 0, 1, up, sky, blk, flags, layer, 0);
+    b.vertex(cx + dx, y1, cz + dz, 1, 1, up, sky, blk, flags, layer, 0);
+    b.vertex(cx + dx, y0, cz + dz, 1, 0, up, sky, blk, flags, layer, 0);
+    b.quad(false);
+  }
+}
+
 // Torch: a thin stick (2x10 sixteenths of a block) textured from the middle
 // 4-pixel column of the 32x32 torch tile, whose flame sits at the top.
 const TORCH_MIN = 7 / 16;
@@ -350,8 +390,10 @@ function emitTorch(b, x, y, z, id, pi) {
 }
 
 // neighbors: 9 chunks as described in fillPadded (center at index 4).
+// options: { fancyLeaves } (see emitLeafCards).
 // Returns { opaque, cutout, water } where each is null or a buffer set.
-export function meshChunk(neighbors) {
+export function meshChunk(neighbors, options = {}) {
+  const fancyLeaves = !!options.fancyLeaves;
   const center = neighbors[4];
   const maxY = fillPadded(neighbors);
   for (const b of Object.values(builders)) b.reset();
@@ -384,6 +426,7 @@ export function meshChunk(neighbors) {
         let baseFlags = 0;
         if (WAVES[id]) baseFlags |= FLAG.WAVE;
         if (EMISSIVE[id]) baseFlags |= FLAG.EMISSIVE;
+        let exposed = false;
 
         for (let f = 0; f < 6; f++) {
           const face = FACES[f];
@@ -393,6 +436,7 @@ export function meshChunk(neighbors) {
           // Water's top face is visible from below the lowered surface even
           // if something non-opaque (e.g. a plant) sits on top; other faces
           // of water next to water were skipped above.
+          exposed = true;
           shadeCorners(pi, face);
           let flags = baseFlags;
           let faceDepths = null;
@@ -418,6 +462,7 @@ export function meshChunk(neighbors) {
           }
           emitCubeFace(b, face, x, y, z, FACE_TILES[id * 6 + f], flags, isWater ? topY : 1, faceDepths);
         }
+        if (fancyLeaves && exposed && id === BLOCK.LEAVES) emitLeafCards(b, x, y, z, baseX + x, baseZ + z, id, pi);
       }
     }
   }
