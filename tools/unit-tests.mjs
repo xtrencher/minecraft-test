@@ -585,5 +585,35 @@ await test("inventory survives serialize/load and rejects garbage", () => {
   assert.equal(inv2.slots[3].count, maxStack(BLOCK.DIRT), "counts are clamped to the stack size");
 });
 
+console.log("\nCollision (physics.js)");
+{
+  const { sweepAxis, boxInSolid, rayAabb } = await import("../js/physics.js");
+  // A tiny voxel world: a floor at y = 0 and a wall at x = 5.
+  const world = { isSolidAt: (x, y, z) => y === 0 || (x === 5 && y >= 1 && y <= 2) };
+  const v = (x, y, z) => ({ x, y, z });
+
+  await test("sweeps stop exactly at floors and walls, and pass through open space", () => {
+    const pos = v(2.5, 1, 2.5);
+    const down = sweepAxis(world, pos, 0.3, 1.8, "y", -0.5);
+    assert.ok(Math.abs(down) < 1e-3, `standing on the floor, can't sink (moved ${down})`);
+    const toWall = sweepAxis(world, pos, 0.3, 1.8, "x", 5);
+    assert.ok(Math.abs(pos.x + toWall + 0.3 - 5) < 1e-3, "stops with the box's face at the wall");
+    const away = sweepAxis(world, pos, 0.3, 1.8, "x", -1.5);
+    assert.equal(away, -1.5, "free movement is unchanged");
+    const over = sweepAxis(world, v(2.5, 3, 2.5), 0.3, 1.8, "x", 5);
+    assert.equal(over, 5, "above the 2-high wall nothing blocks");
+    assert.ok(boxInSolid(world, v(5.2, 1, 2.5), 0.3, 1.8) && !boxInSolid(world, v(3, 1, 3), 0.3, 1.8));
+  });
+
+  await test("ray vs box: hits from outside, misses beside, respects the max distance", () => {
+    const min = v(4, 1, -0.5);
+    const max = v(5, 3, 0.5);
+    assert.ok(Math.abs(rayAabb(v(0, 2, 0), v(1, 0, 0), min, max, 10) - 4) < 1e-9);
+    assert.equal(rayAabb(v(0, 2, 2), v(1, 0, 0), min, max, 10), null);
+    assert.equal(rayAabb(v(0, 2, 0), v(1, 0, 0), min, max, 3), null);
+    assert.equal(rayAabb(v(4.5, 2, 0), v(1, 0, 0), min, max, 10), 0, "starting inside counts as an immediate hit");
+  });
+}
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 process.exit(failed > 0 ? 1 : 0);

@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { BLOCK } from "./blocks.js";
+import { sweepAxis } from "./physics.js";
 
 const EYE_HEIGHT = 1.62;
 const SNEAK_EYE_DROP = 0.3;
@@ -17,7 +18,6 @@ const MAX_FALL_SPEED = -50;
 const WATER_GRAVITY = -7;
 const WATER_MAX_SINK = -3;
 const DOUBLE_TAP_WINDOW = 0.32;
-const EPS = 1e-4;
 
 export const MAX_HEALTH = 20; // half-hearts
 export const MAX_AIR = 10; // bubbles (seconds of breath)
@@ -244,56 +244,10 @@ export class Player {
     this.camera.position.y -= drop;
   }
 
-  // Returns the maximum movement (same sign as delta, magnitude <= |delta|) allowed along
-  // one axis before the player's AABB would overlap a solid voxel, given the current
-  // (already axis-resolved) position on the other two axes.
+  // Maximum movement along one axis before the player's box would overlap a
+  // solid voxel (see physics.js); also detects landing on the ground.
   _sweepAxis(axis, delta) {
-    if (delta === 0) return 0;
-    const r = PLAYER_RADIUS;
-    let minX = this.position.x - r;
-    let maxX = this.position.x + r;
-    let minY = this.position.y;
-    let maxY = this.position.y + PLAYER_HEIGHT;
-    let minZ = this.position.z - r;
-    let maxZ = this.position.z + r;
-
-    if (axis === "x") {
-      if (delta > 0) maxX += delta;
-      else minX += delta;
-    } else if (axis === "y") {
-      if (delta > 0) maxY += delta;
-      else minY += delta;
-    } else {
-      if (delta > 0) maxZ += delta;
-      else minZ += delta;
-    }
-
-    const bx0 = Math.floor(minX);
-    const bx1 = Math.floor(maxX - EPS);
-    const by0 = Math.floor(minY);
-    const by1 = Math.floor(maxY - EPS);
-    const bz0 = Math.floor(minZ);
-    const bz1 = Math.floor(maxZ - EPS);
-
-    let allowed = delta;
-    for (let bx = bx0; bx <= bx1; bx++) {
-      for (let by = by0; by <= by1; by++) {
-        for (let bz = bz0; bz <= bz1; bz++) {
-          if (!this.world.isSolidAt(bx, by, bz)) continue;
-          if (axis === "x") {
-            if (delta > 0) allowed = Math.min(allowed, bx - (this.position.x + r) - EPS);
-            else allowed = Math.max(allowed, bx + 1 - (this.position.x - r) + EPS);
-          } else if (axis === "y") {
-            if (delta > 0) allowed = Math.min(allowed, by - (this.position.y + PLAYER_HEIGHT) - EPS);
-            else allowed = Math.max(allowed, by + 1 - this.position.y + EPS);
-          } else {
-            if (delta > 0) allowed = Math.min(allowed, bz - (this.position.z + r) - EPS);
-            else allowed = Math.max(allowed, bz + 1 - (this.position.z - r) + EPS);
-          }
-        }
-      }
-    }
-
+    const allowed = sweepAxis(this.world, this.position, PLAYER_RADIUS, PLAYER_HEIGHT, axis, delta);
     if (axis === "y" && delta < 0 && allowed > delta) this.onGround = true;
     return allowed;
   }

@@ -550,9 +550,21 @@ try {
       return { slots: v.inventory.serialize(), selected: v.inventory.selected, health: v.player.health, state: v.gameState };
     });
 
+  await check("animals spawn around the player at the start", async () => {
+    const s = await page.evaluate(() => {
+      const { mobs } = window.__voxelands;
+      return { passive: mobs.countOf(false), kinds: [...new Set(mobs.mobs.map((m) => m.kind))] };
+    });
+    console.log(`        ${s.passive} animals around the player: ${s.kinds.join(", ")}`);
+    assert(s.passive >= 3, `expected a few animals near spawn, found ${s.passive}`);
+  });
+
   await check("survival: mining takes time by hand, drops the block, and it gets picked up", async () => {
     await page.evaluate(() => {
       const v = window.__voxelands;
+      // Mobs are exercised by their own checks below; keep these deterministic.
+      v.mobs.enabled = false;
+      v.mobs.clear();
       v.setMode("survival");
       v.inventory.clear();
       v.entities.clear();
@@ -696,10 +708,17 @@ try {
     await page.click("#respawn-btn", { timeout: 20000 });
     await page.waitForFunction(() => window.__voxelands.gameState === "playing", null, { timeout: 10000 });
     const after = await page.evaluate(() => {
-      const { player, spawn } = window.__voxelands;
-      return { hp: player.health, dx: player.position.x - (spawn.x + 0.5), dz: player.position.z - (spawn.z + 0.5), hidden: document.getElementById("death-screen").classList.contains("hidden") };
+      const { player, spawn, world } = window.__voxelands;
+      const p = player.position;
+      return {
+        hp: player.health,
+        d: Math.hypot(p.x - (spawn.x + 0.5), p.z - (spawn.z + 0.5)),
+        dry: world.getBlock(Math.floor(p.x), Math.floor(p.y + 0.5), Math.floor(p.z)) === 0,
+        hidden: document.getElementById("death-screen").classList.contains("hidden"),
+      };
     });
-    assert(after.hp === 20 && Math.hypot(after.dx, after.dz) < 0.01 && after.hidden, `respawn should restore full health at spawn: ${JSON.stringify(after)}`);
+    // At the world spawn, or the nearest dry spot if a blast crater flooded it.
+    assert(after.hp === 20 && after.d < 25 && after.dry && after.hidden, `respawn should restore full health at spawn: ${JSON.stringify(after)}`);
     void site;
   });
 
@@ -737,6 +756,278 @@ try {
       world.setBlocks([x, y + 1, z, 0, x, y + 2, z, 0, x, y + 3, z, 0]);
       player.health = 20;
     }, site);
+  });
+
+  // --- Mobs and combat (Phase 5) ---
+  // A night-time arena: a floating stone platform, the player at one end.
+  const mobArena = async (offX, offZ, extra = "") => {
+    // Start each check alive and in control, whatever the previous one did.
+    if ((await page.evaluate(() => window.__voxelands.gameState)) === "dead") {
+      await page.evaluate(() => window.__voxelands.respawn());
+      await page.waitForFunction(() => window.__voxelands.gameState === "playing", null, { timeout: 10000 });
+    }
+    return page.evaluate(
+      ([offX, offZ, extra]) => {
+        const v = window.__voxelands;
+        v.sky.setSunAngle(Math.PI * 1.5); // midnight
+        v.mobs.clear();
+        v.mobs.enabled = false;
+        v.entities.clear();
+        const x0 = v.spawn.x + offX;
+        const z0 = v.spawn.z + offZ;
+        const y = 46;
+        const e = [];
+        for (let dx = -6; dx <= 6; dx++) {
+          for (let dz = -10; dz <= 10; dz++) {
+            e.push(x0 + dx, y, z0 + dz, 3);
+            for (let dy = 1; dy <= 5; dy++) e.push(x0 + dx, y + dy, z0 + dz, 0);
+          }
+        }
+        // Obstacles across the whole width: a 1-block step, or a water moat.
+        for (let dx = -6; dx <= 6; dx++) {
+          if (extra === "step") e.push(x0 + dx, y + 1, z0 - 2, 3);
+          if (extra === "moat") e.push(x0 + dx, y, z0 - 2, 5, x0 + dx, y, z0 - 3, 5);
+        }
+        v.world.setBlocks(e);
+        v.player.velocity.set(0, 0, 0);
+        v.player.knockback.set(0, 0, 0);
+        v.player.position.set(x0 + 0.5, y + 1, z0 + 6.5);
+        v.player.yaw = 0;
+        v.player.pitch = 0;
+        v.player.health = 20;
+        return { x: x0, y, z: z0 };
+      },
+      [offX, offZ, extra]
+    );
+  };
+
+  await check("a zombie chases the player at night, climbs a 1-block step, and hits for damage", async () => {
+    const a = await mobArena(-30, 30, "step");
+    await page.evaluate(({ x, y, z }) => {
+      window.__zombie = window.__voxelands.mobs.spawn("zombie", x + 0.5, y + 1, z - 7.5);
+    }, a);
+    await page.waitForFunction(() => window.__voxelands.player.health < 20, null, { timeout: 120000, polling: 50 });
+    const s = await page.evaluate(() => ({ hp: window.__voxelands.player.health, z: window.__zombie.pos.z, y: window.__zombie.pos.y, target: window.__zombie.ai.target }));
+    console.log(`        hit: player health ${s.hp}/20; zombie crossed the step to z=${s.z.toFixed(1)}`);
+    assert(s.target && s.z > a.z - 2 && s.hp <= 17, `zombie should have crossed the step and hit: ${JSON.stringify(s)}`);
+  });
+
+  await check("sword combat: charged hits, knockback, hit flash, death animation, drops", async () => {
+    await page.evaluate(() => {
+      const v = window.__voxelands;
+      v.inventory.clear();
+      v.inventory.slots[0] = { id: 272, count: 1, dur: 251 }; // iron sword (6 damage)
+      v.inventory.selected = 0;
+    });
+    const aimAtZombie = () =>
+      page.evaluate(() => {
+        const v = window.__voxelands;
+        const z = window.__zombie;
+        const eye = v.player.getEyePosition();
+        const dx = z.pos.x - eye.x;
+        const dy = z.pos.y + 1.3 - eye.y;
+        const dz = z.pos.z - eye.z;
+        v.player.yaw = Math.atan2(-dx, -dz);
+        v.player.pitch = Math.atan2(dy, Math.hypot(dx, dz));
+        v.player.health = 20;
+      });
+    // A fully charged first hit.
+    await aimAtZombie();
+    await page.waitForFunction(() => window.__voxelands.interaction.entityHit && window.__voxelands.mobs.charge(window.__voxelands.interaction.tool) >= 1, null, { timeout: 20000, polling: 30 });
+    const before = await page.evaluate(() => {
+      const z = window.__zombie;
+      const p = window.__voxelands.player.position;
+      return { hp: z.health, dist: Math.hypot(z.pos.x - p.x, z.pos.z - p.z) };
+    });
+    await page.mouse.down({ button: "left" });
+    await page.waitForTimeout(30);
+    await page.mouse.up({ button: "left" });
+    const hit = await page.evaluate(() => ({ hp: window.__zombie.health, flash: window.__zombie.light.flash.r, dur: window.__voxelands.inventory.slots[0].dur }));
+    assert(Math.abs(before.hp - hit.hp - 6) < 0.01, `a charged iron sword hit should deal 6 (health ${before.hp} -> ${hit.hp})`);
+    assert(hit.flash > 0.2 && hit.dur === 250, `expected a red hit flash and sword wear: ${JSON.stringify(hit)}`);
+    // Knockback: the zombie is thrown back before it can close in again.
+    const after = await page
+      .waitForFunction(
+        (d0) => {
+          const z = window.__zombie;
+          const p = window.__voxelands.player.position;
+          const d = Math.hypot(z.pos.x - p.x, z.pos.z - p.z);
+          return d > d0 + 0.5 ? d : false;
+        },
+        before.dist,
+        { timeout: 20000, polling: 16 }
+      )
+      .then((h) => h.jsonValue())
+      .catch(() => null);
+    console.log(`        charged hit: 6 damage; knocked back from ${before.dist.toFixed(2)} to ${after ? after.toFixed(2) : "?"} blocks`);
+    assert(after !== null, "the hit should knock the zombie back");
+    // An immediate second swing is weak (attack cooldown).
+    await aimAtZombie();
+    await page.evaluate(() => {
+      const v = window.__voxelands;
+      window.__hpBefore = window.__zombie.health;
+      v.mobs.lastAttackTime = v.mobs.time; // just swung
+      window.__zombie.invulnerable = 0;
+      v.mobs.attack(window.__zombie, v.interaction.tool);
+    });
+    const weak = await page.evaluate(() => window.__hpBefore - window.__zombie.health);
+    assert(weak > 0 && weak < 2, `an uncharged swing should be weak (dealt ${weak})`);
+    // Finish it off.
+    for (let i = 0; i < 10; i++) {
+      if (await page.evaluate(() => window.__zombie.dead)) break;
+      await aimAtZombie();
+      await page.waitForFunction(() => window.__zombie.dead || (window.__voxelands.interaction.entityHit && window.__voxelands.mobs.charge(window.__voxelands.interaction.tool) >= 1), null, { timeout: 20000, polling: 30 });
+      await page.mouse.down({ button: "left" });
+      await page.waitForTimeout(30);
+      await page.mouse.up({ button: "left" });
+    }
+    const dying = await page.evaluate(() => ({ dead: window.__zombie.dead, tilt: window.__zombie.model.tilt.rotation.z }));
+    assert(dying.dead, "the zombie should be dead");
+    await page.waitForFunction(() => window.__voxelands.mobs.count === 0, null, { timeout: 30000, polling: 50 });
+    const kills = await page.evaluate(() => window.__voxelands.mobs.kills);
+    assert(kills >= 1, "kill not counted");
+  });
+
+  await check("killing an animal drops its items, which the player collects", async () => {
+    const a = await mobArena(-30, 60);
+    await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      v.sky.setSunAngle(Math.PI * 0.5); // noon
+      window.__animal = v.mobs.spawn("fluffalo", x + 0.5, y + 1, z + 4.5);
+      window.__animal.ai.state = "idle";
+      window.__animal.ai.timer = 999;
+      v.inventory.clear();
+      v.inventory.slots[0] = { id: 273, count: 1, dur: 1562 }; // diamond sword (7)
+      v.inventory.selected = 0;
+    }, a);
+    for (let i = 0; i < 6; i++) {
+      if (await page.evaluate(() => window.__animal.dead)) break;
+      await page.evaluate(() => {
+        const v = window.__voxelands;
+        const m = window.__animal;
+        // Catch up with it (it runs away once hurt).
+        const d = Math.hypot(m.pos.x - v.player.position.x, m.pos.z - v.player.position.z) || 1;
+        if (d > 2.2) v.player.position.set(m.pos.x - ((m.pos.x - v.player.position.x) / d) * 2, m.pos.y, m.pos.z - ((m.pos.z - v.player.position.z) / d) * 2);
+        const eye = v.player.getEyePosition();
+        const dx = m.pos.x - eye.x;
+        const dy = m.pos.y + 0.8 - eye.y;
+        const dz = m.pos.z - eye.z;
+        v.player.yaw = Math.atan2(-dx, -dz);
+        v.player.pitch = Math.atan2(dy, Math.hypot(dx, dz));
+      });
+      await page.waitForFunction(() => window.__animal.dead || (window.__voxelands.interaction.entityHit && window.__voxelands.mobs.charge(window.__voxelands.interaction.tool) >= 1), null, { timeout: 20000, polling: 30 });
+      const fled = await page.evaluate(() => window.__animal.ai.state);
+      if (i > 0) assert(fled === "flee" || (await page.evaluate(() => window.__animal.dead)), `a hurt animal should flee (state ${fled})`);
+      await page.mouse.down({ button: "left" });
+      await page.waitForTimeout(30);
+      await page.mouse.up({ button: "left" });
+    }
+    await page.waitForFunction(() => window.__voxelands.mobs.count === 0, null, { timeout: 30000, polling: 50 });
+    const drops = await page.evaluate(() => window.__voxelands.entities.items.map((i) => i.id));
+    assert(drops.includes(265) && drops.includes(263), `a Fluffalo should drop fluff and raw meat (dropped ${JSON.stringify(drops)})`);
+    // Walk over to where they fell.
+    await page.evaluate(() => {
+      const v = window.__voxelands;
+      const it = v.entities.items[0];
+      v.player.position.set(it.pos.x, it.pos.y + 0.1, it.pos.z + 0.5);
+    });
+    await page.waitForFunction(() => window.__voxelands.inventory.countItem(265) > 0 && window.__voxelands.inventory.countItem(263) > 0, null, { timeout: 60000, polling: 100 });
+    const inv = await page.evaluate(() => ({ fluff: window.__voxelands.inventory.countItem(265), meat: window.__voxelands.inventory.countItem(263) }));
+    console.log(`        Fluffalo dropped and the player picked up ${inv.fluff} fluff and ${inv.meat} raw meat`);
+  });
+
+  await check("zombies won't walk into water", async () => {
+    const a = await mobArena(-60, 30, "moat");
+    await page.evaluate(({ x, y, z }) => {
+      window.__zombie = window.__voxelands.mobs.spawn("zombie", x + 0.5, y + 1, z - 7.5);
+      window.__wet = false;
+      window.__wetTimer = setInterval(() => {
+        if (window.__zombie.inWater) window.__wet = true;
+      }, 20);
+    }, a);
+    // Give it plenty of game time to reach the moat and look for a way around.
+    await page.evaluate(() => (window.__t0 = window.__voxelands.mobs.time));
+    await page.waitForFunction(() => window.__voxelands.mobs.time > window.__t0 + 10, null, { timeout: 180000, polling: 200 });
+    const s = await page.evaluate(({ z }) => {
+      clearInterval(window.__wetTimer);
+      return { wet: window.__wet, zz: window.__zombie.pos.z, edge: z - 3, hp: window.__voxelands.player.health, target: window.__zombie.ai.target };
+    }, a);
+    console.log(`        zombie waited at the moat (z=${s.zz.toFixed(2)}, water starts at ${s.edge}), chasing=${s.target}`);
+    assert(!s.wet && s.zz < s.edge && s.hp === 20 && s.target, `zombie should chase but stop at the water: ${JSON.stringify(s)}`);
+  });
+
+  await check("a zombie's hit can kill: the death screen says Killed by a zombie", async () => {
+    await page.evaluate(() => {
+      const v = window.__voxelands;
+      const p = v.player.position;
+      v.mobs.clear();
+      window.__zombie = v.mobs.spawn("zombie", p.x, p.y, p.z - 1.2);
+      v.inventory.clear();
+      v.player.health = 2;
+    });
+    await page.waitForFunction(() => window.__voxelands.gameState === "dead", null, { timeout: 60000, polling: 50 });
+    await page.waitForTimeout(500);
+    const cause = await page.$eval("#death-cause", (el) => el.textContent);
+    const title = await page.$eval("#death-screen .noob", (el) => el.textContent);
+    await page.screenshot({ path: path.join(__dirname, "screenshot-zombie-death.png") }).catch(() => {});
+    assert(title === "NOOB!" && cause === "Killed by a zombie", `death screen: "${title}" / "${cause}"`);
+    await page.waitForFunction(() => !document.getElementById("respawn-btn").disabled, null, { timeout: 10000 });
+    await page.click("#respawn-btn", { timeout: 20000 });
+    await page.waitForFunction(() => window.__voxelands.gameState === "playing", null, { timeout: 10000 });
+  });
+
+  await check("mob caps, despawning, daylight burning, Blast Orb damage, creative immunity", async () => {
+    const a = await mobArena(-60, 60);
+    const s = await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      const { mobs, player, spawn, THREE, sky } = v;
+      const setTime = (angle) => {
+        sky.setSunAngle(angle);
+        sky.update(0, player.getEyePosition(), player.getForwardVector());
+      };
+      // Spawning at night around the world spawn respects the caps.
+      mobs.clear();
+      mobs.enabled = true;
+      player.spawnAt(spawn.x, spawn.z);
+      setTime(Math.PI * 1.5);
+      for (let i = 0; i < 600; i++) mobs._updateSpawning(0.5);
+      const hostile = mobs.countOf(true);
+      const passive = mobs.countOf(false);
+      // Far-away mobs despawn.
+      const far = mobs.spawn("zombie", player.position.x + 200, 40, player.position.z);
+      mobs.update(0.016);
+      const farGone = !mobs.mobs.includes(far);
+      mobs.clear();
+      mobs.enabled = false;
+      // Back on the open arena: zombies burn in daylight.
+      player.position.set(x + 0.5, y + 1, z + 6.5);
+      setTime(Math.PI * 0.5);
+      const zb = mobs.spawn("zombie", x + 0.5, y + 1, z - 6.5);
+      let burned = false;
+      for (let i = 0; i < 60; i++) {
+        mobs.update(0.05);
+        burned = burned || zb.burning;
+      }
+      burned = burned && zb.health < 20;
+      // Explosions hurt mobs.
+      mobs.clear();
+      const f = mobs.spawn("fluffalo", x + 0.5, y + 1, z - 6.5);
+      mobs.explosion(new THREE.Vector3(x + 1, y + 1.5, z - 6), 7);
+      const blasted = f.dead;
+      // Creative players are ignored.
+      mobs.clear();
+      v.setMode("creative");
+      setTime(Math.PI * 1.5);
+      const c = mobs.spawn("zombie", x + 0.5, y + 1, z + 4.5);
+      for (let i = 0; i < 20; i++) mobs.update(0.05);
+      const ignored = !c.ai.target && player.health === 20;
+      mobs.clear();
+      v.setMode("survival");
+      return { hostile, passive, farGone, burned, blasted, ignored };
+    }, a);
+    console.log(`        after 600 spawn ticks at night: ${s.hostile} zombies, ${s.passive} animals`);
+    assert(s.hostile > 0 && s.hostile <= 10 && s.passive <= 14, `mob caps: ${JSON.stringify(s)}`);
+    assert(s.farGone && s.burned && s.blasted && s.ignored, `mob rules: ${JSON.stringify(s)}`);
   });
 
   await check("creative players take no damage", async () => {

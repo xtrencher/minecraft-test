@@ -83,6 +83,9 @@ export class Hud {
     this.deathEl = document.getElementById("death-screen");
     this.deathCauseEl = document.getElementById("death-cause");
     this.respawnBtn = document.getElementById("respawn-btn");
+    this.chargeEl = document.getElementById("attack-charge");
+    this.chargeFill = this.chargeEl.firstElementChild;
+    this._charge = 1;
 
     this.art = {
       full: heartArt("full"),
@@ -161,6 +164,15 @@ export class Hud {
         this._nameTimer = 0;
       }
     }
+  }
+
+  // Attack recharge (0-1): a small bar under the crosshair while < 1.
+  setAttackCharge(charge) {
+    const shown = charge >= 1 ? 1 : Math.round(charge * 20) / 20;
+    if (shown === this._charge) return;
+    this._charge = shown;
+    this.chargeEl.classList.toggle("hidden", shown >= 1);
+    this.chargeFill.style.width = `${Math.round(shown * 100)}%`;
   }
 
   hurt() {

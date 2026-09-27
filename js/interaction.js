@@ -18,6 +18,7 @@ const BREAK_DELAY = 0.25; // pause after breaking a block before the next one st
 const CREATIVE_BREAK_REPEAT = 0.22;
 const PLACE_REPEAT = 0.22;
 const EAT_TIME = 1.1;
+const ENTITY_REACH = 3.5; // mobs must be closer than blocks to hit (survival)
 
 function createOutline() {
   const edges = new THREE.EdgesGeometry(new THREE.BoxGeometry(1.004, 1.004, 1.004));
@@ -81,9 +82,9 @@ export class Interaction {
     // Hooks set by the game.
     this.onOpenTable = null; // () => void
     this.onChange = null; // () => void: inventory contents changed
-    // Mob system: (origin, dir, reach) => { distance, attack(tool) } or null.
-    this.entityTarget = null;
-    this.canPlaceAt = null; // (x, y, z) => bool: false if a mob stands there
+    // The mob system (raycast, attack, charge, swing, overlapsBlock), if any.
+    this.combat = null;
+    this.entityHit = null; // { mob, distance } under the crosshair
   }
 
   get reach() {
@@ -93,6 +94,11 @@ export class Interaction {
   _tool() {
     const s = this.inventory.selectedStack;
     return s ? itemInfo(s.id)?.tool ?? null : null;
+  }
+
+  // The held tool's info (null for the bare hand or a non-tool item).
+  get tool() {
+    return this._tool();
   }
 
   _changed() {
@@ -167,7 +173,7 @@ export class Interaction {
     const dir = this.player.getForwardVector();
     this.target = this.world.raycast(origin, dir, this.reach);
     // A mob in front of the block takes the crosshair.
-    this.entityHit = this.entityTarget ? this.entityTarget(origin, dir, this.reach) : null;
+    this.entityHit = this.combat ? this.combat.raycast(origin, dir, this.player.creative ? 5 : ENTITY_REACH) : null;
     if (this.entityHit && this.target && this.target.distance < this.entityHit.distance) this.entityHit = null;
     if (this.entityHit) this.target = null;
 
@@ -187,11 +193,19 @@ export class Interaction {
   _primary() {
     this.held.swing();
     if (this.entityHit) {
-      this.entityHit.attack(this._tool(), this.inventory);
-      this._changed();
+      const tool = this._tool();
+      if (this.combat.attack(this.entityHit.mob, tool) && tool && !this.player.creative) {
+        // Weapons wear with use: swords by 1 per hit, other tools by 2.
+        if (this.inventory.damageSelected(tool.type === "sword" ? 1 : 2)) this.audio.playToolBreak();
+        this._changed();
+      }
       return;
     }
     if (this.target) this._startMining();
+    else if (this.combat) {
+      this.combat.swing();
+      this.audio.playSwing();
+    }
   }
 
   _startMining() {
@@ -225,9 +239,9 @@ export class Interaction {
       if (this._breakCooldown > 0) return;
     }
     if (this.entityHit) {
-      // Holding the button against a mob keeps swinging at it (cooldown in the mob system).
+      // Holding the button against a mob swings again once fully recharged.
       this._stopMining();
-      if (!this.held.swinging) this._primary();
+      if (this.combat.charge(this._tool()) >= 1) this._primary();
       return;
     }
     if (!this.target) {
@@ -339,7 +353,7 @@ export class Interaction {
     const world = this.world;
     if (!IS_REPLACEABLE[world.getBlock(px, py, pz)]) return;
     if (BLOCK_INFO[blockId].solid && this._overlapsPlayer(px, py, pz)) return;
-    if (BLOCK_INFO[blockId].solid && this.canPlaceAt && !this.canPlaceAt(px, py, pz)) return;
+    if (BLOCK_INFO[blockId].solid && this.combat && this.combat.overlapsBlock(px, py, pz)) return;
     if (!isSupportedBy(blockId, world.getBlock(px, py - 1, pz))) return;
     if (!world.setBlock(px, py, pz, blockId)) return;
     this.audio.playPlace(BLOCK_INFO[blockId].sound);

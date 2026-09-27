@@ -17,6 +17,7 @@ import { InventoryScreen } from "./inventory-ui.js";
 import { ItemEntities } from "./entities.js";
 import { HeldItem } from "./held-item.js";
 import { Interaction } from "./interaction.js";
+import { MobManager } from "./mobs.js";
 
 // ---------- Seed ----------
 function parseSeedFromURL() {
@@ -169,6 +170,8 @@ held = new HeldItem(world.atlas);
 held.resize(camera.aspect);
 const interaction = new Interaction({ scene, world, player, inventory, entities, audio, effects, held });
 const invScreen = new InventoryScreen({ icons, inventory, audio });
+const mobs = new MobManager({ scene, world, player, entities, audio, effects, sky });
+interaction.combat = mobs;
 
 // The creative starter hotbar (the classic building blocks).
 function fillCreativeHotbar() {
@@ -284,6 +287,7 @@ const DEATH_MESSAGES = {
   drown: "Drowned",
   void: "Fell out of the world",
   orb: "Blown up by your own Blast Orb",
+  zombie: "Killed by a zombie",
 };
 let lastBlastHitTime = -Infinity;
 let deathCause = null;
@@ -322,12 +326,29 @@ function dropEverything() {
   markInventoryChanged();
 }
 
+// The column nearest the world spawn with open air (not water) above solid
+// ground: a crater may have flooded the original spot.
+function safeSpawnColumn() {
+  for (let r = 0; r <= 24; r++) {
+    for (let dx = -r; dx <= r; dx++) {
+      for (let dz = -r; dz <= r; dz++) {
+        if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+        const x = spawnX + dx;
+        const z = spawnZ + dz;
+        const top = world.surfaceY(x, z);
+        if (top >= 0 && world.getBlock(x, top + 1, z) === BLOCK.AIR && world.getBlock(x, top + 2, z) === BLOCK.AIR) return [x, z];
+      }
+    }
+  }
+  return [spawnX, spawnZ];
+}
+
 function respawn() {
   if (gameState !== "dead") return;
   hud.hideDeath();
   world.prepareArea(spawnX + 0.5, spawnZ + 0.5, INITIAL_SYNC_RADIUS);
   player.revive();
-  player.spawnAt(spawnX, spawnZ);
+  player.spawnAt(...safeSpawnColumn());
   player.yaw = 0;
   player.pitch = 0;
   player.syncCamera();
@@ -343,6 +364,7 @@ hud.respawnBtn.addEventListener("click", respawn);
 // Blast Orb explosions hurt (lethally up close) and shove the player away
 // from the blast center with an upward kick, falling off with distance.
 effects.onExplosion = (center, radius) => {
+  mobs.explosion(center, radius);
   const offset = player.position.clone();
   offset.y += 0.9; // body center
   offset.sub(center);
@@ -642,6 +664,7 @@ window.__voxelands = {
   entities,
   interaction,
   invScreen,
+  mobs,
   hud,
   held,
   uniforms: worldUniforms,
@@ -709,6 +732,7 @@ function animate() {
     effects.update(dt);
     effects.shake.apply(camera);
     entities.update(dt, player);
+    mobs.update(dt);
     ui.setOrbCooldown(effects.cooldownFraction());
   } else {
     player.syncCamera(); // keep the view behind the menus sensible
@@ -727,6 +751,7 @@ function animate() {
   }
   updateEnvironment(dt);
   hud.update(dt, player);
+  hud.setAttackCharge(gameState === "playing" ? mobs.charge(interaction.tool) : 1);
   held.update(dt, player, heldLight, camera, interaction.eating);
 
   ui.updateFps(frameTime); // real frame time, so slow frames aren't hidden by the clamp

@@ -6,6 +6,31 @@
 
 const NOISE_SECONDS = 2.5;
 
+// Mob voices: lists of tones (or noise bursts) played together.
+const MOB_VOICES = {
+  fluffalo: {
+    idle: [{ freq: 105, slideTo: 82, duration: 0.8, volume: 0.2, type: "sawtooth" }, { freq: 210, slideTo: 160, duration: 0.6, volume: 0.05, type: "sine" }],
+    hurt: [{ freq: 180, slideTo: 115, duration: 0.3, volume: 0.24, type: "sawtooth" }],
+    death: [{ freq: 150, slideTo: 50, duration: 0.9, volume: 0.24, type: "sawtooth" }],
+  },
+  hoplet: {
+    idle: [{ freq: 1500, slideTo: 1900, duration: 0.07, volume: 0.07, type: "sine" }, { freq: 1600, slideTo: 2100, duration: 0.06, volume: 0.06, type: "sine", delay: 0.11 }],
+    hurt: [{ freq: 2300, slideTo: 1300, duration: 0.14, volume: 0.12, type: "sine" }],
+    death: [{ freq: 1900, slideTo: 420, duration: 0.35, volume: 0.13, type: "sine" }],
+  },
+  mossback: {
+    idle: [{ noise: { duration: 0.05, volume: 0.12, filterFreq: 700, filterType: "bandpass", q: 3 } }, { freq: 90, slideTo: 70, duration: 0.25, volume: 0.1, type: "triangle", delay: 0.08 }],
+    hurt: [{ freq: 320, slideTo: 200, duration: 0.12, volume: 0.2, type: "triangle" }, { noise: { duration: 0.08, volume: 0.2, filterFreq: 800, filterType: "bandpass", q: 2 } }],
+    death: [{ freq: 220, slideTo: 55, duration: 0.7, volume: 0.2, type: "triangle" }],
+  },
+  zombie: {
+    idle: [{ freq: 118, slideTo: 82, duration: 1.1, volume: 0.2, type: "sawtooth" }, { freq: 123, slideTo: 86, duration: 1.0, volume: 0.12, type: "sawtooth", delay: 0.05 }],
+    hurt: [{ freq: 190, slideTo: 115, duration: 0.3, volume: 0.24, type: "sawtooth" }],
+    death: [{ freq: 150, slideTo: 38, duration: 1.3, volume: 0.26, type: "sawtooth" }, { freq: 75, slideTo: 30, duration: 1.0, volume: 0.2, type: "sine" }],
+    attack: [{ freq: 210, slideTo: 140, duration: 0.22, volume: 0.22, type: "sawtooth" }],
+  },
+};
+
 // Filtered-noise recipes for block materials (see Audio._material).
 const MATERIAL_SOUNDS = {
   stone: { filter: "bandpass", freq: 1500, q: 0.9, duration: 0.1, volume: 1 },
@@ -204,6 +229,31 @@ export class Audio {
     this._playTone({ freq: 420, slideTo: 900, duration: 0.14, volume: 0.15, type: "sine" });
     // A short airy whoosh under the tone.
     this._playNoiseBurst({ duration: 0.22, volume: 0.12, filterFreq: 1400, filterType: "bandpass" });
+  }
+
+  // Mob voices: `event` is "idle", "hurt", "death" or "attack"; quieter
+  // with distance (blocks), silent beyond 40.
+  playMob(kind, event, distance = 0) {
+    if (!this.ctx || distance > 40) return;
+    const v = 1 / (1 + distance / 7);
+    const voice = MOB_VOICES[kind]?.[event];
+    if (!voice) return;
+    for (const part of voice) {
+      if (part.noise) this._playNoiseBurst({ ...part.noise, volume: part.noise.volume * v });
+      else this._playTone({ ...part, freq: part.freq * (0.92 + Math.random() * 0.16), volume: part.volume * v });
+    }
+  }
+
+  // The player's weapon landing (a heavier crack on a critical hit).
+  playHit(crit = false) {
+    this._playNoiseBurst({ duration: 0.09, volume: 0.3, filterFreq: 900, filterType: "lowpass" });
+    this._playTone({ freq: 150, slideTo: 80, duration: 0.08, volume: 0.25, type: "triangle" });
+    if (crit) this._playNoiseBurst({ duration: 0.12, volume: 0.2, filterFreq: 3500, filterType: "highpass" });
+  }
+
+  // A swing that hits nothing.
+  playSwing() {
+    this._playNoiseBurst({ duration: 0.12, volume: 0.07, filterFreq: 1300, filterType: "bandpass", q: 1.5 });
   }
 
   // Layered explosion: a sub-bass thump, a distorted low-passed noise body

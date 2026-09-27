@@ -223,6 +223,17 @@
   .menu-buttons { display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
 
   /* --- HUD --- */
+  #attack-charge {
+    position: fixed;
+    top: calc(50% + 15px);
+    left: calc(50% - 12px);
+    width: 24px;
+    height: 3px;
+    background: rgba(0,0,0,0.45);
+    pointer-events: none;
+    z-index: 10;
+  }
+  #attack-charge div { height: 100%; width: 0; background: rgba(255,255,255,0.9); }
   #mode-badge {
     position: fixed;
     top: 8px;
@@ -448,6 +459,7 @@
   <div id="damage-flash"></div>
   <div id="hud" class="hidden">
     <div id="crosshair"></div>
+    <div id="attack-charge" class="hidden"><div></div></div>
     <div id="fps-counter">FPS: --</div>
     <div id="mode-badge" class="hidden"></div>
     <div id="item-name"></div>
