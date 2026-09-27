@@ -24,6 +24,7 @@ import { FallingBlocks } from "./falling.js";
 import { WeaponSystem } from "./weapons.js";
 import { BulletHoles } from "./decals.js";
 import { GRENADE_RADIUS } from "./effects.js";
+import { LodSystem } from "./lod.js";
 
 // ---------- Seed ----------
 function parseSeedFromURL() {
@@ -58,9 +59,11 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 const scene = new THREE.Scene();
 
 // ---------- Settings ----------
-const DEFAULT_RENDER_DISTANCE = 10;
+// Chunks. Beyond each preset's detail distance, terrain is drawn as
+// simplified level-of-detail tiles (see lod.js).
+const DEFAULT_RENDER_DISTANCE = 20;
 const MIN_RENDER_DISTANCE = 2;
-const MAX_RENDER_DISTANCE = 16;
+const MAX_RENDER_DISTANCE = 100;
 const settings = loadSettings();
 
 function clampRenderDistance(value) {
@@ -76,16 +79,20 @@ let graphicsPreset = normalizePreset(settings.graphics);
 // own shaders use the shared uniforms in shaders.js (same distances).
 scene.fog = new THREE.Fog(0x9fc3e8, 60, 150);
 
-function updateFogDistances() {
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+
+// Fog ends at the render distance; the far plane reaches past it (and past
+// the sky dome) so distant terrain isn't clipped before it has faded out.
+function updateViewDistance() {
   const end = (renderDistance - 0.3) * 16;
   const start = end * 0.72;
   worldUniforms.uFog.value.set(start, end, 0.0024, 0.0);
   scene.fog.near = start;
   scene.fog.far = end;
+  camera.far = Math.max(1000, renderDistance * 16 * 1.3 + 100);
+  camera.updateProjectionMatrix();
 }
-updateFogDistances();
-
-const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+updateViewDistance();
 
 // The light rig never changes shape at runtime (adding/removing lights would
 // force every lit material to recompile): one shadow-casting directional
@@ -112,6 +119,15 @@ window.addEventListener("resize", onResize);
 // ---------- World ----------
 const world = new World(scene, SEED);
 world.loadEdits(loadEdits(SEED));
+// Decides which chunks are meshed and shown, and draws the land beyond them.
+const lod = new LodSystem(scene, world, SEED);
+lod.configure({ renderDistance, detailDistance: PRESETS[graphicsPreset].detailDistance });
+
+// Plans chunk streaming and LOD tiles around a position (cheap when nothing changed).
+function streamAround(x, z) {
+  lod.plan(x, z);
+  world.ensureChunksAround(x, z, lod.worldPlan);
+}
 
 let pendingSave = false;
 let lastSaveTime = 0;
@@ -149,7 +165,7 @@ const startZ = savedPos ? savedPos[2] : spawnZ + 0.5;
 // menu is showing), instead of freezing the page for seconds at startup.
 const INITIAL_SYNC_RADIUS = 2;
 world.prepareArea(startX, startZ, INITIAL_SYNC_RADIUS);
-world.ensureChunksAround(startX, startZ, renderDistance);
+streamAround(startX, startZ);
 
 // Main-thread milliseconds per frame spent generating/meshing chunks. Larger
 // while a menu is open (nothing to keep smooth), smaller while playing.
@@ -366,7 +382,7 @@ function respawn() {
   player.yaw = 0;
   player.pitch = 0;
   player.syncCamera();
-  world.ensureChunksAround(player.position.x, player.position.z, renderDistance);
+  streamAround(player.position.x, player.position.z);
   deathCause = null;
   playerDirty = true;
   gameState = "paused";
@@ -424,7 +440,7 @@ ui.modeSelect.addEventListener("change", () => setMode(ui.modeSelect.value));
 ui.pauseModeSelect.addEventListener("change", () => setMode(ui.pauseModeSelect.value));
 
 // ---------- Graphics ----------
-const allWorldMaterials = [world.materials.opaque, world.materials.cutout, world.materials.water, world.materials.cutoutDepth];
+const allWorldMaterials = [world.materials.opaque, world.materials.cutout, world.materials.water, world.materials.cutoutDepth, lod.material];
 
 function setGraphics(name, { adoptRenderDistance = false } = {}) {
   graphicsPreset = normalizePreset(name);
@@ -437,6 +453,7 @@ function setGraphics(name, { adoptRenderDistance = false } = {}) {
     materials: allWorldMaterials,
     onResize,
   });
+  lod.configure({ detailDistance: preset.detailDistance });
   if (adoptRenderDistance) setRenderDistance(preset.renderDistance);
   ui.graphicsSelect.value = graphicsPreset;
   ui.graphicsHintEl.textContent = describePreset(graphicsPreset);
@@ -451,14 +468,15 @@ function describePreset(name) {
   parts.push(p.post ? "HDR bloom & color grading" : "no post-processing");
   if (p.godRays) parts.push("light shafts");
   if (p.caustics) parts.push("water caustics");
-  return `${parts.join(", ")}. Suggested render distance: ${p.renderDistance}.`;
+  return `${parts.join(", ")}. Full detail to about ${p.detailDistance + 2} chunks, then simplified terrain. Suggested render distance: ${p.renderDistance}.`;
 }
 
 function setRenderDistance(value) {
   renderDistance = clampRenderDistance(value);
   ui.renderDistanceInput.value = String(renderDistance);
   ui.renderDistanceValueEl.textContent = String(renderDistance);
-  updateFogDistances();
+  updateViewDistance();
+  lod.configure({ renderDistance });
   settings.renderDistance = renderDistance;
   saveSettings(settings);
 }
@@ -691,12 +709,15 @@ window.__voxelands = {
   weapons,
   decals,
   audio,
+  lod,
+  streamAround,
   water: { isUnderwater, surfaceHeight },
   hud,
   held,
   uniforms: worldUniforms,
   spawn: { x: spawnX, z: spawnZ },
   setGraphics,
+  setRenderDistance,
   setMode,
   respawn,
   flushSave,
@@ -751,7 +772,6 @@ function animate() {
   const running = gameState === "playing" || gameState === "inventory" || gameState === "dead";
   if (running) {
     player.update(dt);
-    world.ensureChunksAround(player.position.x, player.position.z, renderDistance);
     if (player.stepEvent) audio.playFootstep(BLOCK_INFO[player.stepBlock]?.sound);
     if (player.splashEvent) audio.playSplash();
     effects.listener.copy(player.getEyePosition());
@@ -766,7 +786,9 @@ function animate() {
   } else {
     player.syncCamera(); // keep the view behind the menus sensible
   }
+  streamAround(player.position.x, player.position.z);
   world.processQueues(gameState === "playing" ? STREAM_BUDGET_PLAYING_MS : STREAM_BUDGET_MENU_MS);
+  lod.update();
 
   interaction.updateTarget(gameState === "playing");
   if (gameState === "playing") interaction.update(dt);

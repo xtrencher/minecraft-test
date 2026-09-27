@@ -643,5 +643,128 @@ console.log("\nExplosion falloff (falloff.js)");
   });
 }
 
+console.log("\nDistant terrain (lod-mesher.js)");
+{
+  const { LodTerrain, buildLodTile, makeLodPalette, tileSpan, LOD_CELLS, LOD_WATER_TOP, LOD_KIND } = await import("../js/lod-mesher.js");
+  const { BLOCK } = await import("../js/blocks.js");
+  const { SEA_LEVEL } = await import("../js/constants.js");
+  const flat = new Float32Array(256 * 3).fill(0.4);
+  const pal = makeLodPalette({ top: flat, side: flat });
+  const seed = 4242;
+
+  // Faces of a built tile, from its quads: { normal, kind, x0, x1, y0, y1, z0, z1 }.
+  const facesOf = (m) => {
+    const faces = [];
+    for (let v = 0; v < m.vertexCount; v += 4) {
+      const xs = [];
+      const ys = [];
+      const zs = [];
+      for (let k = 0; k < 4; k++) {
+        xs.push(m.position[(v + k) * 3]);
+        ys.push(m.position[(v + k) * 3 + 1]);
+        zs.push(m.position[(v + k) * 3 + 2]);
+      }
+      faces.push({ normal: m.info[v * 4], kind: m.info[v * 4 + 1], x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys), z0: Math.min(...zs), z1: Math.max(...zs) });
+    }
+    return faces;
+  };
+
+  await test("tiles are well-formed: quads, valid indices, tops at the terrain height sampled at each cell's centre", () => {
+    const lt = new LodTerrain(seed);
+    for (const level of [1, 2, 4]) {
+      const m = buildLodTile(lt, level, -1, 2, pal);
+      const step = 1 << level;
+      assert.equal(m.vertexCount % 4, 0);
+      assert.equal(m.index.length, (m.vertexCount / 4) * 6);
+      for (const i of m.index) assert.ok(i < m.vertexCount);
+      for (const p of m.position) assert.ok(Number.isFinite(p));
+      // Every cell centre is covered by exactly one terrain top at its sampled height.
+      const tops = facesOf(m).filter((f) => f.normal === 2 && f.kind !== LOD_KIND.LEAVES);
+      for (let j = 0; j < LOD_CELLS; j += 5) {
+        for (let i = 0; i < LOD_CELLS; i += 3) {
+          const cx = i * step + step / 2;
+          const cz = j * step + step / 2;
+          const hits = tops.filter((f) => f.x0 < cx && f.x1 > cx && f.z0 < cz && f.z1 > cz);
+          assert.equal(hits.length, 1, `cell ${i},${j} at level ${level}: ${hits.length} tops`);
+          const h = lt.terrain.heightAt(m.x0 + cx, m.z0 + cz);
+          assert.ok(Math.abs(hits[0].y0 - (h < SEA_LEVEL ? LOD_WATER_TOP : h + 1)) < 1e-4, `cell ${i},${j}: top ${hits[0].y0}, ground ${h}`);
+        }
+      }
+      assert.equal(m.span, tileSpan(level));
+    }
+  });
+
+  await test("walls exactly cover every height step inside a tile, and skirts close every border", () => {
+    const lt = new LodTerrain(seed);
+    for (const level of [1, 3]) {
+      const m = buildLodTile(lt, level, 3, -2, pal);
+      const step = 1 << level;
+      const N = LOD_CELLS;
+      const heights = [];
+      for (let j = 0; j < N; j++) {
+        const row = [];
+        for (let i = 0; i < N; i++) {
+          const out = {};
+          lt.sample(m.x0 + i * step + step / 2, m.z0 + j * step + step / 2, out);
+          row.push(out.top);
+        }
+        heights.push(row);
+      }
+      let expected = 0;
+      for (let j = 0; j < N; j++) {
+        for (let i = 0; i < N; i++) {
+          if (i + 1 < N) expected += Math.abs(heights[j][i + 1] - heights[j][i]) * step;
+          if (j + 1 < N) expected += Math.abs(heights[j + 1][i] - heights[j][i]) * step;
+        }
+      }
+      const walls = facesOf(m).filter((f) => f.normal !== 2 && f.kind !== LOD_KIND.LEAVES && !(f.x1 - f.x0 < 1 && f.z1 - f.z0 < 1));
+      const onBorder = (f) => (f.normal < 2 ? f.x0 === 0 || f.x0 === N * step : f.z0 === 0 || f.z0 === N * step);
+      const inner = walls.filter((f) => !onBorder(f));
+      const border = walls.filter((f) => !inner.includes(f));
+      const area = inner.reduce((a, f) => a + (f.y1 - f.y0) * Math.max(f.x1 - f.x0, f.z1 - f.z0), 0);
+      assert.ok(Math.abs(area - expected) < 1e-3, `level ${level}: wall area ${area} vs height steps ${expected}`);
+      // Skirts: along each of the 4 borders, walls cover the full length,
+      // reaching from below the lowest top in the tile up to each cell's top.
+      const lowest = Math.min(...heights.flat());
+      for (const [normal, len] of [[0, N * step], [1, N * step], [4, N * step], [5, N * step]]) {
+        const side = border.filter((f) => f.normal === normal && (normal < 2 ? f.x0 === (normal === 0 ? N * step : 0) : f.z0 === (normal === 4 ? N * step : 0)));
+        const covered = side.reduce((a, f) => a + Math.max(f.x1 - f.x0, f.z1 - f.z0), 0);
+        assert.equal(covered, len, `level ${level}: skirt ${normal} covers ${covered} of ${len}`);
+        for (const f of side) assert.ok(f.y0 <= lowest - step, "skirts reach below the tile's lowest surface");
+      }
+    }
+  });
+
+  await test("trees become canopy boxes on near levels and a grass tint far away", () => {
+    const lt = new LodTerrain(seed);
+    const near = buildLodTile(lt, 2, 0, 0, pal);
+    const leaves = facesOf(near).filter((f) => f.kind === LOD_KIND.LEAVES).length;
+    let trees = 0;
+    for (let z = 0; z < near.span; z++) for (let x = 0; x < near.span; x++) if (lt.treeAt(x, z) && lt.terrain.heightAt(x, z) >= SEA_LEVEL) trees++;
+    assert.ok(trees > 5 && leaves >= trees * 5, `${trees} trees, ${leaves} leaf faces`);
+    const far = buildLodTile(lt, 4, 0, 0, pal);
+    assert.equal(facesOf(far).filter((f) => f.kind === LOD_KIND.LEAVES).length, 0);
+  });
+
+  await test("player edits show in distant terrain: a crater lowers the surface and felled trees disappear", () => {
+    const lt = new LodTerrain(seed);
+    // Find a tree and dig out its whole chunk down to y = 10.
+    let tree = null;
+    for (let z = 0; z < 512 && !tree; z++) for (let x = 0; x < 512 && !tree; x++) if (lt.treeAt(x, z)) tree = [x, z];
+    assert.ok(tree, "no tree found");
+    const cx = tree[0] >> 4;
+    const cz = tree[1] >> 4;
+    const list = [];
+    for (let y = 10; y < 64; y++) for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) list.push((y * 16 + z) * 16 + x, BLOCK.AIR);
+    lt.setChunkEdits(`${cx},${cz}`, list);
+    const out = {};
+    lt.sample(cx * 16 + 5, cz * 16 + 7, out);
+    assert.equal(out.top, 10);
+    assert.equal(lt.treeAt(tree[0], tree[1]), 0);
+    lt.setChunkEdits(`${cx},${cz}`, []);
+    assert.ok(lt.treeAt(tree[0], tree[1]) > 0, "clearing the edits restores the tree");
+  });
+}
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 process.exit(failed > 0 ? 1 : 0);

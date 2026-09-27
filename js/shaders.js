@@ -449,6 +449,87 @@ void main() {
 `;
 
 // ---------------------------------------------------------------------------
+// Distant terrain (level of detail, see lod-mesher.js)
+// ---------------------------------------------------------------------------
+// Flat-coloured blocky columns lit with the same model as the chunks (full
+// sky light: they're the open surface, and beyond the shadow maps' reach).
+// Water gets the near water's body colour, depth, fresnel sky reflection and
+// sun glint, without waves (too far away to see them).
+
+const lodVertex = /* glsl */ `
+attribute vec4 aColor; // sRGB colour, ambient occlusion
+attribute vec4 aInfo;  // normal index, kind, water depth
+varying vec3 vColor;
+varying float vAo;
+varying vec3 vWorldPos;
+flat varying vec3 vNormal;
+flat varying float vKind;
+varying float vDepth;
+
+const vec3 FACE_NORMALS[6] = vec3[6](
+  vec3(1.0, 0.0, 0.0), vec3(-1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0),
+  vec3(0.0, -1.0, 0.0), vec3(0.0, 0.0, 1.0), vec3(0.0, 0.0, -1.0));
+
+void main() {
+  vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+  gl_Position = projectionMatrix * viewMatrix * worldPosition;
+  vWorldPos = worldPosition.xyz;
+  vColor = pow(aColor.rgb, vec3(2.2));
+  vAo = aColor.a;
+  vNormal = FACE_NORMALS[int(aInfo.x + 0.5)];
+  vKind = aInfo.y;
+  vDepth = aInfo.z;
+}
+`;
+
+const lodFragment = /* glsl */ `
+varying vec3 vColor;
+varying float vAo;
+varying vec3 vWorldPos;
+flat varying vec3 vNormal;
+flat varying float vKind;
+varying float vDepth;
+${WORLD_COMMON}
+
+void main() {
+  vec3 N = vNormal;
+  int kind = int(vKind + 0.5);
+  vec3 color = vColor * worldLighting(N, 1.0, 0.0, vAo, 1.0);
+  if (kind == 1) {
+    vec3 up = vec3(0.0, 1.0, 0.0);
+    vec3 V = normalize(cameraPosition - vWorldPos);
+    float ndv = clamp(dot(N, V), 0.0, 1.0);
+    float fresnel = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);
+    vec3 lightAmt = worldLighting(up, 1.0, 0.0, 1.0, 1.0);
+    float deepness = 1.0 - exp(-max(vDepth, 0.05) * 0.42);
+    vec3 body = mix(vec3(0.07, 0.36, 0.40), vec3(0.015, 0.08, 0.2), deepness) * lightAmt;
+    // The sandy floor showing through shallow water.
+    vec3 floorCol = vColor * lightAmt * 0.55 * exp(-vDepth * vec3(0.5, 0.22, 0.16));
+    vec3 base = mix(floorCol, body, mix(0.5, 0.93, deepness));
+    vec3 R = reflect(-V, N);
+    R.y = abs(R.y);
+    vec3 refl = skyColor(R);
+    // A broad glint: at this distance the waves blur the sun's reflection.
+    float rs = max(dot(R, uLightDir), 0.0);
+    refl += uLightColor * (pow(rs, 150.0) * 2.5 + pow(rs, 24.0) * 0.25);
+    color = mix(base, refl, fresnel);
+  }
+  color = applyFog(color, vWorldPos);
+  gl_FragColor = vec4(color, 1.0);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}
+`;
+
+export function createLodMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: { ...worldUniforms },
+    vertexShader: lodVertex,
+    fragmentShader: lodFragment,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Sky dome
 // ---------------------------------------------------------------------------
 

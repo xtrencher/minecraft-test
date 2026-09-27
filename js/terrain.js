@@ -50,6 +50,22 @@ export class TerrainGenerator {
     return Math.floor(BASE_HEIGHT + n * AMPLITUDE);
   }
 
+  // Trunk height of the tree rooted in column (wx, wz), or 0 if there is
+  // none. `h` is the column's ground height (computed if omitted). Caves are
+  // ignored here: generate() also skips a tree whose ground was carved away.
+  // Distant-terrain meshes (lod-mesher.js) use this to place their trees.
+  treeAt(wx, wz, h = null) {
+    const lx = wx & (CHUNK_SIZE - 1);
+    const lz = wz & (CHUNK_SIZE - 1);
+    // Only rooted well inside a chunk, so canopies never cross chunk borders.
+    if (lx < 3 || lx >= CHUNK_SIZE - 3 || lz < 3 || lz >= CHUNK_SIZE - 3) return 0;
+    const r = hash2(this.seed, wx, wz);
+    if (r >= TREE_CHANCE) return 0;
+    if (h === null) h = this.heightAt(wx, wz);
+    if (h <= SEA_LEVEL + 1 || h >= WORLD_HEIGHT - 10) return 0;
+    return 4 + (Math.floor(r * 30000) % 3);
+  }
+
   // Fills a zeroed chunk.blocks array for the chunk at (chunk.cx, chunk.cz).
   generate(chunk) {
     const S = CHUNK_SIZE;
@@ -88,16 +104,13 @@ export class TerrainGenerator {
     this._placeVeins(blocks, chunk.cx, chunk.cz);
     this._placeCrystals(blocks, baseX, baseZ);
 
-    // Trees: only rooted well inside the chunk so canopies never cross chunk
-    // borders, and only where the ground wasn't carved away by a cave.
+    // Trees (see treeAt), only where the ground wasn't carved away by a cave.
     for (let lz = 3; lz < S - 3; lz++) {
       for (let lx = 3; lx < S - 3; lx++) {
         const h = hAt(lx, lz);
-        if (h <= SEA_LEVEL + 1 || h >= WORLD_HEIGHT - 10) continue;
-        const r = hash2(this.seed, baseX + lx, baseZ + lz);
-        if (r >= TREE_CHANCE) continue;
-        if (blocks[idx(lx, h, lz)] !== BLOCK.GRASS) continue;
-        this._placeTree(blocks, lx, h, lz, r);
+        const trunk = this.treeAt(baseX + lx, baseZ + lz, h);
+        if (trunk === 0 || blocks[idx(lx, h, lz)] !== BLOCK.GRASS) continue;
+        this._placeTree(blocks, lx, h, lz, trunk);
       }
     }
 
@@ -229,14 +242,13 @@ export class TerrainGenerator {
     }
   }
 
-  _placeTree(blocks, lx, h, lz, r) {
+  _placeTree(blocks, lx, h, lz, trunkHeight) {
     const S = CHUNK_SIZE;
     const set = (x, y, z, id) => {
       if (x < 0 || x >= S || z < 0 || z >= S || y < 0 || y >= WORLD_HEIGHT) return;
       blocks[(y * S + z) * S + x] = id;
     };
     const get = (x, y, z) => blocks[(y * S + z) * S + x];
-    const trunkHeight = 4 + (Math.floor(r * 30000) % 3);
     for (let i = 1; i <= trunkHeight; i++) set(lx, h + i, lz, BLOCK.WOOD);
     const canopyCenterY = h + trunkHeight;
     for (let dy = -2; dy <= 1; dy++) {

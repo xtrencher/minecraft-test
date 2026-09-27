@@ -1,6 +1,9 @@
 // Graphics presets. Each preset trades visual features for speed; "low" is
 // meant to run smoothly on weak laptops (no post-processing, no shadow
 // maps, native pixel ratio, cheap sky and water), "ultra" turns everything on.
+// renderDistance is the suggested view distance in chunks (applied when a
+// preset is picked); detailDistance is how far (in chunks, roughly) terrain
+// is drawn in full detail before simplified LOD tiles take over.
 import * as THREE from "three";
 import { worldUniforms } from "./shaders.js";
 
@@ -19,7 +22,8 @@ export const PRESETS = {
     waves: 0,
     caustics: 0,
     anisotropy: 1,
-    renderDistance: 6,
+    renderDistance: 12,
+    detailDistance: 4,
   },
   medium: {
     label: "Medium",
@@ -35,7 +39,8 @@ export const PRESETS = {
     waves: 1,
     caustics: 0,
     anisotropy: 4,
-    renderDistance: 8,
+    renderDistance: 16,
+    detailDistance: 6,
   },
   high: {
     label: "High",
@@ -51,7 +56,8 @@ export const PRESETS = {
     waves: 1,
     caustics: 1,
     anisotropy: 8,
-    renderDistance: 10,
+    renderDistance: 20,
+    detailDistance: 8,
   },
   ultra: {
     label: "Ultra",
@@ -67,7 +73,8 @@ export const PRESETS = {
     waves: 1,
     caustics: 1,
     anisotropy: 16,
-    renderDistance: 10,
+    renderDistance: 20,
+    detailDistance: 8,
   },
 };
 

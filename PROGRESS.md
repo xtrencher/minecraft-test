@@ -416,3 +416,68 @@ While running these, the full suite exposed two test-order problems, which I fix
 2. The sword check could be hit by the zombie between aiming and swinging. A hit knocks the player into the air, which turned the swing into a critical hit, so the check now holds off the zombie's attack and waits until the player is on the ground.
 
 **46 smoke checks and 26 unit tests pass with zero console errors.**
+
+## Phase 3: Render distance with level of detail — DONE
+
+**What changed for the player.** The render distance slider now goes up to **100 chunks** (1,600 blocks), and the default is **20** (was 10, max 16). Only the area around the player is drawn in full detail. Beyond it, the land is drawn with simplified, blocky meshes that get coarser with distance, so far-away hills, beaches, lakes and forests are visible out to the horizon.
+
+**How it works (new `js/lod.js`, `js/lod-mesher.js`, `js/lod-worker.js`).**
+- **Quadtree of tiles.** The ground is divided into a quadtree of square tiles. A tile at level L covers 2^(L+1) × 2^(L+1) chunks as 32 × 32 cells of 2^L blocks. It splits into its 4 children while the player is closer than `detailDistance × 2^(L−1)` chunks (with a quarter-tile of hysteresis, so walking back and forth over a boundary doesn't flip it). So cells are 2 blocks from about the detail distance out, 4 blocks from twice that, 8 from four times, and so on: the step grows in proportion to distance.
+- **Detail area.** A split level-1 tile is the "detail" area. Its chunks are generated, lit and meshed by the World exactly as before. Mobs, physics, falling blocks and explosions only exist there (and in its one-chunk margin).
+- **Tile meshes.** Each cell is a column at the ground height sampled at the cell centre from the terrain generator: a flat top, plus walls down to lower neighbours, so distant land keeps the voxel look.
+  - **Merging:** tops are merged into runs, and walls along the border direction.
+  - **Water:** a flat surface at the drawn water level that carries its depth. The LOD shader colours it like the near water (depth colour, sandy floor, fresnel sky reflection, sun glint).
+  - **Trees:** canopy boxes on levels 1–3 (they use the same tree placement rule as terrain generation, now shared through `TerrainGenerator.treeAt`, verified to generate byte-identical chunks). Farther out, trees become a tint of the grass.
+  - **Skirts:** every tile border gets a deep wall, so tiles of different levels, and the detail area, never leave cracks.
+- **Colours** come from each block's texture average in linear light (what a mipmapped texture shows from far away), and the tiles use the same lighting and fog code as the chunks.
+- **Player edits reach distant terrain.** For chunks the player has changed, the worker generates the real chunk, applies the saved edits and uses its actual surface, and it drops trees that were cut down or blown up. A crater stays visible from afar, and tiles over an edited chunk are rebuilt when needed.
+- **Web Worker.** Tile meshes are built in a module Web Worker (nearest first, a few requests in flight so a new plan can re-prioritize), and handed back as transferable typed arrays. The main thread only turns them into geometry, within 3 ms per frame. If module workers aren't available, tiles are built on the main thread within a per-frame budget instead.
+- **Seamless hand-over.** The planned leaves exactly partition the ground, and a region keeps its old look until the new one is complete:
+  - When a tile splits, it stays visible until all its children, or all its chunks, are ready. Around the player, a gap is preferred over coarse ground underfoot.
+  - When tiles merge, the children (or chunks) stay visible, and loaded, until the parent tile is built.
+  - New chunks start hidden, and the LOD system decides which ones show.
+- **Memory.**
+  - Tiles that are neither planned nor needed as a stand-in are disposed.
+  - Chunks more than 3 chunks outside the detail area are unloaded. Chunks that were only kept as stand-ins are released as soon as they're no longer shown, not only at the next re-plan.
+  - After a 1,500-block move, the test finds exactly the planned tiles and no chunk beyond the render distance.
+- **Fog and far plane.** Fog ends at the render distance as before, and the camera's far plane now follows the render distance (at least 1,000).
+- **Presets** now set how far full detail reaches (`detailDistance`) and suggest a render distance:
+
+  | Preset | Full detail distance | Suggested render distance |
+  |---|---|---|
+  | Low | 4 chunks | 12 |
+  | Medium | 6 chunks | 16 |
+  | High | 8 chunks | 20 |
+  | Ultra | 8 chunks | 20 |
+
+  The detail area on Ultra (about 320 chunks) is about what Ultra drew in full before at distance 10. The render distance slider still goes to 100 on every preset.
+
+**Measured.**
+- **Build cost:** a Node benchmark builds a tile in 1–5 ms.
+- **Tiles at each render distance (Ultra):**
+
+  | Render distance | LOD tiles | Vertices | Memory | Total build time |
+  |---|---|---|---|---|
+  | 20 | 70 | about 290k | 6 MB | about 0.3 s |
+  | 64 | 224 | 1.4M | 32 MB | — |
+  | 100 | 300 | 2.4M | 52 MB | about 0.3 s |
+
+- **In the browser, on Low:** render distance 64 streamed in within 3.8 s after its detail area was loaded. The longest main-thread LOD update (plan, uploads and visibility pass) was 2.8 ms.
+- **Transition quality:** I rendered the same view at render distance 16 twice on High, once with LOD beyond 8 chunks and once with every chunk in full detail (797 chunks). The mean pixel difference is 2.1/255, mostly in the shapes of distant tree canopies. Side-by-side crops of the horizon are hard to tell apart.
+
+**Testing.** New unit tests (lod-mesher.js, in Node):
+- Tiles are well-formed, and every cell top sits at the terrain height sampled at its centre.
+- Walls exactly cover every height step inside a tile (total wall area equals the sum of height differences), and skirts cover all four borders, reaching below the tile's lowest surface.
+- Trees are boxes on near levels and a tint far away.
+- A dug-out chunk lowers the distant surface and removes its tree, and clearing the edits restores both.
+
+New smoke checks:
+- The default render distance is 20 of a maximum of 100.
+- Detail chunks and LOD tiles stream in, built in a worker, and **every chunk within the render distance is drawn exactly once** (no gaps, no overlaps).
+- Flying 14 chunks while sampling coverage every couple of frames finds no overlaps and no gaps inside half the render distance at any moment (42 samples), and full coverage after settling.
+- A crater dug 12 chunks away shows in the distant tile (surface y=10 instead of 25).
+- Render distance 64 streams in with short main-thread updates and a far plane beyond it, and moving 1,500 blocks away releases every out-of-range tile and chunk.
+
+The test arenas that are built at an offset from spawn now load their chunks first (`prepareArea`), because with the smaller detail area on Low they may lie outside it.
+
+**49 smoke checks and 30 unit tests pass with zero console errors.**

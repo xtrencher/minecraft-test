@@ -667,11 +667,19 @@ function tileCanvas(pixels) {
 //   texture: THREE.DataArrayTexture (one layer per TILE_NAMES entry)
 //   canvases: tile name -> 32x32 canvas (for UI icons)
 //   blockColors: block id -> [r, g, b] (sRGB 0-1) average visible color
+//   facePalette: { top, side }: Float32Array(256 * 3), each block's average
+//     top / side texture color in linear light (for distant terrain)
+const SRGB_TO_LINEAR = new Float32Array(256).map((_, i) => {
+  const c = i / 255;
+  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+});
+
 export function buildBlockTextures() {
   const layers = TILE_NAMES.length;
   const data = new Uint8Array(TEX * TEX * 4 * layers);
   const canvases = {};
   const tileAvg = [];
+  const tileLinear = [];
   for (let l = 0; l < layers; l++) {
     const pixels = paintTile(TILE_NAMES[l]);
     // DataArrayTexture rows start at v = 0 (the bottom), canvas rows at the
@@ -692,6 +700,18 @@ export function buildBlockTextures() {
       n++;
     }
     tileAvg.push(n ? [r / n / 255, g / n / 255, b / n / 255] : [0.8, 0.8, 0.8]);
+    // The average in linear light, which is what a fully mipmapped texture
+    // shows from far away (used for distant terrain).
+    let lr = 0;
+    let lg = 0;
+    let lb = 0;
+    for (let i = 0; i < pixels.length; i += 4) {
+      if (pixels[i + 3] < 128) continue;
+      lr += SRGB_TO_LINEAR[pixels[i]];
+      lg += SRGB_TO_LINEAR[pixels[i + 1]];
+      lb += SRGB_TO_LINEAR[pixels[i + 2]];
+    }
+    tileLinear.push(n ? [lr / n, lg / n, lb / n] : [0.6, 0.6, 0.6]);
   }
 
   const texture = new THREE.DataArrayTexture(data, TEX, TEX, layers);
@@ -711,7 +731,12 @@ export function buildBlockTextures() {
     const side = tileAvg[info.faces.side];
     blockColors[info.id] = [(top[0] + side[0]) / 2, (top[1] + side[1]) / 2, (top[2] + side[2]) / 2];
   }
-  return { texture, canvases, blockColors };
+  const facePalette = { top: new Float32Array(256 * 3), side: new Float32Array(256 * 3) };
+  for (const info of Object.values(BLOCK_INFO)) {
+    facePalette.top.set(tileLinear[info.faces.top], info.id * 3);
+    facePalette.side.set(tileLinear[info.faces.side], info.id * 3);
+  }
+  return { texture, canvases, blockColors, facePalette };
 }
 
 // Draws a block as a small isometric cube icon (or a flat sprite for

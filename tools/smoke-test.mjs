@@ -102,6 +102,7 @@ async function setupArena(page, offX = 20, offZ = 20, y = 46) {
       const { world, player, spawn } = window.__voxelands;
       const x0 = spawn.x + offX;
       const z0 = spawn.z + offZ;
+      world.prepareArea(x0, z0, 1); // edits need loaded chunks (it may be outside the detailed area)
       const edits = [];
       for (let dx = -4; dx <= 4; dx++) {
         for (let dz = -4; dz <= 4; dz++) {
@@ -202,11 +203,11 @@ try {
     assert(saved.graphics === "low", `graphics setting not persisted: ${JSON.stringify(saved)}`);
   });
 
-  await check("default render distance is 10", async () => {
-    const value = await page.$eval("#render-distance", (el) => el.value);
-    assert(value === "10", `slider value is ${value}, expected 10`);
+  await check("default render distance is 20 chunks, up to 100", async () => {
+    const slider = await page.$eval("#render-distance", (el) => ({ value: el.value, max: el.max }));
+    assert(slider.value === "20" && slider.max === "100", `slider ${JSON.stringify(slider)}, expected 20 of max 100`);
     const live = await page.evaluate(() => window.__voxelands.renderDistance);
-    assert(live === 10, `game render distance is ${live}, expected 10`);
+    assert(live === 20, `game render distance is ${live}, expected 20`);
   });
 
   await check("Play button locks pointer and starts the game", async () => {
@@ -281,13 +282,65 @@ try {
     await page.waitForTimeout(500);
   });
 
-  await check("all chunks within the render distance stream in", async () => {
+  await check("animals spawn around the player at the start", async () => {
+    const s = await page.evaluate(() => {
+      const { mobs } = window.__voxelands;
+      return { passive: mobs.countOf(false), kinds: [...new Set(mobs.mobs.map((m) => m.kind))] };
+    });
+    console.log(`        ${s.passive} animals around the player: ${s.kinds.join(", ")}`);
+    assert(s.passive >= 3, `expected a few animals near spawn, found ${s.passive}`);
+  });
+
+  // Every chunk within the render distance is drawn exactly once: either as
+  // a detailed chunk or inside one LOD tile. `inner`: gaps within half the
+  // render distance (the rim may briefly lag behind while new tiles build).
+  const lodCoverage = () =>
+    page.evaluate(() => {
+      const { world, lod, player } = window.__voxelands;
+      const rd = lod.renderDistance;
+      const pcx = Math.floor(player.position.x / 16);
+      const pcz = Math.floor(player.position.z / 16);
+      const tiles = [...lod.tiles.values()].filter((t) => t.mesh && t.mesh.visible).map((t) => [t.x0 / 16, t.z0 / 16, (32 << t.level) / 16]);
+      const r = { gaps: 0, inner: 0, overlaps: 0, checked: 0, chunks: 0, tiles: tiles.length };
+      for (let dz = -rd; dz <= rd; dz++) {
+        for (let dx = -rd; dx <= rd; dx++) {
+          if (dx * dx + dz * dz > (rd - 1) * (rd - 1)) continue;
+          const cx = pcx + dx;
+          const cz = pcz + dz;
+          let n = 0;
+          const chunk = world.getChunk(cx, cz);
+          if (chunk && chunk.meshed && chunk.group.visible) {
+            n++;
+            r.chunks++;
+          }
+          for (const [x0, z0, c] of tiles) if (cx >= x0 && cx < x0 + c && cz >= z0 && cz < z0 + c) n++;
+          r.checked++;
+          if (n === 0) {
+            r.gaps++;
+            if (dx * dx + dz * dz <= (rd * rd) / 4) r.inner++;
+          }
+          if (n > 1) r.overlaps++;
+        }
+      }
+      return r;
+    });
+  const waitStreamed = (timeout = 300000) =>
+    page.waitForFunction(() => window.__voxelands.world.isIdle && window.__voxelands.lod.isIdle, null, { timeout, polling: 250 });
+
+  await check("detailed chunks and distant LOD tiles stream in and cover the land exactly once", async () => {
     const t0 = Date.now();
-    await page.waitForFunction(() => window.__voxelands.world.genQueue.length === 0, null, { timeout: 120000, polling: 250 });
-    const count = await page.evaluate(() => window.__voxelands.world.chunks.size);
-    console.log(`        ${count} chunks loaded, queue drained ${((Date.now() - t0) / 1000).toFixed(1)}s after check start`);
-    // A radius-10 disc of chunks holds ~317 chunks.
-    assert(count >= 300, `only ${count} chunks loaded`);
+    await waitStreamed();
+    const s = await page.evaluate(() => {
+      const { lod, world } = window.__voxelands;
+      const levels = {};
+      for (const t of lod.tiles.values()) levels[t.level] = (levels[t.level] || 0) + 1;
+      return { levels, tiles: lod.tiles.size, vertices: lod.stats.vertices, chunks: world.chunks.size, worker: !!lod.worker, fallback: lod.fallbackReason };
+    });
+    const cov = await lodCoverage();
+    console.log(`        streamed in ${((Date.now() - t0) / 1000).toFixed(1)} s: ${cov.chunks} detailed chunks shown (${s.chunks} loaded), ${s.tiles} LOD tiles by level ${JSON.stringify(s.levels)}, ${s.vertices} LOD vertices, built in a worker: ${s.worker}`);
+    assert(s.worker && !s.fallback, `LOD tiles should build in a Web Worker (${s.fallback})`);
+    assert(cov.gaps === 0 && cov.overlaps === 0, `coverage: ${JSON.stringify(cov)}`);
+    assert(cov.chunks > 40 && s.tiles > 10, `expected detailed chunks near the player and LOD tiles farther out: ${JSON.stringify(cov)}`);
   });
 
   await check("render distance slider applies and persists", async () => {
@@ -304,15 +357,128 @@ try {
     // The Graphics selector applies a preset and its suggested render distance.
     await page.selectOption("#graphics-preset", "medium");
     const med = await page.evaluate(() => ({ g: window.__voxelands.graphics, rd: window.__voxelands.renderDistance, s: JSON.parse(localStorage.getItem("voxelands_v1_settings")) }));
-    assert(med.g === "medium" && med.rd === 8 && med.s.graphics === "medium", `graphics selector: ${JSON.stringify(med)}`);
+    assert(med.g === "medium" && med.rd === 16 && med.s.graphics === "medium", `graphics selector: ${JSON.stringify(med)}`);
     await page.selectOption("#graphics-preset", "low");
     // Restore the default for the rest of the run.
     await page.$eval("#render-distance", (el) => {
-      el.value = "10";
+      el.value = "20";
       el.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await page.click("#resume-btn", { timeout: 20000 });
     await page.waitForFunction(() => window.__voxelands.gameState === "playing", null, { timeout: 10000 });
+  });
+
+  // --- Level of detail (Round 3, Phase 3) ---
+  await check("LOD: flying across the land hands over between chunks and tiles with no gaps or overlaps", async () => {
+    await page.evaluate(() => window.__voxelands.setMode("creative")); // to fly (back to survival below)
+    await waitStreamed();
+    const worst = { overlaps: 0, inner: 0 };
+    let samples = 0;
+    // 14 chunks east, a chunk at a time, looking at the coverage each time.
+    for (let i = 0; i < 14; i++) {
+      await page.evaluate(() => {
+        const p = window.__voxelands.player;
+        p.flying = true;
+        p.velocity.set(0, 0, 0);
+        p.position.x += 16;
+        p.position.y = 60;
+      });
+      for (let k = 0; k < 3; k++) {
+        await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+        const cov = await lodCoverage();
+        worst.overlaps = Math.max(worst.overlaps, cov.overlaps);
+        worst.inner = Math.max(worst.inner, cov.inner);
+        samples++;
+      }
+    }
+    await waitStreamed();
+    const end = await lodCoverage();
+    console.log(`        ${samples} samples while moving: worst ${worst.overlaps} overlapping chunks, ${worst.inner} gaps within half the render distance; settled: ${JSON.stringify(end)}`);
+    assert(worst.overlaps === 0 && worst.inner === 0, `hand-over problems while moving: ${JSON.stringify(worst)}`);
+    assert(end.gaps === 0 && end.overlaps === 0, `after settling: ${JSON.stringify(end)}`);
+  });
+
+  await check("LOD: a crater stays visible in the distant terrain", async () => {
+    // Dig a whole chunk out down to y = 10 (every LOD cell size samples it),
+    // then fly 12 chunks away so it's drawn as a LOD tile.
+    const site = await page.evaluate(() => {
+      const { world, player } = window.__voxelands;
+      const cx = Math.floor(player.position.x / 16);
+      const cz = Math.floor(player.position.z / 16) + 1;
+      const e = [];
+      for (let y = 10; y < 64; y++) for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) e.push(cx * 16 + x, y, cz * 16 + z, 0);
+      world.setBlocks(e);
+      player.position.x -= 12 * 16;
+      return { x: cx * 16 + 8, z: cz * 16 + 8 };
+    });
+    await waitStreamed();
+    const r = await page.evaluate(({ x, z }) => {
+      const { lod, world } = window.__voxelands;
+      const tile = [...lod.tiles.values()].find((t) => t.mesh && t.mesh.visible && x >= t.x0 && x < t.x0 + (32 << t.level) && z >= t.z0 && z < t.z0 + (32 << t.level));
+      if (!tile) return { tile: null, chunkShown: !!world.getChunk(x >> 4, z >> 4)?.group.visible };
+      // The top face over the site.
+      const g = tile.mesh.geometry;
+      const pos = g.attributes.position.array;
+      const info = g.attributes.aInfo.array;
+      let top = null;
+      for (let v = 0; v < pos.length / 3; v += 4) {
+        if (info[v * 4] !== 2 || info[v * 4 + 1] === 2) continue;
+        const xs = [pos[v * 3], pos[v * 3 + 6]];
+        const zs = [pos[v * 3 + 2], pos[v * 3 + 8]];
+        const lx = x - tile.x0;
+        const lz = z - tile.z0;
+        if (lx >= Math.min(...xs) && lx <= Math.max(...xs) && lz >= Math.min(...zs) && lz <= Math.max(...zs)) top = pos[v * 3 + 1];
+      }
+      return { tile: tile.key, top, ground: world.heightAt(x, z) };
+    }, site);
+    console.log(`        crater site drawn by LOD tile ${r.tile}: surface at y=${r.top} (natural ground ${r.ground})`);
+    assert(r.tile && r.top !== null && r.top <= 11, `the LOD tile should show the crater: ${JSON.stringify(r)}`);
+  });
+
+  await check("LOD: render distance 64 builds off the main thread without long frames, and memory is freed", async () => {
+    await page.evaluate(() => {
+      const v = window.__voxelands;
+      v.lod.stats.maxUpdateMs = 0;
+      v.setRenderDistance(64);
+    });
+    const t0 = Date.now();
+    await waitStreamed(900000);
+    const far = await page.evaluate(() => {
+      const { lod, camera } = window.__voxelands;
+      return { tiles: lod.tiles.size, vertices: lod.stats.vertices, maxUpdateMs: lod.stats.maxUpdateMs, far: camera.far };
+    });
+    const cov = await lodCoverage();
+    console.log(`        render distance 64: ${far.tiles} tiles, ${far.vertices} vertices, streamed in ${((Date.now() - t0) / 1000).toFixed(1)} s; longest LOD update ${far.maxUpdateMs.toFixed(1)} ms; camera far ${far.far}`);
+    assert(cov.gaps === 0 && cov.overlaps === 0, `coverage at 64: ${JSON.stringify(cov)}`);
+    assert(far.maxUpdateMs < 40, `a LOD update took ${far.maxUpdateMs.toFixed(1)} ms on the main thread`);
+    assert(far.far >= 64 * 16, `camera far plane ${far.far} is short of the render distance`);
+    // Far away, then back to the default distance: everything out of range is released.
+    await page.evaluate(() => {
+      const v = window.__voxelands;
+      v.setRenderDistance(20);
+      v.player.position.x += 1500;
+    });
+    await waitStreamed();
+    const after = await page.evaluate(() => {
+      const { lod, world, player } = window.__voxelands;
+      const pcx = Math.floor(player.position.x / 16);
+      const pcz = Math.floor(player.position.z / 16);
+      let farChunks = 0;
+      for (const c of world.chunks.values()) if (Math.hypot(c.cx - pcx, c.cz - pcz) > 20) farChunks++;
+      const meshes = lod.group.children.length;
+      return { tiles: lod.tiles.size, leaves: lod.leafCount, meshes, chunks: world.chunks.size, farChunks };
+    });
+    console.log(`        after moving 1500 blocks at distance 20: ${after.tiles} tiles (${after.meshes} meshes), ${after.chunks} chunks loaded, ${after.farChunks} beyond 20 chunks`);
+    assert(after.tiles === after.leaves && after.meshes === after.tiles && after.farChunks === 0, `stale tiles or chunks kept: ${JSON.stringify(after)}`);
+    // Back to the world spawn for the rest of the checks.
+    await page.evaluate(() => {
+      const v = window.__voxelands;
+      v.world.prepareArea(v.spawn.x, v.spawn.z, 2);
+      v.player.flying = false;
+      v.player.spawnAt(v.spawn.x, v.spawn.z);
+      v.setMode("survival");
+    });
+    await waitStreamed();
   });
 
   // --- Lighting (Phase 3) ---
@@ -527,6 +693,7 @@ try {
         const v = window.__voxelands;
         const x0 = v.spawn.x + offX;
         const z0 = v.spawn.z + offZ;
+        v.world.prepareArea(x0, z0 - 17, 2); // edits need loaded chunks
         const e = [];
         for (let dx = -10; dx <= 10; dx++) {
           for (let dz = -40; dz <= 6; dz++) {
@@ -546,15 +713,6 @@ try {
       },
       [offX, offZ, y]
     );
-
-  await check("animals spawn around the player at the start", async () => {
-    const s = await page.evaluate(() => {
-      const { mobs } = window.__voxelands;
-      return { passive: mobs.countOf(false), kinds: [...new Set(mobs.mobs.map((m) => m.kind))] };
-    });
-    console.log(`        ${s.passive} animals around the player: ${s.kinds.join(", ")}`);
-    assert(s.passive >= 3, `expected a few animals near spawn, found ${s.passive}`);
-  });
 
   const giveWeapons = () =>
     page.evaluate(() => {
@@ -1184,6 +1342,7 @@ try {
         const x0 = v.spawn.x + offX;
         const z0 = v.spawn.z + offZ;
         const y = 46;
+        v.world.prepareArea(x0, z0, 1); // edits need loaded chunks
         const e = [];
         for (let dx = -6; dx <= 6; dx++) {
           for (let dz = -10; dz <= 10; dz++) {
