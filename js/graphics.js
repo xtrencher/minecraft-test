@@ -27,6 +27,8 @@ export const PRESETS = {
     grass: 0,
     fancyLeaves: false,
     water: "simple",
+    mist: 0.5, // strength of the low mist over water
+    raySamples: 32,
     renderDistance: 12,
     detailDistance: 4,
   },
@@ -48,6 +50,8 @@ export const PRESETS = {
     grass: 0,
     fancyLeaves: false,
     water: "simple",
+    mist: 0.8, // strength of the low mist over water
+    raySamples: 32,
     renderDistance: 16,
     detailDistance: 6,
   },
@@ -69,6 +73,8 @@ export const PRESETS = {
     grass: 1,
     fancyLeaves: true,
     water: "refract",
+    mist: 1.0, // strength of the low mist over water
+    raySamples: 48,
     renderDistance: 20,
     detailDistance: 8,
   },
@@ -90,6 +96,8 @@ export const PRESETS = {
     grass: 2,
     fancyLeaves: true,
     water: "ssr",
+    mist: 1.0, // strength of the low mist over water
+    raySamples: 72,
     renderDistance: 20,
     detailDistance: 8,
   },
@@ -137,7 +145,7 @@ export function applyPreset(name, ctx) {
   // Water: drawn over the finished world image (refraction, absorption,
   // reflections) on High/Ultra; the simple blended surface otherwise.
   const screenWater = p.post && p.msaa > 0 && p.water !== "simple";
-  postfx.configure({ msaa: p.msaa, bloomLevels: p.bloomLevels, godRays: p.godRays, screenWater });
+  postfx.configure({ msaa: p.msaa, bloomLevels: p.bloomLevels, godRays: p.godRays, screenWater, raySamples: p.raySamples });
   if (ctx.chunkMaterials) {
     const water = ctx.chunkMaterials.water;
     setDefine(water, "WATER_SCREEN", screenWater);

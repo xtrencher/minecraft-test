@@ -29,7 +29,11 @@ export const worldUniforms = {
   uTorchColor: { value: new THREE.Color(1.05, 0.62, 0.28) },
   uTime: { value: 0 },
   uNight: { value: 0 },
-  uFog: { value: new THREE.Vector4(80, 150, 0.004, 0.0) }, // start, end, haze density, low mist
+  uFog: { value: new THREE.Vector4(80, 150, 0.004, 0.0) }, // start, end, haze density, (unused)
+  // Low mist over water: density (per block, at the water), thickness
+  // (blocks), drift speed, water level. Set per frame by main.js (denser at
+  // dawn and dusk).
+  uMist: { value: new THREE.Vector4(0, 3.5, 1, 24.9) },
   uUnderwater: { value: 0 },
   uWaterFogColor: { value: new THREE.Color(0.02, 0.1, 0.16) },
   uWaveStrength: { value: 1 },
@@ -58,6 +62,7 @@ uniform vec3 uTorchColor;
 uniform float uTime;
 uniform float uNight;
 uniform vec4 uFog;
+uniform vec4 uMist;
 uniform float uUnderwater;
 uniform vec3 uWaterFogColor;
 uniform float uWaveStrength;
@@ -77,20 +82,68 @@ vec3 skyColor(vec3 dir) {
   return col;
 }
 
-// Fades a world-space point into the sky/haze (or underwater murk).
+// Average density along the segment between heights y0 and y1 of a fog
+// that is 1 at the base height and below and falls off exponentially above
+// it (scale height: scale): exact for the exponential part, so thin layers of haze or
+// mist look right from any height.
+float heightFog(float y0, float y1, float base, float scale) {
+  float a = max(y0 - base, 0.0) / scale;
+  float b = max(y1 - base, 0.0) / scale;
+  float d = b - a;
+  if (abs(d) < 1e-3) return exp(-a);
+  return (exp(-a) - exp(-b)) / d;
+}
+
+// Smooth value noise for drifting patches of mist.
+float hazeHash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+float hazeNoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float a = hazeHash(i);
+  float b = hazeHash(i + vec2(1.0, 0.0));
+  float c = hazeHash(i + vec2(0.0, 1.0));
+  float d = hazeHash(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+// Fades a world-space point into the atmosphere (or underwater murk):
+//   aerial perspective: haze that is thickest low down and thins with
+//     height, colored like the sky toward the horizon and glowing warmer
+//     toward the sun (forward scattering);
+//   low mist: a thin, drifting layer hugging the water, denser at dawn and
+//     dusk (uMist);
+//   and the fog wall at the render distance.
 vec3 applyFog(vec3 color, vec3 worldPos) {
   vec3 d = worldPos - cameraPosition;
   float dist = length(d);
   if (uUnderwater > 0.5) {
-    return mix(color, uWaterFogColor, 1.0 - exp(-dist * 0.085));
+    // Murky water: brighter looking up toward the surface, glowing toward
+    // the sun (light scattered forward by the water).
+    vec3 dir = d / max(dist, 0.001);
+    vec3 murk = uWaterFogColor * (0.75 + 1.6 * smoothstep(-0.3, 0.95, dir.y));
+    murk += uWaterFogColor * vec3(1.2, 1.6, 1.3) * pow(max(dot(dir, uLightDir), 0.0), 6.0) * 2.0 * smoothstep(-0.05, 0.1, uLightDir.y);
+    return mix(color, murk, 1.0 - exp(-dist * 0.085));
   }
   vec3 dir = d / max(dist, 0.001);
   float edge = smoothstep(uFog.x, uFog.y, dist);
-  float haze = (1.0 - exp(-dist * uFog.z)) * 0.45;
-  float mist = uFog.w * exp(-max(worldPos.y - 24.0, 0.0) * 0.14) * (1.0 - exp(-dist * 0.025));
-  float f = 1.0 - (1.0 - edge) * (1.0 - haze) * (1.0 - clamp(mist, 0.0, 0.7));
+  float haze = (1.0 - exp(-dist * uFog.z * heightFog(cameraPosition.y, worldPos.y, 24.0, 40.0))) * 0.62;
+  float f = 1.0 - (1.0 - edge) * (1.0 - haze);
   vec3 fogCol = skyColor(normalize(vec3(dir.x, max(dir.y, 0.0) * 0.35 + 0.02, dir.z)));
-  return mix(color, fogCol, clamp(f, 0.0, 1.0));
+  float mu = max(dot(dir, uSunDir), 0.0);
+  float sunUp = smoothstep(-0.05, 0.1, uSunDir.y);
+  fogCol += uSunGlowColor * (pow(mu, 6.0) * 0.22 + pow(mu, 32.0) * 0.3) * sunUp;
+  color = mix(color, fogCol, clamp(f, 0.0, 1.0));
+  if (uMist.x > 0.0) {
+    vec2 drift = vec2(uTime * 0.012, uTime * 0.007) * uMist.z;
+    float patches = 0.35 + 1.3 * hazeNoise(mix(cameraPosition.xz, worldPos.xz, 0.7) * 0.05 + drift);
+    float mist = 1.0 - exp(-dist * uMist.x * patches * heightFog(cameraPosition.y, worldPos.y, uMist.w, uMist.y));
+    vec3 mistCol = mix(uSkyHorizon, vec3(1.0), 0.3) * (0.3 + 0.7 * (1.0 - uNight)) + uSunGlowColor * pow(mu, 4.0) * 0.45 * sunUp;
+    color = mix(color, mistCol, clamp(mist * (1.0 - edge), 0.0, 0.8));
+  }
+  return color;
 }
 
 // Converts a 0-1 light level to brightness (gentle falloff, like classic voxel lighting).
@@ -280,6 +333,7 @@ centroid varying vec2 vLight;
 centroid varying float vAo;
 flat varying float vFlags;
 flat varying float vFace;
+flat varying float vTint;
 varying vec3 vViewPosition;
 uniform float uTime;
 uniform float uWaveStrength;
@@ -317,6 +371,7 @@ void main() {
   vAo = ao / 3.0;
   vFlags = aData.w;
   vFace = float(ni);
+  vTint = aExtra.z / 255.0;
   vViewPosition = -mvPosition.xyz;
 }
 `;
@@ -333,6 +388,7 @@ centroid varying vec2 vLight;
 centroid varying float vAo;
 flat varying float vFlags;
 flat varying float vFace;
+flat varying float vTint;
 varying vec3 vViewPosition;
 ${FRAGMENT_LIGHT_INCLUDES}
 ${WORLD_COMMON}
@@ -409,6 +465,9 @@ void main() {
     if (tex.a < 0.5) discard;
   #endif
   vec3 albedo = tex.rgb;
+  // Natural color variation of leaves and grass (see mesher.js; 0.5 = none):
+  // warmer, yellower one way, cooler and darker the other.
+  albedo *= 1.0 + (vTint - 0.502) * vec3(0.34, 0.16, -0.3);
   float shadow = sunShadow();
   #ifdef USE_NORMALMAP
     // Per-pixel relief: bumps catch and lose the light, with a specular
@@ -434,6 +493,12 @@ void main() {
     float spec = a2 / (3.14159 * dd * dd) * fres / (4.0 * lh * lh);
     color += uLightColor * spec * max(dot(N, uLightDir), 0.0) * sunVisibility(vLight.x, shadow) * dot(albedo, vec3(0.3, 0.5, 0.2)) * 2.0;
   #endif
+  if ((flags & 16) != 0) {
+    // Leaves and plants glow when the sun shines through them toward you.
+    vec3 toEye = normalize(cameraPosition - vWorldPos);
+    float through = pow(max(dot(-toEye, uLightDir), 0.0), 4.0);
+    color += albedo * vec3(1.0, 1.05, 0.7) * uLightColor * through * sunVisibility(vLight.x, shadow) * 0.85;
+  }
   if ((flags & 2) != 0) {
     // Glowing blocks: their bright texels emit light (HDR, picked up by bloom).
     float lum = max(albedo.r, max(albedo.g, albedo.b));
@@ -740,18 +805,21 @@ void main() {
 `;
 
 // ---------------------------------------------------------------------------
-// Grass blades (see grass.js)
+// Ground plants (see grass.js)
 // ---------------------------------------------------------------------------
-// Instanced tufts of thin blades standing on grass blocks near the player,
+// Instanced grass, reeds, ferns and flowers standing on blocks near the player,
 // lit like the terrain (voxel light at the block, sun shadows), with light
 // shining through the blades when you look toward the sun.
 
 const grassVertex = /* glsl */ `
-attribute float aTip;       // 0 at a blade's base, 1 at its tip
+attribute float aTip;       // 0 at a plant's base, 1 at its top
 attribute vec3 aBladeNormal;
-attribute vec3 iOffset;     // tuft position (top of the grass block)
+attribute vec3 aColor;      // linear color
+attribute float aPaint;     // 1: take the instance's color (flower petals)
+attribute vec3 iOffset;     // plant position (top of the block it stands on)
 attribute vec3 iRotScaleTint;
 attribute vec2 iLight;      // sky, block light above the block (0-1)
+attribute vec3 iPaint;
 uniform vec3 uPlayer;       // the player's feet
 uniform float uRadius;
 uniform float uTime;
@@ -760,7 +828,7 @@ varying float vTip;
 varying vec2 vLight;
 varying vec3 vWorldPos;
 varying vec3 vNormal;
-varying float vTint;
+varying vec3 vColor;
 #include <common>
 #include <shadowmap_pars_vertex>
 void main() {
@@ -778,7 +846,7 @@ void main() {
   float t = uTime;
   float w = sin(t * 1.7 + wp.x * 0.6 + wp.z * 0.45) * 0.5 + sin(t * 2.9 + wp.x * 0.25 - wp.z * 0.8) * 0.3
           + sin(t * 6.3 + wp.x * 1.9 + wp.z * 1.4) * 0.12;
-  wp.xz += vec2(w, w * 0.6) * 0.1 * aTip * aTip * uWaveStrength;
+  wp.xz += vec2(w, w * 0.6) * 0.1 * aTip * aTip * (0.6 + position.y) * uWaveStrength;
   // Blades bend away from the player's feet.
   vec2 away = wp.xz - uPlayer.xz;
   float near = (1.0 - smoothstep(0.25, 1.0, length(away))) * (1.0 - smoothstep(0.4, 1.4, abs(iOffset.y - uPlayer.y)));
@@ -793,22 +861,20 @@ void main() {
   vLight = iLight;
   vWorldPos = wp;
   vNormal = n;
-  vTint = iRotScaleTint.z;
+  vColor = mix(aColor, iPaint, aPaint) * iRotScaleTint.z;
 }
 `;
 
 const grassFragment = /* glsl */ `
-uniform vec3 uGrassColor;
 varying float vTip;
 varying vec2 vLight;
 varying vec3 vWorldPos;
 varying vec3 vNormal;
-varying float vTint;
+varying vec3 vColor;
 ${FRAGMENT_LIGHT_INCLUDES}
 ${WORLD_COMMON}
 void main() {
-  // From the ground's own color at the base to lighter, yellower tips.
-  vec3 albedo = mix(uGrassColor * 0.9, uGrassColor * 1.4 + vec3(0.035, 0.03, 0.0), vTip) * vTint;
+  vec3 albedo = vColor;
   float shadow = sunShadow();
   vec3 light = worldLighting(vNormal, vLight.x, vLight.y, mix(0.72, 1.0, vTip), shadow);
   // Sunlight shining through the blades.
@@ -822,10 +888,9 @@ void main() {
 }
 `;
 
-export function createGrassMaterial(color) {
+export function createGrassMaterial() {
   return new THREE.ShaderMaterial({
     uniforms: litUniforms({
-      uGrassColor: { value: color },
       uPlayer: { value: new THREE.Vector3() },
       uRadius: { value: 16 },
     }),

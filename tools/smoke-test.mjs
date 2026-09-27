@@ -226,10 +226,14 @@ try {
         empty: v.inventory.isEmpty(),
         hearts: document.querySelectorAll("#hearts canvas").length,
         heartsVisible: !document.getElementById("hearts").classList.contains("hidden"),
+        // The spawn column's top block is the ground itself, not a tree.
+        spawnTop: v.world.surfaceY(v.spawn.x, v.spawn.z),
+        spawnGround: v.world.heightAt(v.spawn.x, v.spawn.z),
       };
     });
     assert(s.mode === "survival" && s.health === 20 && s.empty, `unexpected start state ${JSON.stringify(s)}`);
     assert(s.hearts === 10 && s.heartsVisible, `expected 10 visible hearts: ${JSON.stringify(s)}`);
+    assert(s.spawnTop === s.spawnGround, `the player should start on the ground, not on a tree: ${JSON.stringify(s)}`);
   });
 
   // --- Movement direction: W forward, S backward, A left, D right. ---
@@ -594,6 +598,162 @@ try {
     await waitStreamed();
   });
 
+  // --- Visual realism (Round 3, Phase 5) ---
+  await check("Ultra: tall grass, reeds by the water, ferns in the shade, and new tree species in the world", async () => {
+    const r = await page.evaluate(() => {
+      const v = window.__voxelands;
+      const { world, player, spawn } = v;
+      // A marshy shore: grass, a sandy beach, shallow water, and a leafy
+      // roof over part of the grass for shade.
+      const x0 = spawn.x - 30;
+      const z0 = spawn.z + 26;
+      const y = 48;
+      world.prepareArea(x0, z0, 1);
+      const e = [];
+      for (let dx = -12; dx <= 12; dx++) {
+        for (let dz = -12; dz <= 12; dz++) {
+          for (let yy = y - 3; yy < y; yy++) e.push(x0 + dx, yy, z0 + dz, 3);
+          for (let dy = 1; dy <= 8; dy++) e.push(x0 + dx, y + dy, z0 + dz, 0);
+          const id = dx < -3 ? 5 : dx < 0 ? 4 : 1; // water, beach, grass
+          if (id === 5) {
+            // Shallow (reeds grow in it) near the beach, 3 deep farther out.
+            const deep = dx < -6;
+            for (let yy = deep ? y - 2 : y; yy < y; yy++) e.push(x0 + dx, yy, z0 + dz, 5);
+            e.push(x0 + dx, deep ? y - 3 : y - 1, z0 + dz, 4);
+          }
+          e.push(x0 + dx, y, z0 + dz, id);
+          if (dx >= 4 && dz >= 4) e.push(x0 + dx, y + 5, z0 + dz, 7); // leafy roof
+        }
+      }
+      world.setBlocks(e, { recordEdit: false });
+      v.setRenderDistance(6);
+      v.setGraphics("ultra");
+      v.setMode("creative");
+      player.flying = true;
+      player.velocity.set(0, 0, 0);
+      player.position.set(x0 + 0.5, y + 3, z0 + 0.5);
+      // Tree species growing near spawn (the world generator's plan).
+      const kinds = new Set();
+      for (let x = spawn.x - 200; x < spawn.x + 200; x += 2) for (let z = spawn.z - 200; z < spawn.z + 200; z += 2) {
+        const root = v.world.terrain.trees.rootAt(x, z);
+        if (root) kinds.add(root.species);
+      }
+      return { x: x0, y, z: z0, species: [...kinds].sort() };
+    });
+    await page.waitForFunction(() => window.__voxelands.world.isIdle && window.__voxelands.world.remeshQueue.size === 0, null, { timeout: 300000, polling: 250 });
+    await page.waitForFunction(() => window.__voxelands.grass.count > 0, null, { timeout: 60000, polling: 250 });
+    const g = await page.evaluate(() => Object.fromEntries(Object.entries(window.__voxelands.grass.layers).map(([k, l]) => [k, l.count])));
+    console.log(`        plants: ${JSON.stringify(g)}; tree species nearby: ${r.species.join(", ")} (1 oak, 2 birch, 3 pine, 4 old oak)`);
+    assert(g.tall > 100 && g.short > 50, `expected tall and short grass: ${JSON.stringify(g)}`);
+    assert(g.reed > 5, `expected reeds along the water: ${JSON.stringify(g)}`);
+    assert(g.fern > 2, `expected ferns under the leafy roof: ${JSON.stringify(g)}`);
+    assert(r.species.length >= 3, `expected several tree species, got ${r.species}`);
+  });
+
+  await check("Ultra: light shafts and drifting motes under water; mist over water thickens at dawn; sunbeams through a canopy", async () => {
+    // Under the arena's water (from the previous check), at noon.
+    const under = await page.evaluate(() => {
+      const v = window.__voxelands;
+      const { world, player, spawn } = v;
+      const x0 = spawn.x - 30;
+      const z0 = spawn.z + 26;
+      v.sky.setSunAngle(Math.PI * 0.45);
+      player.position.set(x0 - 9.5, 46.02, z0 + 0.5); // feet on the sand floor, eyes 1.4 below the surface
+      player.pitch = 0.3;
+      player.yaw = -Math.PI / 2;
+      return world.getBlock(x0 - 10, 47, z0);
+    });
+    await page.waitForFunction(() => window.__voxelands.motes.points.visible, null, { timeout: 60000, polling: 100 });
+    await page.evaluate(() => window.__voxelands.captureStats());
+    const uw = await page.evaluate(() => window.__voxelands.postfx.lastRays);
+    // No light shafts in a sealed, flooded stone cell (no sky light reaches it).
+    const dark = await page.evaluate(async () => {
+      const v = window.__voxelands;
+      const { world, player, spawn } = v;
+      const frame = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const x0 = spawn.x - 12;
+      const z0 = spawn.z + 40;
+      const cell = (fill) => {
+        const e = [];
+        for (let dx = -2; dx <= 2; dx++) {
+          for (let dy = -2; dy <= 2; dy++) {
+            for (let dz = -2; dz <= 2; dz++) {
+              const inside = Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz)) <= 1;
+              e.push(x0 + dx, 52 + dy, z0 + dz, fill ? (inside ? 5 : 3) : 0);
+            }
+          }
+        }
+        world.setBlocks(e, { recordEdit: false });
+      };
+      cell(true);
+      player.position.set(x0 + 0.5, 51.02, z0 + 0.5);
+      player.velocity.set(0, 0, 0);
+      await frame();
+      await frame();
+      v.captureStats();
+      const eye = player.getEyePosition();
+      const r = { rays: v.postfx.lastRays, sky: world.lightAt(eye.x, eye.y, eye.z).sky, block: world.getBlock(Math.floor(eye.x), Math.floor(eye.y), Math.floor(eye.z)) };
+      cell(false);
+      return r;
+    });
+    // Mist: noon, then dawn.
+    const mist = await page.evaluate(async () => {
+      const v = window.__voxelands;
+      const frame = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      v.player.position.y = 60;
+      v.sky.setSunAngle(Math.PI * 0.5);
+      await frame();
+      const noon = v.uniforms.uMist.value.x;
+      v.sky.setSunAngle(Math.PI * 0.02);
+      await frame();
+      return { noon, dawn: v.uniforms.uMist.value.x, motes: v.motes.points.visible };
+    });
+    // Sunbeams: a leafy wall with gaps between the camera and a low sun.
+    const sun = await page.evaluate(() => {
+      const v = window.__voxelands;
+      const { world, player, spawn } = v;
+      v.sky.setSunAngle(Math.PI * 0.1);
+      v.sky.update(0, player.getEyePosition(), player.getForwardVector());
+      const sd = v.uniforms.uSunDir.value;
+      const hl = Math.hypot(sd.x, sd.z);
+      const hx = sd.x / hl;
+      const hz = sd.z / hl;
+      const x0 = spawn.x - 30;
+      const z0 = spawn.z + 26;
+      const y0 = 49;
+      const e = [];
+      for (let u = -8; u <= 8; u++) {
+        for (let k = 2; k <= 9; k++) {
+          if ((u * 7 + k * 3) % 4 === 0) continue; // gaps
+          e.push(Math.round(x0 + hx * 7 - hz * u), y0 + k, Math.round(z0 + hz * 7 + hx * u), 7);
+        }
+      }
+      world.setBlocks(e, { recordEdit: false });
+      player.position.set(x0 + 0.5, y0, z0 + 0.5);
+      player.yaw = Math.atan2(-sd.x, -sd.z);
+      player.pitch = Math.asin(sd.y) * 0.85;
+      v.captureStats();
+      return v.postfx.lastRays;
+    });
+    console.log(`        under water: ${JSON.stringify(uw)}, motes shown; in a sealed flooded cell: ${JSON.stringify(dark)}; mist density noon ${mist.noon.toFixed(4)} -> dawn ${mist.dawn.toFixed(4)}; through the canopy: ${JSON.stringify(sun)}`);
+    assert(under === 5, "the camera should be in the water");
+    assert(uw.kind === "underwater" && uw.strength > 0.2, `expected underwater light shafts: ${JSON.stringify(uw)}`);
+    assert(dark.block === 5 && dark.sky === 0 && dark.rays.kind === null, `no light shafts where no sky light reaches: ${JSON.stringify(dark)}`);
+    assert(!mist.motes, "motes should hide above water");
+    assert(mist.dawn > mist.noon * 3, `mist should thicken at dawn: ${JSON.stringify(mist)}`);
+    assert(sun.kind === "sun" && sun.strength > 0.3, `expected sunbeams toward the low sun: ${JSON.stringify(sun)}`);
+    await page.evaluate(() => {
+      const v = window.__voxelands;
+      v.setGraphics("low");
+      v.setRenderDistance(20);
+      v.player.flying = false;
+      v.player.spawnAt(v.spawn.x, v.spawn.z);
+      v.setMode("survival");
+      v.sky.setSunAngle(Math.PI * 0.4);
+    });
+    await waitStreamed();
+  });
+
   // --- Lighting (Phase 3) ---
   await check("a placed torch lights its surroundings, with falloff, and removing it restores darkness", async () => {
     const r = await page.evaluate(() => {
@@ -882,6 +1042,7 @@ try {
   });
 
   await check("a grenade blast carves a ~7-block crater, with particles, shake, knockback and a local rebuild", async () => {
+    await giveWeapons();
     await page.evaluate(() => {
       const { player, spawn } = window.__voxelands;
       player.flying = false;

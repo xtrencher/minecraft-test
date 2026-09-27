@@ -5,7 +5,7 @@
 // physics against the voxel world, melee combat both ways, damage from Blast
 // Orb explosions and daylight, death animations, drops and sounds.
 import * as THREE from "three";
-import { BLOCK, IS_SOLID } from "./blocks.js";
+import { BLOCK, IS_SOLID, IS_LEAVES } from "./blocks.js";
 import { ITEM, meleeDamage } from "./items.js";
 import { sweepAxis, rayAabb } from "./physics.js";
 import { createMobModel } from "./mob-models.js";
@@ -222,7 +222,7 @@ export class MobManager {
     let y = Math.random() < 0.5 ? top + 1 : 2 + Math.floor(Math.random() * Math.max(1, top - 3));
     for (let k = 0; k < 12 && y > 1; k++, y--) {
       const below = this.world.getBlock(x, y - 1, z);
-      if (!IS_SOLID[below] || below === BLOCK.LEAVES) continue;
+      if (!IS_SOLID[below] || IS_LEAVES[below]) continue;
       if (!this._freeAt(x, y, z, SPECIES.zombie.h)) continue;
       if (this._effectiveLight(x, y, z) > 4) return false;
       this.spawn("zombie", x + 0.5, y, z + 0.5);

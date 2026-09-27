@@ -19,6 +19,9 @@ const TOOL_MATERIALS = [
 
 export const RECIPES = [
   shapeless([BLOCK.WOOD], BLOCK.PLANKS, 4),
+  shapeless([BLOCK.BIRCH_LOG], BLOCK.PLANKS, 4),
+  shapeless([BLOCK.PINE_LOG], BLOCK.PLANKS, 4),
+  shapeless([BLOCK.OAK_BARK], BLOCK.PLANKS, 4),
   shaped(["P", "P"], { P: BLOCK.PLANKS }, ITEM.STICK, 4),
   shaped(["PP", "PP"], { P: BLOCK.PLANKS }, BLOCK.CRAFTING_TABLE),
   shaped(["C", "S"], { C: ITEM.COAL, S: ITEM.STICK }, BLOCK.TORCH, 4),

@@ -434,6 +434,74 @@ await test("caves, ores and crystals appear in sensible amounts", () => {
   assert.ok((counts[BLOCK.LUMEN] || 0) > 0, "no lumen crystals generated");
 });
 
+await test("trees: oaks, birches, pines and old oaks grow, and trees are whole across chunk borders", async () => {
+  const { TREE } = await import("../js/trees.js");
+  const counts = {};
+  for (const seed of [42, 7, 12345]) {
+    const gen = new TerrainGenerator(seed);
+    for (let x = -320; x < 320; x++) {
+      for (let z = -320; z < 320; z++) {
+        const r = gen.trees.rootAt(x, z);
+        if (r) counts[r.species] = (counts[r.species] || 0) + 1;
+      }
+    }
+  }
+  console.log(`        oak ${counts[TREE.OAK]}, birch ${counts[TREE.BIRCH]}, pine ${counts[TREE.PINE]}, old oak ${counts[TREE.OLD_OAK]} in three 640x640 areas`);
+  for (const sp of [TREE.OAK, TREE.BIRCH, TREE.PINE, TREE.OLD_OAK]) assert.ok(counts[sp] > 0, `no trees of species ${sp}`);
+  assert.ok(counts[TREE.OLD_OAK] < counts[TREE.OAK] / 4, "old oaks should be rare");
+  // Every leaf and trunk block of every tree in a region ends up in the
+  // generated chunks, even where the tree spans several chunks.
+  const { gen, get } = generateRegion(42, 7, -3, -3);
+  let trees = 0;
+  let crossing = 0;
+  let missing = 0;
+  for (let x = -48 + 10; x < 64 - 10; x++) {
+    for (let z = -48 + 10; z < 64 - 10; z++) {
+      const root = gen.trees.rootAt(x, z);
+      if (!root) continue;
+      trees++;
+      const shape = gen.trees.shape(root);
+      let spans = false;
+      for (let i = 0; i < shape.length; i += 4) {
+        const X = x + shape[i];
+        const Y = root.h + 1 + shape[i + 1];
+        const Z = z + shape[i + 2];
+        if (Y < 1 || Y >= H || shape[i + 1] < 0) continue;
+        if (X >> 4 !== x >> 4 || Z >> 4 !== z >> 4) spans = true;
+        if (get(X, Y, Z) === BLOCK.AIR) missing++;
+      }
+      if (spans) crossing++;
+    }
+  }
+  console.log(`        ${trees} trees in the region, ${crossing} spanning chunk borders, ${missing} blocks missing`);
+  assert.ok(trees > 15 && crossing > 5, `too few trees to check (${trees}, ${crossing} crossing)`);
+  assert.equal(missing, 0, "every tree block should be placed, whichever chunk it falls in");
+});
+
+await test("new players start on the ground, never on top of a tree", async () => {
+  let moved = 0;
+  for (let i = 0; i < 120; i++) {
+    const seed = i === 0 ? 42 : i * 7919;
+    const gen = new TerrainGenerator(seed);
+    const [x, z] = gen.spawnColumn();
+    const h = gen.heightAt(x, z);
+    assert.ok(h > SEA_LEVEL + 1, `seed ${seed}: spawn (${x}, ${z}) is not on land`);
+    if (Math.hypot(x, z) > 0 && gen.heightAt(0, 0) > SEA_LEVEL + 1) moved++;
+    // Nothing solid above the ground in the generated chunk (plants are fine).
+    const { IS_SOLID } = await import("../js/blocks.js");
+    const cx = Math.floor(x / 16);
+    const cz = Math.floor(z / 16);
+    const blocks = new Uint8Array(16 * 16 * H);
+    gen.generate({ cx, cz, blocks });
+    for (let y = h + 1; y < H; y++) {
+      const id = blocks[(y * 16 + (z - cz * 16)) * 16 + (x - cx * 16)];
+      assert.ok(!IS_SOLID[id], `seed ${seed}: block ${id} above the spawn at y=${y}`);
+    }
+  }
+  console.log(`        120 worlds, ${moved} spawns moved to the side of a tree`);
+  assert.ok(moved > 0, "some spawns should have needed moving off a tree");
+});
+
 await test("terrain generation is fast enough to stream (< 3 ms per chunk)", () => {
   const gen = new TerrainGenerator(5);
   const t0 = performance.now();
@@ -760,9 +828,9 @@ console.log("\nDistant terrain (lod-mesher.js)");
     const out = {};
     lt.sample(cx * 16 + 5, cz * 16 + 7, out);
     assert.equal(out.top, 10);
-    assert.equal(lt.treeAt(tree[0], tree[1]), 0);
+    assert.equal(lt.treeAt(tree[0], tree[1]), null);
     lt.setChunkEdits(`${cx},${cz}`, []);
-    assert.ok(lt.treeAt(tree[0], tree[1]) > 0, "clearing the edits restores the tree");
+    assert.ok(lt.treeAt(tree[0], tree[1]), "clearing the edits restores the tree");
   });
 }
 

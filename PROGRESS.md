@@ -530,3 +530,76 @@ Low and Medium keep the cheaper blended water.
 I also checked every feature visually in the sandbox on a relief test wall, a floating leaf slab, a pool with a sloping sandy seabed and markers, and underwater views.
 
 **51 smoke checks and 30 unit tests pass with zero console errors.**
+
+## Phase 5: Visual realism — DONE
+
+The three references were the mood target: light shafts in teal water, a grassy marsh with mist over the water, and realistic trees. The world stays blocky; the atmosphere and the life on it are what changed.
+
+**1. Under water (new `js/motes.js`, `UW_RAYS` in `js/postfx.js`).**
+- **Light shafts (High/Ultra):** a volumetric pass at a third of the resolution. It marches each view ray through the water, up to the first surface in the depth buffer. At every step it traces the light back up to where it entered the surface, along the sun direction refracted into the water, and samples slowly drifting bands of focused light there. So the shafts are slanted like the sun, move like caustics, and fade with depth and distance. Their strength follows the sky light at the eye, so a sealed, flooded cave has none.
+- **Colour:** the water murk is now teal. It gets brighter looking up toward the surface and glows toward the sun, where earlier it was a flat dark blue.
+- **Motes (every preset):** 420 particles drift in a 14-block box that wraps around the camera in the vertex shader, so they never have to be moved on the CPU. They show only while the camera is submerged.
+
+**2. Sunbeams through clouds and canopies.** The light-shaft pass marches toward the sun through the sky mask:
+- **What blocks the sun:** the sky shader writes cloud cover into it, and terrain and leaves block it. Light pours through gaps in clouds, foliage and terrain.
+- **Quality:** the march is dithered per pixel (no banding), with 72 samples on Ultra and 48 on High.
+- **Dawn and dusk:** the shafts get stronger and much wider in the low, hazy light at the ends of the day.
+- **Tested:** in the sandbox with a leafy wall between the camera and a low sun, with rays streaming through each gap.
+
+**3. Mist over water.** The fog now has a thin mist layer lying on the water level:
+- **Physics:** its density falls off exponentially with height, and the fog integrates it exactly along each view ray, so it looks right both from the shore and from a hilltop.
+- **Movement:** smooth noise makes it drift in patches.
+- **Timing and colour:** it is about 7× denser around sunrise and sunset than at noon (a little denser at night too), and warmed by the low sun.
+- **Presets:** half strength on Low and 0.8 on Medium. It costs only a few shader instructions.
+
+**4. Ground plants (rewritten `js/grass.js`).** Instanced plants on the blocks around the player (High: within 20 blocks; Ultra: within 32, denser):
+- **Grass:** short tufts, and tall arching grass that yellows toward the tips (2.2 per block on Ultra).
+- **Reeds:** stalks with cattails and long leaves, along shores and standing in shallow water.
+- **Ferns:** where sky light is reduced under trees.
+- **Flowers:** five colours, in scattered patches.
+
+Each plant type is its own geometry with per-vertex colours. All are lit like the terrain (voxel light, shadows, light shining through), sway in the wind (tall plants more), bend away from the player's feet, and thin out and shrink toward the edge of the radius. Medium and Low have none.
+
+**5. Trees (new `js/trees.js`).**
+- **Four species:**
+  - **Oak:** irregular crowns of 2–3 overlapping blobs with noisy, ragged edges and a few holes, sometimes with a branch reaching into a side blob.
+  - **Birch:** tall and slender, with pale bark and narrow crowns.
+  - **Pine:** tall, dark trunks with tiered, tapering rings of needles.
+  - **Old oak (rare):** a 2×2 trunk, roots that run through the ground's top block, crooked branches and a huge crown.
+- **Where they grow:** forests and meadows alternate following a noise field; birches and pines grow in groves, and pines take over high ground. Trees keep a minimum distance: the one with the lower placement hash wins, which is symmetric, so no generation order is needed.
+- **New blocks:** birch log and leaves, pine log and needles, and oak wood (bark on every face, for branches and roots, so they don't show sawn-off rings). They have new textures, craft into planks and appear in the creative inventory. Mobs don't spawn on any kind of leaves.
+- **Across chunk borders:** crowns and roots now reach up to 9 blocks from the trunk. Each chunk places every tree that reaches into it, in one fixed order, and each tree's "is my ground carved away by a cave?" check uses a new per-block cave test. That test samples the same noise lattice as chunk generation, and matched it on all 68,482 blocks I compared. So every chunk agrees on which trees exist.
+- **Distant terrain:** the LOD tiles draw a crown per species (a narrow two-tier cone for pines, a wide crown for old oaks).
+- **Leaves and plants:** sunlight shines through them when you look toward the sun (a new foliage flag in the mesher). They also vary in colour: from tree to tree and block to block, and across broad patches of meadow for grass tops and tall grass (a per-vertex tint).
+- **Existing worlds:** tree placement and shapes changed, and cave carving matches the old generator exactly. Saved worlds keep all their edits, but trees in untouched areas regrow in the new shapes. The height map, caves and ores are unchanged.
+
+**6. Softer haze and aerial perspective.**
+- **Height:** the haze is now thickest near the ground and thins with height (integrated along the ray, scale height 40 blocks), so a view from a hilltop gets clearer.
+- **Colour:** it takes the sky's colour toward the horizon, plus a forward-scattering glow around the sun.
+- **Result:** distant hills fade into warm, soft light at dawn and into blue at noon, as in the references.
+
+**Performance.**
+- **Generation:** chunk generation with the new trees takes 1.0 ms per chunk in the unit test on an idle machine, and up to 2.2 ms while the browser tests run alongside (limit 3 ms; the old trees cost about 0.45 ms less). The shape cache stores 4 bytes per tree block.
+- **Leaves:** leaf blocks per chunk average about the same as before (66); forests are denser, meadows sparser.
+- **Plants:** the Ultra plant layers hold about 3,500–6,000 instances around the player.
+- **Shafts and mist:** the underwater shafts run only while submerged (24 steps per pixel at a third of the resolution); the mist is a few shader instructions.
+- **Low and Medium** get the new trees and a little mist and haze math, but no plants and no shafts.
+
+**Process fix.** The first Phase 5 browser run failed to load the game, although `node --check` had passed:
+- A GLSL comment with backticks ended its JavaScript template string early.
+- A patch duplicated a function header in textures.js.
+
+`node --check` doesn't parse these files strictly as ES modules, so both slipped through. The smoke test would have caught them, but I now also run a strict ES-module parse of every file after each change.
+
+**Bug found by the smoke run: spawning on a tree.** The first full run failed the grenade crater check: its grenade blew away only 41 blocks. The player had started on top of a birch crown, and the grenade went off up there. The spawn column was picked from the height map alone, and the bigger crowns now often grow over it: 38 of 300 worlds I checked started the player on a tree. The spawn now moves to the nearest land column that no tree stands in (`TerrainGenerator.spawnColumn`). The check uses the tree shapes, so no chunks need to be generated. The crater check also gives itself a grenade now instead of relying on the check before it.
+
+**Testing.**
+- **New unit test (spawn):** in 120 worlds the player starts on land with nothing solid above; 12 of those spawns had to move off a tree.
+- **New unit test (trees):** all four species grow (2,852 oaks, 997 birches, 1,303 pines and 81 old oaks in three 640×640 areas). Every block of every tree in a 7×7-chunk region ends up in the generated chunks (23 trees, 13 of them spanning chunk borders, 0 blocks missing).
+- **Ultra plants check:** on a purpose-built marsh (grass, a beach, shallow and deeper water, a leafy roof) there are tall and short grass, reeds and ferns, and at least three tree species grow near spawn.
+- **Ultra atmosphere check:**
+  - Under water, the light shafts render and the motes show (and hide again above water). In a sealed, flooded stone cell there are no shafts.
+  - The mist over water is more than 3× denser at dawn than at noon.
+  - Facing a low sun through a gappy leaf wall draws sunbeams.
+
+**53 smoke checks and 32 unit tests pass with zero console errors.**

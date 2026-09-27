@@ -89,25 +89,72 @@ const GODRAYS = /* glsl */ `
 uniform sampler2D tScene;
 uniform vec2 uSun;
 uniform float uAspect;
+uniform float uSpread; // how far from the sun the shafts reach (smaller = wider)
 varying vec2 vUv;
+#ifndef SAMPLES
 #define SAMPLES 48
+#endif
 void main() {
+  // March from the pixel toward the sun through the sky mask (the sky
+  // shader writes alpha 0 for open sky, clouds and everything solid block
+  // it), so light pours through gaps in clouds, canopies and terrain.
   vec2 uv = vUv;
-  vec2 delta = (uv - uSun) * (0.92 / float(SAMPLES));
+  vec2 delta = (uv - uSun) * (0.95 / float(SAMPLES));
+  // Dither the start so the shafts don't band.
+  float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+  uv -= delta * jitter;
   float illum = 1.0;
   float sum = 0.0;
   for (int i = 0; i < SAMPLES; i++) {
     uv -= delta;
     if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) break;
-    float sky = 1.0 - texture2D(tScene, uv).a; // the sky shader writes alpha 0 for open sky
+    float sky = 1.0 - texture2D(tScene, uv).a;
     vec2 dd = (uv - uSun) * vec2(uAspect, 1.0);
-    sum += sky * exp(-dot(dd, dd) * 18.0) * illum;
-    illum *= 0.962;
+    sum += sky * exp(-dot(dd, dd) * uSpread) * illum;
+    illum *= 0.968;
   }
   gl_FragColor = vec4(vec3(sum / float(SAMPLES)), 1.0);
 }
 `;
 
+// Light shafts under water: the view ray is marched through the water up
+// to the first surface behind it (depth buffer); at each step the light is
+// traced back up to where it entered the water surface (along the refracted
+// sun direction), where slowly drifting bands of focused light make the
+// rays. Brighter near the surface and nearby, fading into the murk.
+const UW_RAYS = /* glsl */ `
+uniform sampler2D tDepth;
+uniform mat4 uInvViewProj;
+uniform vec3 uCamPos;
+uniform vec3 uLight;     // refracted sun direction (toward the sun)
+uniform float uSurfaceY; // water surface above the camera
+uniform float uTime;
+varying vec2 vUv;
+float bands(vec2 p, float t) {
+  float a = sin(p.x * 0.9 + t * 0.55 + sin(p.y * 0.43 + t * 0.21) * 1.6);
+  float b = sin(p.y * 1.13 - t * 0.41 + sin(p.x * 0.37 - t * 0.17) * 1.8);
+  float c = sin((p.x - p.y) * 0.61 + t * 0.33);
+  return pow(clamp((a * b + c * 0.6) * 0.45 + 0.5, 0.0, 1.0), 5.0);
+}
+void main() {
+  float depth = texture2D(tDepth, vUv).r;
+  vec4 w = uInvViewProj * vec4(vUv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+  vec3 ray = w.xyz / w.w - uCamPos;
+  float len = min(length(ray), 30.0);
+  vec3 dir = normalize(ray);
+  float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+  vec2 slant = uLight.xz / max(uLight.y, 0.3);
+  float sum = 0.0;
+  for (int i = 0; i < 24; i++) {
+    float t = (float(i) + jitter) / 24.0 * len;
+    vec3 q = uCamPos + dir * t;
+    float below = uSurfaceY - q.y;
+    if (below < 0.0) continue;
+    sum += bands((q.xz + slant * below) * 0.42, uTime) * exp(-below * 0.085 - t * 0.055);
+  }
+  gl_FragColor = vec4(vec3(sum / 24.0 * len / 12.0), 1.0);
+}
+`;
 const COMPOSITE = /* glsl */ `
 uniform sampler2D tScene;
 uniform sampler2D tBloom;
@@ -224,7 +271,16 @@ export class PostFX {
       { tInput: { value: null }, uTexel: { value: new THREE.Vector2() }, uScale: { value: 1 } },
       { blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor, blendEquation: THREE.AddEquation }
     );
-    this.raysMat = mat(GODRAYS, { tScene: { value: null }, uSun: { value: new THREE.Vector2(0.5, 0.5) }, uAspect: { value: 1 } });
+    this.raysMat = mat(GODRAYS, { tScene: { value: null }, uSun: { value: new THREE.Vector2(0.5, 0.5) }, uAspect: { value: 1 }, uSpread: { value: 8 } });
+    this.uwRaysMat = mat(UW_RAYS, {
+      tDepth: { value: null },
+      uInvViewProj: { value: new THREE.Matrix4() },
+      uCamPos: { value: new THREE.Vector3() },
+      uLight: { value: new THREE.Vector3(0, 1, 0) },
+      uSurfaceY: { value: 0 },
+      uTime: { value: 0 },
+    });
+    this._viewProj = new THREE.Matrix4();
     this.compositeMat = mat(COMPOSITE, {
       tScene: { value: this.sceneRT.texture },
       tBloom: { value: null },
@@ -245,6 +301,7 @@ export class PostFX {
 
     this.bloomLevels = 5;
     this.godRays = false;
+    this.lastRays = { kind: null, strength: 0 }; // which light shafts the last frame drew (stats / tests)
     this.width = 1;
     this.height = 1;
     this._sunNdc = new THREE.Vector3();
@@ -259,7 +316,12 @@ export class PostFX {
   // screenWater: draw water in its own pass over the resolved world (needs
   // MSAA, so the pass can read the world image while drawing into the
   // multisampled buffer).
-  configure({ msaa = 4, bloomLevels = 5, godRays = false, screenWater = false } = {}) {
+  // raySamples: steps of the light-shaft march (more = smoother shafts).
+  configure({ msaa = 4, bloomLevels = 5, godRays = false, screenWater = false, raySamples = 48 } = {}) {
+    if (this.raysMat.defines.SAMPLES !== raySamples) {
+      this.raysMat.defines.SAMPLES = raySamples;
+      this.raysMat.needsUpdate = true;
+    }
     if (this.sceneRT.samples !== msaa) {
       this.sceneRT.dispose();
       this.sceneRT.samples = msaa;
@@ -352,26 +414,43 @@ export class PostFX {
       this.compositeMat.uniforms.tBloom.value = levels[0].texture;
     }
 
-    // Light shafts, only while the sun is up and in front of the camera.
+    // Light shafts: under water, rays from the surface; otherwise sunbeams
+    // (only while the sun is up and roughly in front of the camera).
     let rays = 0;
-    if (this.godRays && params.sunWorldPos) {
+    if (this.godRays && params.underwater && params.underwaterRays > 0 && params.surfaceY !== undefined) {
+      const u = this.uwRaysMat.uniforms;
+      u.tDepth.value = this.sceneRT.depthTexture;
+      this._viewProj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+      u.uInvViewProj.value.copy(this._viewProj).invert();
+      u.uCamPos.value.copy(camera.position);
+      u.uLight.value.copy(params.underwaterLight);
+      u.uSurfaceY.value = params.surfaceY;
+      u.uTime.value = params.time ?? 0;
+      this._pass(this.uwRaysMat, this.raysRT);
+      rays = params.underwaterRays;
+      this.lastRays = { kind: "underwater", strength: rays };
+    } else if (this.godRays && params.sunWorldPos) {
       const ndc = this._sunNdc.copy(params.sunWorldPos).project(camera);
       const facing = ndc.z < 1 && Math.abs(ndc.x) < 1.8 && Math.abs(ndc.y) < 1.8;
       if (facing && params.raysStrength > 0) {
         this.raysMat.uniforms.tScene.value = this.sceneRT.texture;
         this.raysMat.uniforms.uSun.value.set(ndc.x * 0.5 + 0.5, ndc.y * 0.5 + 0.5);
         this.raysMat.uniforms.uAspect.value = this.width / this.height;
+        this.raysMat.uniforms.uSpread.value = params.raysSpread ?? 8;
         this._pass(this.raysMat, this.raysRT);
         const edgeFade = 1 - THREE.MathUtils.smoothstep(Math.max(Math.abs(ndc.x), Math.abs(ndc.y)), 0.9, 1.8);
         rays = params.raysStrength * edgeFade;
+        this.lastRays = { kind: "sun", strength: rays };
       }
     }
+    if (rays === 0) this.lastRays = { kind: null, strength: 0 };
 
     const cu = this.compositeMat.uniforms;
     cu.tScene.value = this.sceneRT.texture;
     cu.uExposure.value = params.exposure ?? 1;
     cu.uRaysStrength.value = rays;
-    if (params.sunColor) cu.uRaysColor.value.copy(params.sunColor);
+    if (params.underwater && params.underwaterColor) cu.uRaysColor.value.copy(params.underwaterColor);
+    else if (params.sunColor) cu.uRaysColor.value.copy(params.sunColor);
     cu.uUnderwater.value = params.underwater ? 1 : 0;
     cu.uDamage.value = params.damage ?? 0;
     cu.uNight.value = params.night ?? 0;

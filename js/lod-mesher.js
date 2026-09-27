@@ -19,7 +19,8 @@
 //   info     Uint8   x4  [normal index (as in the chunk mesher), kind, water depth, 0]
 //   index    Uint16/Uint32
 import { TerrainGenerator } from "./terrain.js";
-import { BLOCK, IS_SOLID } from "./blocks.js";
+import { BLOCK, IS_SOLID, IS_LOG, IS_LEAVES } from "./blocks.js";
+import { TREE } from "./trees.js";
 import { CHUNK_SIZE, WORLD_HEIGHT, SEA_LEVEL } from "./constants.js";
 import { WATER_SURFACE_HEIGHT } from "./mesher.js";
 
@@ -84,7 +85,7 @@ export class LodTerrain {
         for (let y = WORLD_HEIGHT - 1; y >= 0; y--) {
           const b = blocks[(y * S + lz) * S + lx];
           // Trees are drawn separately; plants and torches are too small.
-          if (b === BLOCK.AIR || b === BLOCK.LEAVES || b === BLOCK.WOOD) continue;
+          if (b === BLOCK.AIR || IS_LEAVES[b] || IS_LOG[b]) continue;
           if (b !== BLOCK.WATER && !IS_SOLID[b]) continue;
           if (b === BLOCK.WATER) {
             let d = 0;
@@ -131,15 +132,14 @@ export class LodTerrain {
     return out;
   }
 
-  // Trunk height of the tree rooted at (wx, wz), or 0 (also 0 once the
+  // The tree rooted at (wx, wz) (see trees.js), or null (also once the
   // player has cut it down or blown it up).
   treeAt(wx, wz) {
-    const t = this.terrain.treeAt(wx, wz);
-    if (t === 0 || this.edits.size === 0) return t;
+    const root = this.terrain.trees.rootAt(wx, wz);
+    if (!root || this.edits.size === 0) return root;
     const c = this._editedChunk(wx >> 4, wz >> 4);
-    if (!c) return t;
-    const h = this.terrain.heightAt(wx, wz);
-    return c.blocks[((h + 1) * CHUNK_SIZE + (wz & 15)) * CHUNK_SIZE + (wx & 15)] === BLOCK.WOOD ? t : 0;
+    if (!c) return root;
+    return IS_LOG[c.blocks[((root.h + 1) * CHUNK_SIZE + (wz & 15)) * CHUNK_SIZE + (wx & 15)]] ? root : null;
   }
 }
 
@@ -394,33 +394,39 @@ export function buildLodTile(lt, level, tx, tz, pal) {
     }
   }
 
-  // Trees: canopy boxes standing on the cell they grow in (a trunk too on
-  // the nearest level). Only chunk-interior columns can hold a tree root.
+  // Trees: crown boxes (shaped by species) standing on the cell they grow
+  // in, with a trunk on the nearest level.
   if (trees) {
-    const leafTop = pal.top[BLOCK.LEAVES];
-    const leafSide = pal.side[BLOCK.LEAVES];
-    const wood = pal.side[BLOCK.WOOD];
-    const inset = 0.25;
+    const grower = lt.terrain.trees;
     for (let wz = z0; wz < z0 + span; wz++) {
-      const lz = wz & 15;
-      if (lz < 3 || lz >= CHUNK_SIZE - 3) continue;
       for (let wx = x0; wx < x0 + span; wx++) {
-        const lx = wx & 15;
-        if (lx < 3 || lx >= CHUNK_SIZE - 3) continue;
-        const trunk = lt.treeAt(wx, wz);
-        if (trunk === 0) continue;
+        const root = lt.treeAt(wx, wz);
+        if (!root) continue;
         const i = Math.floor((wx - x0) / step);
         const j = Math.floor((wz - z0) / step);
         const k = (j + 1) * P + i + 1;
         if (id[k] === BLOCK.WATER) continue;
         const base = top[k];
-        const x = wx - x0;
-        const z = wz - z0;
-        // Canopy: a 5x5 block of leaves 3 high, with a 3x3 cap on top (too
-        // small to matter on the farthest tree level).
-        out.box(x - 2 + inset, x + 3 - inset, base + trunk - 3, base + trunk, z - 2 + inset, z + 3 - inset, leafTop, leafSide, LOD_KIND.LEAVES, 190);
-        if (level < LOD_TREE_MAX_LEVEL) out.box(x - 1 + inset, x + 2 - inset, base + trunk, base + trunk + 1, z - 1 + inset, z + 2 - inset, leafTop, leafSide, LOD_KIND.LEAVES, 210);
-        if (level === 1) out.box(x + 0.3, x + 0.7, base, base + trunk - 3, z + 0.3, z + 0.7, wood, wood, LOD_KIND.LAND, 160);
+        const crown = grower.crown(root);
+        const c = root.species === TREE.OLD_OAK ? 1 : 0.5; // trunk centre
+        const x = wx - x0 + c;
+        const z = wz - z0 + c;
+        const r = crown.radius;
+        const leafTop = pal.top[root.leaf];
+        const leafSide = pal.side[root.leaf];
+        if (root.species === TREE.PINE) {
+          // A cone: a wide lower tier and a narrow upper one.
+          const mid = crown.bottom + (crown.top - crown.bottom) * 0.55;
+          out.box(x - r, x + r, base + crown.bottom, base + mid, z - r, z + r, leafTop, leafSide, LOD_KIND.LEAVES, 170);
+          out.box(x - r * 0.5, x + r * 0.5, base + mid, base + crown.top, z - r * 0.5, z + r * 0.5, leafTop, leafSide, LOD_KIND.LEAVES, 200);
+        } else {
+          out.box(x - r, x + r, base + crown.bottom, base + crown.top, z - r, z + r, leafTop, leafSide, LOD_KIND.LEAVES, 190);
+        }
+        if (level === 1) {
+          const t = root.species === TREE.OLD_OAK ? 0.9 : 0.2;
+          const wood = pal.side[root.log];
+          out.box(x - t, x + t, base, base + Math.max(1, crown.bottom), z - t, z + t, wood, wood, LOD_KIND.LAND, 160);
+        }
       }
     }
   }

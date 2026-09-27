@@ -170,6 +170,11 @@ const P = {
   gravel: [0x5b5754, 0x6b6763, 0x7c7771, 0x8d8780, 0x9e978f, 0x746a5f, 0x877a6a].map(hex),
   brick: [0x7a3224, 0x8c3b2a, 0x9d4530, 0xad5037, 0xbb5c41].map(hex),
   wool: [0xc9c3b8, 0xd6d0c5, 0xe1dcd2, 0xebe7df, 0xf5f2ec].map(hex),
+  birchBark: [0xa9a49a, 0xc4bfb4, 0xd8d3c8, 0xe6e2d8, 0xf1eee6].map(hex),
+  birchLeaves: [0x3f6a1f, 0x4f7f26, 0x62942f, 0x76a83a, 0x8bbb47, 0xa2cc58].map(hex),
+  pineBark: [0x2a1a12, 0x3b251a, 0x4d3122, 0x5f3d2a, 0x724a33, 0x86583c].map(hex),
+  pineRings: [0x9a6d45, 0xab7c50, 0xba8a5c].map(hex),
+  pineNeedles: [0x0f2f25, 0x16402f, 0x1e5139, 0x286244, 0x357350, 0x44845c].map(hex),
 };
 
 // ---------- Painters ----------
@@ -464,6 +469,120 @@ function paintLeaves(t) {
   });
 }
 
+// Birch bark: pale, papery, with dark horizontal lenticels and black scars.
+function paintBirchBark(t) {
+  t.forEach((x, y) => {
+    const f = t.fbm(x, y, 4, 2, 3, 16) * 0.6 + t.rand() * 0.3 + t.noise(x, y, 2, 7) * 0.2;
+    t.set(x, y, ramp(P.birchBark, f));
+  });
+  // Lenticels: short dark horizontal dashes.
+  for (let i = 0; i < 26; i++) {
+    const x = Math.floor(t.rand() * TEX);
+    const y = Math.floor(t.rand() * TEX);
+    const len = 2 + Math.floor(t.rand() * 4);
+    for (let k = 0; k < len; k++) t.set(x + k, y, t.rand() < 0.75 ? hex(0x3a3531) : hex(0x6b655d));
+  }
+  // Black scars where branches fell off: an eye shape.
+  for (let i = 0; i < 2; i++) {
+    const cx = Math.floor(t.rand() * TEX);
+    const cy = Math.floor(t.rand() * TEX);
+    for (let dx = -3; dx <= 3; dx++) {
+      const h = dx === 0 ? 1 : Math.abs(dx) < 3 ? 1 : 0;
+      for (let dy = -h; dy <= h; dy++) t.set(cx + dx, cy + dy, dy === 0 ? hex(0x191715) : hex(0x2e2a27));
+    }
+  }
+}
+
+function paintBirchTop(t) {
+  const c = (TEX - 1) / 2;
+  t.forEach((x, y) => {
+    const edge = Math.max(Math.abs(x - c), Math.abs(y - c));
+    if (edge > 13.5) {
+      t.set(x, y, ramp(P.birchBark, t.fbm(x, y, 8, 2) * 0.6 + t.rand() * 0.3));
+      return;
+    }
+    const r = Math.hypot(x - c, y - c) + t.fbm(x, y, 4, 2, 7) * 2.2;
+    const ring = (r / 2.2) % 1;
+    const col = ring < 0.3 ? hex(0xc9b58c) : mixRgb(hex(0xe2d3ae), hex(0xecdfbf), t.rand());
+    t.set(x, y, edge > 12.5 ? scaleRgb(col, 0.85) : col);
+  });
+}
+
+// Leaves with individual light-edged leaflets, some yellowed, and gaps.
+function paintFoliage(t, pal, count, gap) {
+  t.forEach((x, y) => {
+    t.set(x, y, ramp(pal, 0.12 + t.fbm(x, y, 4, 2) * 0.3), 255);
+  });
+  for (let i = 0; i < count; i++) {
+    const x = Math.floor(t.rand() * TEX);
+    const y = Math.floor(t.rand() * TEX);
+    const f = 0.3 + t.rand() * 0.7;
+    let c = ramp(pal, f);
+    if (t.rand() < 0.08) c = mixRgb(c, hex(0xb8b24a), 0.45); // a yellowing leaf
+    t.set(x, y, c);
+    t.set(x + 1, y, c);
+    t.set(x, y + 1, scaleRgb(c, 0.85));
+    t.set(x + 1, y + 1, scaleRgb(c, 0.7));
+    if (f > 0.72) t.set(x, y, scaleRgb(c, 1.2));
+  }
+  t.forEach((x, y) => {
+    if (t.noise(x, y, 8, 11) * 0.7 + t.rand() * 0.3 < gap) t.set(x, y, [0, 0, 0], 0);
+  });
+}
+
+// Pine bark: dark, scaly plates split by deep vertical fissures.
+function paintPineBark(t) {
+  const vor = t.voronoi(18, 4, 0.25); // cells stretched vertically
+  t.forEach((x, y) => {
+    const v = vor(x, y);
+    const edge = v.d2 - v.d1;
+    if (edge < 0.9) {
+      t.set(x, y, P.pineBark[0]);
+      return;
+    }
+    const f = 0.35 + v.value * 0.4 + (t.rand() - 0.5) * 0.18 + (edge < 1.8 ? -0.12 : 0.06);
+    t.set(x, y, ramp(P.pineBark, f));
+  });
+  // Resin: a few amber drops.
+  for (let i = 0; i < 2; i++) {
+    const x = Math.floor(t.rand() * TEX);
+    const y = Math.floor(t.rand() * TEX);
+    t.set(x, y, hex(0xc98a2c));
+    t.set(x, y + 1, hex(0x9a6120));
+  }
+}
+
+function paintPineTop(t) {
+  const c = (TEX - 1) / 2;
+  t.forEach((x, y) => {
+    const edge = Math.max(Math.abs(x - c), Math.abs(y - c));
+    if (edge > 13.5) {
+      t.set(x, y, ramp(P.pineBark, t.fbm(x, y, 8, 2) * 0.7 + t.rand() * 0.3));
+      return;
+    }
+    const r = Math.hypot(x - c, y - c) + t.fbm(x, y, 4, 2, 7) * 1.8;
+    const ring = (r / 1.8) % 1;
+    const col = ring < 0.35 ? hex(0x7a5232) : ramp(P.pineRings, t.rand());
+    t.set(x, y, edge > 12.5 ? scaleRgb(col, 0.82) : col);
+  });
+}
+
+// Needles: clusters of short diagonal strokes, dark blue-green.
+function paintPineNeedles(t) {
+  t.forEach((x, y) => t.set(x, y, ramp(P.pineNeedles, 0.1 + t.fbm(x, y, 4, 2) * 0.3), 255));
+  for (let i = 0; i < 70; i++) {
+    const x = Math.floor(t.rand() * TEX);
+    const y = Math.floor(t.rand() * TEX);
+    const c = ramp(P.pineNeedles, 0.35 + t.rand() * 0.65);
+    const dir = t.rand() < 0.5 ? 1 : -1;
+    const len = 3 + Math.floor(t.rand() * 3);
+    for (let k = 0; k < len; k++) t.set(x + k * dir, y + k, k === 0 ? scaleRgb(c, 1.15) : c);
+  }
+  t.forEach((x, y) => {
+    if (t.noise(x, y, 8, 5) * 0.65 + t.rand() * 0.35 < 0.2) t.set(x, y, [0, 0, 0], 0);
+  });
+}
+
 function paintGlass(t) {
   t.forEach((x, y) => t.set(x, y, [200, 225, 235], 0));
   const frame = hex(0xe6f3f7);
@@ -706,6 +825,12 @@ const PAINTERS = {
   flower_yellow: (t) => paintFlower(t, [0xc98a0a, 0xf5cf2f, 0xfff29a, 0xd9661a]),
   bricks: paintBricks,
   wool: paintWool,
+  birch_side: paintBirchBark,
+  birch_top: paintBirchTop,
+  birch_leaves: (t) => paintFoliage(t, P.birchLeaves, 110, 0.2),
+  pine_side: paintPineBark,
+  pine_top: paintPineTop,
+  pine_leaves: paintPineNeedles,
 };
 
 export function paintTile(name) {
@@ -750,6 +875,12 @@ const RELIEF = {
   glass: [0.6, 0.08, 1],
   lumen: [2.2, 0.3, 1],
   wool: [1.4, 1.0, 1],
+  birch_side: [2.2, 0.8, 1],
+  birch_top: [1.6, 0.8, 1],
+  birch_leaves: [2.2, 0.5, 1],
+  pine_side: [3.4, 0.9, 1],
+  pine_top: [1.6, 0.8, 1],
+  pine_leaves: [2.0, 0.55, 1],
 };
 
 function luminance(p, i) {

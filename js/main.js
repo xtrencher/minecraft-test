@@ -26,6 +26,7 @@ import { BulletHoles } from "./decals.js";
 import { GRENADE_RADIUS } from "./effects.js";
 import { LodSystem } from "./lod.js";
 import { GrassField } from "./grass.js";
+import { UnderwaterMotes } from "./motes.js";
 
 // ---------- Seed ----------
 function parseSeedFromURL() {
@@ -156,19 +157,7 @@ world.onEdit = () => {
 // changed since the last save get re-encoded.
 const encodedEditCache = new Map();
 
-function findSpawnColumn() {
-  let bestX = 0;
-  let bestZ = 0;
-  for (let r = 0; r < 40; r += 4) {
-    const h = world.heightAt(bestX, bestZ);
-    if (h > SEA_LEVEL + 1) return [bestX, bestZ];
-    bestX += 6;
-    bestZ += 4;
-  }
-  return [bestX, bestZ];
-}
-
-const [spawnX, spawnZ] = findSpawnColumn();
+const [spawnX, spawnZ] = world.terrain.spawnColumn();
 
 // A saved player (position, inventory, ...) for this world, if any.
 const savedPlayer = loadPlayer(SEED);
@@ -472,7 +461,7 @@ function setGraphics(name, { adoptRenderDistance = false } = {}) {
     onResize,
   });
   lod.configure({ detailDistance: preset.detailDistance });
-  grass.configure({ density: preset.grass, radius: preset.grass >= 2 ? 24 : 16 });
+  grass.configure({ level: preset.grass });
   world.setMeshOptions({ fancyLeaves: preset.fancyLeaves });
   if (adoptRenderDistance) setRenderDistance(preset.renderDistance);
   ui.graphicsSelect.value = graphicsPreset;
@@ -646,6 +635,13 @@ const sunWorldPos = new THREE.Vector3();
 const lookDir = new THREE.Vector3();
 let eyeAdaptation = 1;
 let underwater = false;
+let waterSurfaceY = 0; // the water surface above the eye, while under water
+let dawnDusk = 0; // 1 around sunrise and sunset
+let eyeSkyLight = 1; // sky light at the eye (0-1): no light shafts in dark flooded caves
+const refractedSun = new THREE.Vector3(0, 1, 0);
+const underwaterRayColor = new THREE.Color();
+// Drifting particles in the water around the camera.
+const motes = new UnderwaterMotes(scene);
 let heldLight = { sky: 15, block: 0 };
 
 function updateEnvironment(dt) {
@@ -661,7 +657,25 @@ function updateEnvironment(dt) {
   const eyeLight = world.lightAt(eye.x, eye.y, eye.z);
   heldLight = eyeLight;
   const wl = Math.max(0.15, (eyeLight.sky / 15) * sky.daylight + 0.1);
-  worldUniforms.uWaterFogColor.value.setRGB(0.02 * wl, 0.11 * wl, 0.16 * wl);
+  worldUniforms.uWaterFogColor.value.setRGB(0.03 * wl, 0.135 * wl, 0.15 * wl); // teal murk
+  eyeSkyLight = eyeLight.sky / 15;
+  if (underwater) {
+    // The surface above (for the light shafts), and sunlight bent into the water.
+    let y = Math.floor(eye.y);
+    while (y < 63 && world.getBlock(eye.x, y + 1, eye.z) === BLOCK.WATER) y++;
+    waterSurfaceY = surfaceHeight(y, eye.x, eye.z, worldUniforms.uTime.value, worldUniforms.uWaveStrength.value);
+    const L = worldUniforms.uLightDir.value;
+    const h = Math.hypot(L.x, L.z);
+    const hr = h / 1.33;
+    refractedSun.set(h > 1e-4 ? (L.x / h) * hr : 0, Math.sqrt(Math.max(0, 1 - hr * hr)), h > 1e-4 ? (L.z / h) * hr : 0);
+  }
+  motes.update(eye, worldUniforms.uTime.value, underwater, wl, drawingSize.y || window.innerHeight);
+
+  // Low mist over the water, thickest around sunrise and sunset.
+  const e = worldUniforms.uSunDir.value.y;
+  dawnDusk = Math.exp(-((e / 0.2) ** 2));
+  const mist = PRESETS[graphicsPreset].mist;
+  worldUniforms.uMist.value.set(mist * (0.003 + 0.022 * dawnDusk + 0.006 * worldUniforms.uNight.value), 2.5 + 3 * dawnDusk, 1, SEA_LEVEL + 0.9);
 
   // Eye adaptation: brighten gradually in dark places (caves, at night), less
   // so when a torch is nearby.
@@ -689,7 +703,13 @@ function renderFrame() {
         exposure,
         sunWorldPos,
         sunColor: worldUniforms.uSunGlowColor.value,
-        raysStrength: underwater ? 0 : 0.85 * sunUp,
+        // Sunbeams: stronger and wider in the low, hazy light of dawn and dusk.
+        raysStrength: underwater ? 0 : (0.85 + 0.7 * dawnDusk) * sunUp,
+        raysSpread: 8 - 4.5 * dawnDusk,
+        underwaterRays: underwater ? 1.6 * sky.daylight * eyeSkyLight : 0,
+        underwaterLight: refractedSun,
+        underwaterColor: underwaterRayColor.setRGB(0.55, 0.9, 0.95).multiply(worldUniforms.uLightColor.value),
+        surfaceY: waterSurfaceY,
         underwater,
         night: worldUniforms.uNight.value,
         bloomStrength: 0.11,
@@ -735,6 +755,7 @@ window.__voxelands = {
   audio,
   lod,
   grass,
+  motes,
   streamAround,
   water: { isUnderwater, surfaceHeight },
   hud,

@@ -28,6 +28,11 @@ export const BLOCK = Object.freeze({
   FLOWER_YELLOW: 22,
   BRICKS: 23,
   WOOL: 24,
+  BIRCH_LOG: 25,
+  BIRCH_LEAVES: 26,
+  PINE_LOG: 27,
+  PINE_LEAVES: 28,
+  OAK_BARK: 29,
 });
 
 // Texture layers of the block texture array, in order. Painted procedurally
@@ -61,6 +66,12 @@ export const TILE_NAMES = [
   "flower_yellow",
   "bricks",
   "wool",
+  "birch_side",
+  "birch_top",
+  "birch_leaves",
+  "pine_side",
+  "pine_top",
+  "pine_leaves",
 ];
 export const TILE = Object.freeze(Object.fromEntries(TILE_NAMES.map((name, i) => [name, i])));
 
@@ -83,6 +94,8 @@ const DEFAULTS = {
   support: null, // "solid": needs a solid block below; "soil": needs grass/dirt below
   liquid: false,
   gravity: false, // falls when nothing solid is underneath (sand, gravel)
+  leaves: false, // tree foliage (fancy leaf cards, light shining through, no mob spawns)
+  log: false, // tree trunk
   // Mining (survival): hardness (-1 = unbreakable), the tool type that mines
   // it fastest, and the minimum tool tier needed to get drops (0 = by hand).
   hardness: 1,
@@ -110,8 +123,8 @@ const DEFS = {
     liquid: true,
     hardness: -1,
   },
-  [BLOCK.WOOD]: { name: "Log", faces: { top: "wood_top", bottom: "wood_top", side: "wood_side" }, hardness: 2, tool: "axe", sound: "wood" },
-  [BLOCK.LEAVES]: { name: "Leaves", faces: "leaves", render: RENDER.CUTOUT, opaque: false, lightFilter: 1, wave: true, hardness: 0.2, sound: "grass" },
+  [BLOCK.WOOD]: { name: "Log", faces: { top: "wood_top", bottom: "wood_top", side: "wood_side" }, hardness: 2, tool: "axe", sound: "wood", log: true },
+  [BLOCK.LEAVES]: { name: "Leaves", faces: "leaves", render: RENDER.CUTOUT, opaque: false, lightFilter: 1, wave: true, hardness: 0.2, sound: "grass", leaves: true },
   [BLOCK.PLANKS]: { name: "Planks", faces: "planks", hardness: 2, tool: "axe", sound: "wood" },
   [BLOCK.GLASS]: { name: "Glass", faces: "glass", render: RENDER.CUTOUT, opaque: false, skyPass: true, hardness: 0.3, sound: "glass" },
   [BLOCK.COBBLESTONE]: { name: "Cobblestone", faces: "cobblestone", hardness: 2, tool: "pickaxe", minTier: 1 },
@@ -185,6 +198,12 @@ const DEFS = {
   },
   [BLOCK.BRICKS]: { name: "Bricks", faces: "bricks", hardness: 2, tool: "pickaxe", minTier: 1 },
   [BLOCK.WOOL]: { name: "Wool", faces: "wool", hardness: 0.8, sound: "cloth" },
+  [BLOCK.BIRCH_LOG]: { name: "Birch Log", faces: { top: "birch_top", bottom: "birch_top", side: "birch_side" }, hardness: 2, tool: "axe", sound: "wood", log: true },
+  [BLOCK.BIRCH_LEAVES]: { name: "Birch Leaves", faces: "birch_leaves", render: RENDER.CUTOUT, opaque: false, lightFilter: 1, wave: true, hardness: 0.2, sound: "grass", leaves: true },
+  [BLOCK.PINE_LOG]: { name: "Pine Log", faces: { top: "pine_top", bottom: "pine_top", side: "pine_side" }, hardness: 2, tool: "axe", sound: "wood", log: true },
+  [BLOCK.PINE_LEAVES]: { name: "Pine Needles", faces: "pine_leaves", render: RENDER.CUTOUT, opaque: false, lightFilter: 1, wave: true, hardness: 0.2, sound: "grass", leaves: true },
+  // Bark on every face: branches and roots of oaks.
+  [BLOCK.OAK_BARK]: { name: "Oak Wood", faces: "wood_side", hardness: 2, tool: "axe", sound: "wood", log: true },
 };
 
 // Face order used everywhere: +X, -X, +Y (top), -Y (bottom), +Z, -Z.
@@ -228,6 +247,8 @@ export const IS_LIQUID = table((b) => (b.liquid ? 1 : 0));
 export const IS_SELECTABLE = table((b) => (b.selectable ? 1 : 0));
 export const IS_REPLACEABLE = table((b) => (b.replaceable ? 1 : 0));
 export const HAS_GRAVITY = table((b) => (b.gravity ? 1 : 0));
+export const IS_LEAVES = table((b) => (b.leaves ? 1 : 0));
+export const IS_LOG = table((b) => (b.log ? 1 : 0));
 for (let id = 0; id < 256; id++) {
   if (!BLOCK_INFO[id]) {
     IS_OPAQUE[id] = 1;
