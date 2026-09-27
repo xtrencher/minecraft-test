@@ -244,7 +244,139 @@ try {
     await page.waitForTimeout(500);
     await page.keyboard.press("Space");
     await page.keyboard.press("Space");
-    await page.waitForTimeout(2500); // let the throttled autosave fire
+    await page.waitForTimeout(500);
+  });
+
+  // --- Blast Orb (Phase 2) ---
+  const waitForExplosion = async (prevCount) => {
+    await page.waitForFunction((n) => window.__voxelands.effects.explosionCount > n, prevCount, { timeout: 30000, polling: 16 });
+    return page.evaluate(() => {
+      const { effects, world, player } = window.__voxelands;
+      return {
+        ...effects.lastExplosion,
+        trauma: effects.shake.trauma,
+        debris: effects.debris.particles.length,
+        smoke: effects.smoke.particles.length,
+        glow: effects.glow.particles.length,
+        playerVy: player.velocity.y,
+        count: effects.explosionCount,
+      };
+    });
+  };
+
+  await check("Blast Orb flies much farther on a sensible arc", async () => {
+    await page.evaluate(() => {
+      const { player } = window.__voxelands;
+      player.flying = true;
+      player.velocity.set(0, 0, 0);
+      player.position.y = 70; // above the build height: nothing in the orb's way at first
+      player.yaw = 0;
+      player.pitch = 0.5;
+    });
+    await page.waitForFunction(() => window.__voxelands.effects.canThrow(), null, { timeout: 10000 });
+    const start = await page.evaluate(() => {
+      const e = window.__voxelands.player.getEyePosition();
+      return { x: e.x, y: e.y, z: e.z, count: window.__voxelands.effects.explosionCount };
+    });
+    await page.keyboard.press("KeyF");
+    // Sample the orb after ~1 s of (game) flight time.
+    const handle = await page.waitForFunction(
+      () => {
+        const p = window.__voxelands.effects.projectiles[0];
+        return p && p.age >= 1 ? { x: p.mesh.position.x, y: p.mesh.position.y, z: p.mesh.position.z, age: p.age } : null;
+      },
+      null,
+      { timeout: 30000, polling: 16 }
+    );
+    const s1 = await handle.jsonValue();
+    const horizSpeed = Math.hypot(s1.x - start.x, s1.z - start.z) / s1.age;
+    console.log(`        horizontal speed over first ${s1.age.toFixed(2)} s: ${horizSpeed.toFixed(1)} blocks/s (old orb: ~15)`);
+    assert(horizSpeed > 22, `orb only covered ${horizSpeed.toFixed(1)} blocks/s horizontally`);
+    const boom = await waitForExplosion(start.count);
+    const range = Math.hypot(boom.x - start.x, boom.z - start.z);
+    console.log(`        landed ${range.toFixed(1)} blocks away, ${(start.y - boom.y).toFixed(1)} blocks below the throw point`);
+    assert(range > 40, `orb landed only ${range.toFixed(1)} blocks away`);
+    assert(boom.y < start.y, "orb should arc back down to the ground");
+  });
+
+  await check("Blast Orb carves a 2-3x bigger crater, with particles and shake", async () => {
+    await page.evaluate(() => {
+      const { player, spawn } = window.__voxelands;
+      player.flying = false;
+      player.spawnAt(spawn.x, spawn.z);
+      player.yaw = 0;
+      player.pitch = -1.5; // look straight down
+    });
+    await page.waitForTimeout(1000); // land on the ground
+    await page.waitForFunction(() => window.__voxelands.effects.canThrow(), null, { timeout: 10000 });
+    const prev = await page.evaluate(() => window.__voxelands.effects.explosionCount);
+    await page.keyboard.press("KeyF");
+    const boom = await waitForExplosion(prev);
+    console.log(`        removed ${boom.removed} blocks (radius-3 max was 123), farthest ${boom.maxDist.toFixed(2)} from center, carve ${boom.carveMs.toFixed(1)} ms`);
+    console.log(`        particles: ${boom.debris} debris, ${boom.smoke} smoke, ${boom.glow} fire/sparks; shake trauma ${boom.trauma.toFixed(2)}; player vy ${boom.playerVy.toFixed(1)}`);
+    assert(boom.removed > 300, `crater too small: ${boom.removed} blocks`);
+    assert(boom.maxDist > 6 && boom.maxDist < 8.2, `crater reach ${boom.maxDist.toFixed(2)} outside the expected ~7 +/- 0.6`);
+    assert(boom.carveMs < 150, `carving took ${boom.carveMs.toFixed(1)} ms`);
+    assert(boom.debris > 50 && boom.smoke > 30 && boom.glow > 60, "expected a big particle burst");
+    assert(boom.trauma > 0.3, `camera shake trauma only ${boom.trauma}`);
+    assert(boom.playerVy > 2, `blast under the player should knock them upward (vy=${boom.playerVy.toFixed(2)})`);
+    // The affected chunks are remeshed on the next frame, and only those.
+    await page.waitForTimeout(300);
+    const stats = await page.evaluate(() => window.__voxelands.world.stats);
+    console.log(`        remeshed ${stats.lastEditRemeshCount} chunks in ${stats.lastEditRemeshMs.toFixed(1)} ms`);
+    assert(stats.lastEditRemeshCount >= 1 && stats.lastEditRemeshCount <= 16, `remeshed ${stats.lastEditRemeshCount} chunks`);
+  });
+
+  await check("underwater blasts flood the crater instead of leaving dry pockets", async () => {
+    const result = await page.evaluate(() => {
+      const { world, effects, player, THREE } = window.__voxelands;
+      const SEA = 24;
+      // Find a sea column near the player whose water is at least 3 deep.
+      const px = Math.floor(player.position.x);
+      const pz = Math.floor(player.position.z);
+      let spot = null;
+      for (let r = 0; r < 120 && !spot; r += 2) {
+        for (let a = 0; a < 16 && !spot; a++) {
+          const x = px + Math.round(Math.cos((a / 16) * Math.PI * 2) * r);
+          const z = pz + Math.round(Math.sin((a / 16) * Math.PI * 2) * r);
+          if (world.getBlock(x, SEA, z) === 5 && world.getBlock(x, SEA - 2, z) === 5) spot = { x, z };
+        }
+      }
+      if (!spot) return { skipped: true };
+      let floor = SEA;
+      while (floor > 0 && world.getBlock(spot.x, floor, spot.z) === 5) floor--;
+      const R = 10;
+      const before = new Map();
+      for (let y = Math.max(0, floor - R); y <= SEA + 1; y++) {
+        for (let z = spot.z - R; z <= spot.z + R; z++) {
+          for (let x = spot.x - R; x <= spot.x + R; x++) before.set(`${x},${y},${z}`, world.getBlock(x, y, z));
+        }
+      }
+      effects._explode(new THREE.Vector3(spot.x + 0.5, floor + 0.5, spot.z + 0.5));
+      // Any air cell at or below sea level near the blast that touches water is a dry pocket.
+      const pockets = [];
+      const n = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+      for (let y = Math.max(0, floor - 9); y <= SEA; y++) {
+        for (let z = spot.z - 9; z <= spot.z + 9; z++) {
+          for (let x = spot.x - 9; x <= spot.x + 9; x++) {
+            if (world.getBlock(x, y, z) !== 0) continue;
+            const wet = n.filter(([dx, dy, dz]) => world.getBlock(x + dx, y + dy, z + dz) === 5);
+            if (wet.length) {
+              pockets.push({ x, y, z, was: before.get(`${x},${y},${z}`), water: wet.map(([dx, dy, dz]) => `${dx},${dy},${dz} (was ${before.get(`${x + dx},${y + dy},${z + dz}`)})`) });
+            }
+          }
+        }
+      }
+      return { skipped: false, spot, floor, pockets, removed: effects.lastExplosion.removed, center: effects.lastExplosion };
+    });
+    if (result.skipped) {
+      console.log("        (no sea found near spawn; skipped)");
+      return;
+    }
+    console.log(`        blast at sea floor (${result.spot.x}, ${result.floor}, ${result.spot.z}): removed ${result.removed}, dry pockets touching water: ${result.pockets.length}`);
+    for (const p of result.pockets.slice(0, 5)) console.log(`        pocket ${JSON.stringify(p)}`);
+    assert(result.removed > 50, "expected the sea floor to be carved");
+    assert(result.pockets.length === 0, `${result.pockets.length} air cells left touching water below sea level`);
   });
 
   await check("HUD is live", async () => {
@@ -255,11 +387,24 @@ try {
 
   await page.screenshot({ path: path.join(__dirname, "screenshot.png") }).catch(() => {});
 
+  const countEdits = () =>
+    page.evaluate(() => {
+      let n = 0;
+      for (const m of window.__voxelands.world.edits.values()) n += m.size;
+      return n;
+    });
+
   let savedRaw = null;
-  await check("edits are saved to localStorage", async () => {
+  let editCount = 0;
+  await check("edits are saved to localStorage in the compact format", async () => {
+    await page.waitForTimeout(2500); // let the throttled autosave fire
     savedRaw = await page.evaluate((k) => localStorage.getItem(k), EDITS_KEY);
-    assert(savedRaw && savedRaw !== "[]", "expected non-empty block edits after break/place/explosion");
-    console.log(`        saved edits: ${JSON.parse(savedRaw).length / 4} block changes`);
+    assert(savedRaw, "expected saved block edits after break/place/explosions");
+    const parsed = JSON.parse(savedRaw);
+    assert(parsed.v === 2 && Object.keys(parsed.chunks).length > 0, "expected v2 per-chunk format");
+    editCount = await countEdits();
+    console.log(`        ${editCount} block changes saved in ${savedRaw.length} chars`);
+    assert(editCount > 300, "explosion edits missing");
   });
 
   await check("edits survive a page reload", async () => {
@@ -268,6 +413,8 @@ try {
     await page.waitForTimeout(1000);
     const reloadedRaw = await page.evaluate((k) => localStorage.getItem(k), EDITS_KEY);
     assert(reloadedRaw === savedRaw, "saved edits changed or vanished across reload");
+    const reloadedCount = await countEdits();
+    assert(reloadedCount === editCount, `reloaded ${reloadedCount} edits, expected ${editCount}`);
   });
 } finally {
   await browser.close();

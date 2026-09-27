@@ -19,6 +19,10 @@ export class Player {
 
     this.position = new THREE.Vector3(0, 40, 0);
     this.velocity = new THREE.Vector3(0, 0, 0);
+    // External horizontal push (explosions, hits). Kept separate from the
+    // input-driven velocity, which is recomputed every frame, and decays
+    // quickly on the ground and slowly in the air.
+    this.knockback = new THREE.Vector3(0, 0, 0);
     this.yaw = 0;
     this.pitch = 0;
     this.onGround = false;
@@ -79,6 +83,15 @@ export class Player {
     const h = this.world.heightAt(wx, wz);
     this.position.set(wx, h + 2, wz);
     this.velocity.set(0, 0, 0);
+    this.knockback.set(0, 0, 0);
+  }
+
+  // Pushes the player: the horizontal part becomes decaying knockback, the
+  // vertical part is added straight to the velocity (ignored while flying).
+  applyImpulse(impulse) {
+    this.knockback.x += impulse.x;
+    this.knockback.z += impulse.z;
+    if (!this.flying) this.velocity.y = Math.max(this.velocity.y, 0) + impulse.y;
   }
 
   getEyePosition() {
@@ -180,8 +193,11 @@ export class Player {
     const worldZ = -moveX * sinY + moveZ * cosY;
 
     const speed = this.flying ? FLY_SPEED : WALK_SPEED;
-    this.velocity.x = worldX * speed;
-    this.velocity.z = worldZ * speed;
+    this.velocity.x = worldX * speed + this.knockback.x;
+    this.velocity.z = worldZ * speed + this.knockback.z;
+    const knockbackDecay = Math.exp(-(this.onGround ? 7 : 1.2) * dt);
+    this.knockback.x *= knockbackDecay;
+    this.knockback.z *= knockbackDecay;
 
     if (this.flying) {
       let vy = 0;
@@ -201,7 +217,10 @@ export class Player {
 
     const dx = this._sweepAxis("x", this.velocity.x * dt);
     this.position.x += dx;
-    if (dx === 0) this.velocity.x = 0;
+    if (dx === 0) {
+      this.velocity.x = 0;
+      this.knockback.x = 0;
+    }
 
     const dy = this._sweepAxis("y", this.velocity.y * dt);
     this.position.y += dy;
@@ -209,7 +228,10 @@ export class Player {
 
     const dz = this._sweepAxis("z", this.velocity.z * dt);
     this.position.z += dz;
-    if (dz === 0) this.velocity.z = 0;
+    if (dz === 0) {
+      this.velocity.z = 0;
+      this.knockback.z = 0;
+    }
 
     this.stepEvent = false;
     if (this.onGround && !this.flying && (moveX !== 0 || moveZ !== 0)) {

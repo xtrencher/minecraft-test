@@ -241,6 +241,35 @@ export function buildTextureAtlas() {
   return { texture, canvas };
 }
 
+// Average color (sRGB 0-1) of each block's visible pixels, averaged over its
+// top and side textures. Used to tint explosion debris so it matches the
+// terrain it was blasted out of.
+export function computeBlockColors(atlasCanvas) {
+  const data = atlasCanvas.getContext("2d").getImageData(0, 0, atlasCanvas.width, atlasCanvas.height).data;
+  const colors = {};
+  const tileAverage = (tile) => {
+    const [x0, y0] = tileXY(tile);
+    let r = 0, g = 0, b = 0, n = 0;
+    for (let y = y0; y < y0 + TILE_SIZE; y++) {
+      for (let x = x0; x < x0 + TILE_SIZE; x++) {
+        const i = (y * atlasCanvas.width + x) * 4;
+        if (data[i + 3] < 128) continue;
+        r += data[i];
+        g += data[i + 1];
+        b += data[i + 2];
+        n++;
+      }
+    }
+    return n > 0 ? [r / n / 255, g / n / 255, b / n / 255] : [0.8, 0.8, 0.8];
+  };
+  for (const [id, info] of Object.entries(BLOCK_INFO)) {
+    const top = tileAverage(info.faces.top);
+    const side = tileAverage(info.faces.side);
+    colors[id] = [(top[0] + side[0]) / 2, (top[1] + side[1]) / 2, (top[2] + side[2]) / 2];
+  }
+  return colors;
+}
+
 export function createMaterials(atlasTexture) {
   const opaque = new THREE.MeshLambertMaterial({ map: atlasTexture, vertexColors: true });
   const cutout = new THREE.MeshLambertMaterial({ map: atlasTexture, vertexColors: true, transparent: true, alphaTest: 0.4, side: THREE.DoubleSide });

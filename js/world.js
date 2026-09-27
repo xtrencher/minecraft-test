@@ -1,16 +1,14 @@
 import * as THREE from "three";
 import { Noise, hash2 } from "./noise.js";
-import { BLOCK, isSolid, createMaterials, buildTextureAtlas } from "./blocks.js";
-import { Chunk, CHUNK_SIZE, WORLD_HEIGHT } from "./chunk.js";
+import { BLOCK, isSolid, createMaterials, buildTextureAtlas, computeBlockColors } from "./blocks.js";
+import { Chunk } from "./chunk.js";
+import { CHUNK_SIZE, WORLD_HEIGHT, SEA_LEVEL, blockIndex, floorDiv, chunkKey } from "./constants.js";
+import { setEdit } from "./storage.js";
 
-export const SEA_LEVEL = 24;
+export { SEA_LEVEL };
 const BASE_HEIGHT = 26;
 const AMPLITUDE = 14;
 const TREE_CHANCE = 0.02;
-
-function floorDiv(a, b) {
-  return Math.floor(a / b);
-}
 
 export class World {
   constructor(scene, seed) {
@@ -18,17 +16,21 @@ export class World {
     this.seed = seed >>> 0;
     this.noise = new Noise(this.seed);
     this.chunks = new Map();
-    this.edits = new Map(); // "wx,wy,wz" -> blockId
-    this.dirty = false;
+    // Player/explosion edits on top of generated terrain, grouped per chunk:
+    // Map<chunkKey, Map<localBlockIndex, blockId>> (see storage.js).
+    this.edits = new Map();
+    this.dirtyEditChunks = new Set(); // chunk keys with edits not yet saved
 
-    const { texture } = buildTextureAtlas();
+    const { texture, canvas } = buildTextureAtlas();
     this.atlasTexture = texture;
     this.materials = createMaterials(texture);
+    this.blockColors = computeBlockColors(canvas); // blockId -> [r,g,b] sRGB 0-1
 
     this.genQueue = [];
     this.genQueued = new Set();
     this.remeshQueue = new Set(); // boundary fix-ups after neighbors load (budgeted)
     this.editRemeshQueue = new Set(); // chunks changed by block edits (remeshed next frame)
+    this.stats = { lastEditRemeshCount: 0, lastEditRemeshMs: 0 };
     this._planCx = null;
     this._planCz = null;
     this._planR = null;
@@ -37,7 +39,7 @@ export class World {
   }
 
   key(cx, cz) {
-    return cx + "," + cz;
+    return chunkKey(cx, cz);
   }
 
   getChunk(cx, cz) {
@@ -76,8 +78,8 @@ export class World {
     chunk.setBlock(lx, wy, lz, id);
 
     if (recordEdit) {
-      this.edits.set(`${wx},${wy},${wz}`, id);
-      this.dirty = true;
+      setEdit(this.edits, cx, cz, blockIndex(lx, wy, lz), id);
+      this.dirtyEditChunks.add(chunk.key);
       if (this.onEdit) this.onEdit();
     }
 
@@ -166,6 +168,8 @@ export class World {
         chunk.buildMesh(this.materials);
         this.remeshQueue.delete(chunk);
       }
+      this.stats.lastEditRemeshCount = this.editRemeshQueue.size;
+      this.stats.lastEditRemeshMs = performance.now() - start;
       this.editRemeshQueue.clear();
     }
 
@@ -269,36 +273,15 @@ export class World {
   }
 
   applyStoredEdits(chunk) {
-    if (this.edits.size === 0) return;
-    const baseX = chunk.cx * CHUNK_SIZE;
-    const baseZ = chunk.cz * CHUNK_SIZE;
-    for (const [key, id] of this.edits) {
-      const [wx, wy, wz] = key.split(",").map(Number);
-      const cx = floorDiv(wx, CHUNK_SIZE);
-      const cz = floorDiv(wz, CHUNK_SIZE);
-      if (cx !== chunk.cx || cz !== chunk.cz) continue;
-      chunk.setBlock(wx - baseX, wy, wz - baseZ, id);
-    }
+    const map = this.edits.get(chunk.key);
+    if (!map) return;
+    for (const [index, id] of map) chunk.blocks[index] = id;
   }
 
-  loadEdits(editsArray) {
-    // editsArray: flat [wx,wy,wz,id, ...]
-    for (let i = 0; i < editsArray.length; i += 4) {
-      const wx = editsArray[i];
-      const wy = editsArray[i + 1];
-      const wz = editsArray[i + 2];
-      const id = editsArray[i + 3];
-      this.edits.set(`${wx},${wy},${wz}`, id);
-    }
-  }
-
-  serializeEdits() {
-    const out = [];
-    for (const [key, id] of this.edits) {
-      const [wx, wy, wz] = key.split(",").map(Number);
-      out.push(wx, wy, wz, id);
-    }
-    return out;
+  // Replaces the in-memory edits with ones loaded from storage (called before
+  // any chunk is generated, so they're applied as chunks stream in).
+  loadEdits(edits) {
+    this.edits = edits;
   }
 
   // Simple incremental voxel raycast. Returns { block:[x,y,z], place:[x,y,z], normal } or null.

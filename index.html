@@ -97,6 +97,44 @@
     text-shadow: 0 0 2px #000;
   }
 
+  /* --- Blast Orb cooldown indicator --- */
+  #orb-indicator {
+    position: fixed;
+    bottom: 14px;
+    left: calc(50% + 236px);
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.25);
+    background: conic-gradient(rgba(10,10,10,0.8) calc(var(--cd, 0) * 360deg), rgba(20,20,20,0.4) 0);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+    pointer-events: none;
+  }
+  #orb-indicator .orb-icon {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #fff6d8, #ffb347 45%, #c9501a 100%);
+    box-shadow: 0 0 12px 3px rgba(255,150,60,0.75);
+    transition: filter 0.2s, box-shadow 0.2s;
+  }
+  #orb-indicator.cooling .orb-icon {
+    filter: grayscale(0.7) brightness(0.6);
+    box-shadow: none;
+  }
+  #orb-indicator .orb-key {
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    font-size: 10px;
+    background: rgba(0,0,0,0.6);
+    border-radius: 3px;
+    padding: 0 3px;
+  }
+
   /* --- Overlays (start menu / pause menu / mobile block) --- */
   .overlay {
     position: fixed;
@@ -178,6 +216,7 @@
   <div id="crosshair" class="hidden"></div>
   <div id="fps-counter" class="hidden">FPS: --</div>
   <div id="hotbar" class="hidden"></div>
+  <div id="orb-indicator" class="hidden" title="Blast Orb (F)"><div class="orb-icon"></div><span class="orb-key">F</span></div>
 
   <div id="start-menu" class="overlay hidden">
     <div class="panel">

@@ -76,9 +76,14 @@ world.onEdit = () => {
   pendingSave = true;
 };
 
+// Encoded form of each edited chunk, reused between saves so only chunks
+// changed since the last save get re-encoded.
+const encodedEditCache = new Map();
+
 function flushSave() {
   if (!pendingSave) return;
-  saveEdits(SEED, world.serializeEdits());
+  saveEdits(SEED, world.edits, encodedEditCache, world.dirtyEditChunks);
+  world.dirtyEditChunks.clear();
   pendingSave = false;
   lastSaveTime = performance.now();
 }
@@ -138,6 +143,24 @@ const sky = new Sky(scene, ambientLight, sunLight);
 const effects = new EffectsSystem(scene, world, audio);
 
 player.onFlightToggle = (enabled) => audio.playFlightToggle(enabled);
+
+// Blast Orb explosions shove the player away from the blast center (with an
+// upward kick), falling off with distance.
+effects.onExplosion = (center, radius) => {
+  const offset = player.position.clone();
+  offset.y += 0.9; // body center
+  offset.sub(center);
+  const dist = offset.length();
+  const reach = radius * 2.2;
+  if (dist >= reach) return;
+  const strength = (1 - dist / reach) * 22;
+  if (dist < 1e-3) offset.set(0, 1, 0);
+  offset.normalize();
+  offset.y = Math.max(offset.y, 0) + 0.45;
+  offset.normalize().multiplyScalar(strength);
+  offset.y = Math.min(offset.y, 13);
+  player.applyImpulse(offset);
+};
 
 // ---------- Pointer lock / menu flow ----------
 let gameState = "start"; // "start" | "playing" | "paused"
@@ -202,8 +225,8 @@ canvas.addEventListener("wheel", (e) => {
 
 // ---------- Signature feature: Blast Orb ----------
 window.addEventListener("keydown", (e) => {
-  if (gameState !== "playing" || e.code !== "KeyF") return;
-  effects.throwOrb(player.getEyePosition(), player.getForwardVector());
+  if (gameState !== "playing" || e.code !== "KeyF" || e.repeat) return;
+  effects.throwOrb(player.getEyePosition(), player.getForwardVector(), player.velocity);
 });
 
 // ---------- Breaking / placing blocks ----------
@@ -271,6 +294,7 @@ window.__voxelands = {
   camera,
   scene,
   renderer,
+  effects,
   spawn: { x: spawnX, z: spawnZ },
   get gameState() {
     return gameState;
@@ -293,7 +317,10 @@ function animate() {
     world.ensureChunksAround(player.position.x, player.position.z, renderDistance);
     if (player.stepEvent) audio.playFootstep();
     if (player.jumpEvent) audio.playJump();
+    effects.listener.copy(player.getEyePosition());
     effects.update(dt);
+    effects.shake.apply(camera);
+    ui.setOrbCooldown(effects.cooldownFraction());
   }
   world.processQueues(gameState === "playing" ? STREAM_BUDGET_PLAYING_MS : STREAM_BUDGET_MENU_MS);
 

@@ -1,8 +1,8 @@
 import * as THREE from "three";
 import { BLOCK, BLOCK_INFO, isOpaque, isTransparent, tileUVInset } from "./blocks.js";
+import { CHUNK_SIZE, WORLD_HEIGHT, blockIndex, chunkKey } from "./constants.js";
 
-export const CHUNK_SIZE = 16;
-export const WORLD_HEIGHT = 64;
+export { CHUNK_SIZE, WORLD_HEIGHT, blockIndex };
 
 const FACES = [
   // dir, corners (CCW when viewed from outside), normal
@@ -21,14 +21,11 @@ const FACE_SHADE = {
   side: 0.75,
 };
 
-export function blockIndex(lx, ly, lz) {
-  return ly * CHUNK_SIZE * CHUNK_SIZE + lz * CHUNK_SIZE + lx;
-}
-
 export class Chunk {
   constructor(cx, cz, world) {
     this.cx = cx;
     this.cz = cz;
+    this.key = chunkKey(cx, cz);
     this.world = world;
     this.blocks = new Uint8Array(CHUNK_SIZE * WORLD_HEIGHT * CHUNK_SIZE);
     this.generated = false;
