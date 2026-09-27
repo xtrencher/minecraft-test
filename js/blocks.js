@@ -82,15 +82,21 @@ const DEFAULTS = {
   replaceable: false, // placing a block into this cell just replaces it
   support: null, // "solid": needs a solid block below; "soil": needs grass/dirt below
   liquid: false,
+  // Mining (survival): hardness (-1 = unbreakable), the tool type that mines
+  // it fastest, and the minimum tool tier needed to get drops (0 = by hand).
+  hardness: 1,
+  tool: null, // "pickaxe" | "axe" | "shovel"
+  minTier: 0,
+  sound: "stone", // stone | wood | grass | dirt | sand | glass | cloth | plant
 };
 
 // faces: a tile name for all faces, or { top, bottom, side, front? }.
 const DEFS = {
   [BLOCK.AIR]: { name: "Air", render: RENDER.NONE, solid: false, opaque: false, skyPass: true, selectable: false, replaceable: true, faces: "stone" },
-  [BLOCK.GRASS]: { name: "Grass Block", faces: { top: "grass_top", bottom: "dirt", side: "grass_side" } },
-  [BLOCK.DIRT]: { name: "Dirt", faces: "dirt" },
-  [BLOCK.STONE]: { name: "Stone", faces: "stone" },
-  [BLOCK.SAND]: { name: "Sand", faces: "sand" },
+  [BLOCK.GRASS]: { name: "Grass Block", faces: { top: "grass_top", bottom: "dirt", side: "grass_side" }, hardness: 0.6, tool: "shovel", sound: "grass" },
+  [BLOCK.DIRT]: { name: "Dirt", faces: "dirt", hardness: 0.5, tool: "shovel", sound: "dirt" },
+  [BLOCK.STONE]: { name: "Stone", faces: "stone", hardness: 1.5, tool: "pickaxe", minTier: 1 },
+  [BLOCK.SAND]: { name: "Sand", faces: "sand", hardness: 0.5, tool: "shovel", sound: "sand" },
   [BLOCK.WATER]: {
     name: "Water",
     faces: "water",
@@ -101,18 +107,19 @@ const DEFS = {
     selectable: false,
     replaceable: true,
     liquid: true,
+    hardness: -1,
   },
-  [BLOCK.WOOD]: { name: "Log", faces: { top: "wood_top", bottom: "wood_top", side: "wood_side" } },
-  [BLOCK.LEAVES]: { name: "Leaves", faces: "leaves", render: RENDER.CUTOUT, opaque: false, lightFilter: 1, wave: true },
-  [BLOCK.PLANKS]: { name: "Planks", faces: "planks" },
-  [BLOCK.GLASS]: { name: "Glass", faces: "glass", render: RENDER.CUTOUT, opaque: false, skyPass: true },
-  [BLOCK.COBBLESTONE]: { name: "Cobblestone", faces: "cobblestone" },
-  [BLOCK.BEDROCK]: { name: "Bedrock", faces: "bedrock" },
-  [BLOCK.GRAVEL]: { name: "Gravel", faces: "gravel" },
-  [BLOCK.COAL_ORE]: { name: "Coal Ore", faces: "coal_ore" },
-  [BLOCK.IRON_ORE]: { name: "Iron Ore", faces: "iron_ore" },
-  [BLOCK.GOLD_ORE]: { name: "Gold Ore", faces: "gold_ore" },
-  [BLOCK.DIAMOND_ORE]: { name: "Diamond Ore", faces: "diamond_ore" },
+  [BLOCK.WOOD]: { name: "Log", faces: { top: "wood_top", bottom: "wood_top", side: "wood_side" }, hardness: 2, tool: "axe", sound: "wood" },
+  [BLOCK.LEAVES]: { name: "Leaves", faces: "leaves", render: RENDER.CUTOUT, opaque: false, lightFilter: 1, wave: true, hardness: 0.2, sound: "grass" },
+  [BLOCK.PLANKS]: { name: "Planks", faces: "planks", hardness: 2, tool: "axe", sound: "wood" },
+  [BLOCK.GLASS]: { name: "Glass", faces: "glass", render: RENDER.CUTOUT, opaque: false, skyPass: true, hardness: 0.3, sound: "glass" },
+  [BLOCK.COBBLESTONE]: { name: "Cobblestone", faces: "cobblestone", hardness: 2, tool: "pickaxe", minTier: 1 },
+  [BLOCK.BEDROCK]: { name: "Bedrock", faces: "bedrock", hardness: -1 },
+  [BLOCK.GRAVEL]: { name: "Gravel", faces: "gravel", hardness: 0.6, tool: "shovel", sound: "sand" },
+  [BLOCK.COAL_ORE]: { name: "Coal Ore", faces: "coal_ore", hardness: 3, tool: "pickaxe", minTier: 1 },
+  [BLOCK.IRON_ORE]: { name: "Iron Ore", faces: "iron_ore", hardness: 3, tool: "pickaxe", minTier: 2 },
+  [BLOCK.GOLD_ORE]: { name: "Gold Ore", faces: "gold_ore", hardness: 3, tool: "pickaxe", minTier: 3 },
+  [BLOCK.DIAMOND_ORE]: { name: "Diamond Ore", faces: "diamond_ore", hardness: 3, tool: "pickaxe", minTier: 3 },
   [BLOCK.TORCH]: {
     name: "Torch",
     faces: "torch",
@@ -124,11 +131,16 @@ const DEFS = {
     emission: 14,
     emissive: true,
     support: "solid",
+    hardness: 0,
+    sound: "wood",
   },
-  [BLOCK.LUMEN]: { name: "Lumen Crystal", faces: "lumen", emission: 15, emissive: true },
+  [BLOCK.LUMEN]: { name: "Lumen Crystal", faces: "lumen", emission: 15, emissive: true, hardness: 0.3, sound: "glass" },
   [BLOCK.CRAFTING_TABLE]: {
     name: "Crafting Table",
     faces: { top: "crafting_table_top", bottom: "planks", side: "crafting_table_side", front: "crafting_table_front" },
+    hardness: 2.5,
+    tool: "axe",
+    sound: "wood",
   },
   [BLOCK.TALL_GRASS]: {
     name: "Tall Grass",
@@ -141,6 +153,8 @@ const DEFS = {
     wave: true,
     replaceable: true,
     support: "soil",
+    hardness: 0,
+    sound: "plant",
   },
   [BLOCK.FLOWER_RED]: {
     name: "Red Blossom",
@@ -152,6 +166,8 @@ const DEFS = {
     skyPass: true,
     wave: true,
     support: "soil",
+    hardness: 0,
+    sound: "plant",
   },
   [BLOCK.FLOWER_YELLOW]: {
     name: "Sunpetal",
@@ -163,9 +179,11 @@ const DEFS = {
     skyPass: true,
     wave: true,
     support: "soil",
+    hardness: 0,
+    sound: "plant",
   },
-  [BLOCK.BRICKS]: { name: "Bricks", faces: "bricks" },
-  [BLOCK.WOOL]: { name: "Wool", faces: "wool" },
+  [BLOCK.BRICKS]: { name: "Bricks", faces: "bricks", hardness: 2, tool: "pickaxe", minTier: 1 },
+  [BLOCK.WOOL]: { name: "Wool", faces: "wool", hardness: 0.8, sound: "cloth" },
 };
 
 // Face order used everywhere: +X, -X, +Y (top), -Y (bottom), +Z, -Z.

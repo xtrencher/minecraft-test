@@ -347,5 +347,243 @@ await test("changed-chunk set includes neighbors when light changes on a border"
   for (const k of ["0,0", "1,0", "0,1", "1,1"]) assert.ok(keys.has(k), `expected chunk ${k} in changed set, got ${[...keys]}`);
 });
 
+// ---------------------------------------------------------------------------
+console.log("\nTerrain generation (terrain.js)");
+
+const { TerrainGenerator } = await import("../js/terrain.js");
+const { SEA_LEVEL } = await import("../js/constants.js");
+
+function generateRegion(seed, size, ox = 0, oz = 0) {
+  const gen = new TerrainGenerator(seed);
+  const chunks = new Map();
+  for (let cx = ox; cx < ox + size; cx++) {
+    for (let cz = oz; cz < oz + size; cz++) {
+      const c = { cx, cz, blocks: new Uint8Array(16 * 16 * H) };
+      gen.generate(c);
+      chunks.set(`${cx},${cz}`, c);
+    }
+  }
+  const get = (x, y, z) => {
+    const c = chunks.get(`${x >> 4},${z >> 4}`);
+    if (!c || y < 0 || y >= H) return undefined;
+    return c.blocks[(y << 8) | ((z & 15) << 4) | (x & 15)];
+  };
+  return { gen, chunks, get };
+}
+
+await test("generation is deterministic and keeps the original height map", () => {
+  const a = generateRegion(1234, 2);
+  const b = generateRegion(1234, 2);
+  for (const [k, c] of a.chunks) assert.deepEqual(c.blocks, b.chunks.get(k).blocks, `chunk ${k} differs between runs`);
+  // Surface blocks sit exactly at heightAt (unless a cave opened the surface there).
+  let matches = 0;
+  let total = 0;
+  for (let x = 0; x < 32; x++) {
+    for (let z = 0; z < 32; z++) {
+      const h = a.gen.heightAt(x, z);
+      total++;
+      if ([BLOCK.GRASS, BLOCK.SAND].includes(a.get(x, h, z))) matches++;
+    }
+  }
+  assert.ok(matches / total > 0.9, `only ${matches}/${total} columns have their surface at heightAt`);
+});
+
+await test("caves never leave air touching water, and never break the bedrock floor", () => {
+  for (const seed of [42, 7, 99991]) {
+    const { chunks, get } = generateRegion(seed, 5, -2, -2);
+    let wet = 0;
+    for (let x = -32 + 1; x < 48 - 1; x++) {
+      for (let z = -32 + 1; z < 48 - 1; z++) {
+        assert.equal(get(x, 0, z), BLOCK.BEDROCK, `hole in the bedrock floor at ${x},${z}`);
+        for (let y = 1; y <= SEA_LEVEL; y++) {
+          if (get(x, y, z) !== BLOCK.AIR) continue;
+          for (const [dx, dy, dz] of DIRS) {
+            if (get(x + dx, y + dy, z + dz) === BLOCK.WATER) wet++;
+          }
+        }
+      }
+    }
+    assert.equal(wet, 0, `seed ${seed}: ${wet} air cells touch water`);
+  }
+});
+
+await test("caves, ores and crystals appear in sensible amounts", () => {
+  const { gen, chunks } = generateRegion(42, 6);
+  const counts = {};
+  let underground = 0;
+  let caveAir = 0;
+  for (const c of chunks.values()) {
+    for (let lz = 0; lz < 16; lz++) {
+      for (let lx = 0; lx < 16; lx++) {
+        const h = gen.heightAt(c.cx * 16 + lx, c.cz * 16 + lz);
+        for (let y = 2; y < h - 3; y++) {
+          const id = c.blocks[(y << 8) | (lz << 4) | lx];
+          underground++;
+          if (id === BLOCK.AIR) caveAir++;
+          counts[id] = (counts[id] || 0) + 1;
+        }
+      }
+    }
+  }
+  const n = chunks.size;
+  const per = (id) => ((counts[id] || 0) / n).toFixed(1);
+  console.log(`        underground cave air ${((caveAir / underground) * 100).toFixed(1)}%; per chunk: coal ${per(BLOCK.COAL_ORE)}, iron ${per(BLOCK.IRON_ORE)}, gold ${per(BLOCK.GOLD_ORE)}, diamond ${per(BLOCK.DIAMOND_ORE)}, gravel ${per(BLOCK.GRAVEL)}, lumen ${per(BLOCK.LUMEN)}`);
+  assert.ok(caveAir / underground > 0.015 && caveAir / underground < 0.2, "cave volume out of range");
+  assert.ok(counts[BLOCK.COAL_ORE] > counts[BLOCK.IRON_ORE] && counts[BLOCK.IRON_ORE] > counts[BLOCK.GOLD_ORE], "ore rarity order");
+  assert.ok((counts[BLOCK.DIAMOND_ORE] || 0) > 0 && counts[BLOCK.DIAMOND_ORE] < counts[BLOCK.GOLD_ORE], "diamonds should exist but be rarer than gold");
+  assert.ok((counts[BLOCK.LUMEN] || 0) > 0, "no lumen crystals generated");
+});
+
+await test("terrain generation is fast enough to stream (< 3 ms per chunk)", () => {
+  const gen = new TerrainGenerator(5);
+  const t0 = performance.now();
+  for (let i = 0; i < 40; i++) gen.generate({ cx: i, cz: -i, blocks: new Uint8Array(16 * 16 * H) });
+  const ms = (performance.now() - t0) / 40;
+  console.log(`        ${ms.toFixed(2)} ms per chunk`);
+  assert.ok(ms < 3, `${ms.toFixed(2)} ms per chunk`);
+});
+
+// ---------------------------------------------------------------------------
+console.log("\nItems, crafting and inventory (items.js, crafting.js, inventory.js)");
+
+const { ITEM, itemInfo, breakTime, canHarvest, blockDrops, maxStack } = await import("../js/items.js");
+const { findRecipe, RECIPES } = await import("../js/crafting.js");
+const { Inventory, clickSlot, takeCraftResult, craftAllInto, quickMove, makeStack } = await import("../js/inventory.js");
+
+await test("every recipe's ingredients and results are real items", () => {
+  for (const r of RECIPES) {
+    assert.ok(itemInfo(r.result), `unknown result ${r.result}`);
+    const ids = r.type === "shaped" ? Object.values(r.key) : r.ingredients;
+    for (const id of ids) assert.ok(itemInfo(id), `unknown ingredient ${id}`);
+  }
+});
+
+await test("recipes match anywhere in the grid, mirrored, and not with extra items", () => {
+  const P = BLOCK.PLANKS;
+  const S = ITEM.STICK;
+  // Log -> 4 planks in any slot of the 2x2 grid.
+  for (let i = 0; i < 4; i++) {
+    const g = [0, 0, 0, 0];
+    g[i] = BLOCK.WOOD;
+    const r = findRecipe(g, 2);
+    assert.equal(r?.result, BLOCK.PLANKS);
+    assert.equal(r.count, 4);
+  }
+  // Sticks: two planks stacked vertically, in either column of a 3x3 grid.
+  assert.equal(findRecipe([0, 0, P, 0, 0, P, 0, 0, 0], 3)?.result, ITEM.STICK);
+  assert.equal(findRecipe([P, 0, 0, P, 0, 0, 0, 0, 0], 3)?.result, ITEM.STICK);
+  assert.equal(findRecipe([P, P, 0, 0], 2), null, "two planks side by side are not sticks");
+  // Pickaxe needs the exact T shape.
+  const C = BLOCK.COBBLESTONE;
+  assert.equal(findRecipe([C, C, C, 0, S, 0, 0, S, 0], 3)?.result, ITEM.STONE_PICKAXE);
+  assert.equal(findRecipe([C, C, C, 0, S, 0, S, 0, 0], 3), null);
+  // Axe matches mirrored.
+  assert.equal(findRecipe([C, C, 0, C, S, 0, 0, S, 0], 3)?.result, ITEM.STONE_AXE);
+  assert.equal(findRecipe([C, C, 0, S, C, 0, S, 0, 0], 3)?.result, ITEM.STONE_AXE);
+  // Shapeless smelting ignores order and position.
+  assert.equal(findRecipe([ITEM.COAL, 0, 0, BLOCK.IRON_ORE], 2)?.result, ITEM.IRON_INGOT);
+  assert.equal(findRecipe([ITEM.COAL, BLOCK.IRON_ORE, BLOCK.IRON_ORE, 0], 2), null, "extra ore should not match");
+  // The 5-ingredient glass recipe can't fit in the 2x2 grid but works in the table.
+  assert.equal(findRecipe([BLOCK.SAND, BLOCK.SAND, BLOCK.SAND, BLOCK.SAND, ITEM.COAL, 0, 0, 0, 0], 3)?.result, BLOCK.GLASS);
+});
+
+await test("mining: tool tiers gate drops and speed up breaking", () => {
+  const woodPick = itemInfo(ITEM.WOOD_PICKAXE).tool;
+  const stonePick = itemInfo(ITEM.STONE_PICKAXE).tool;
+  const ironPick = itemInfo(ITEM.IRON_PICKAXE).tool;
+  const stoneAxe = itemInfo(ITEM.STONE_AXE).tool;
+  assert.equal(canHarvest(BLOCK.STONE, null), false, "stone by hand drops nothing");
+  assert.equal(canHarvest(BLOCK.STONE, woodPick), true);
+  assert.equal(canHarvest(BLOCK.IRON_ORE, woodPick), false);
+  assert.equal(canHarvest(BLOCK.IRON_ORE, stonePick), true);
+  assert.equal(canHarvest(BLOCK.DIAMOND_ORE, stonePick), false);
+  assert.equal(canHarvest(BLOCK.DIAMOND_ORE, ironPick), true);
+  assert.equal(canHarvest(BLOCK.BEDROCK, ironPick), false);
+  assert.equal(breakTime(BLOCK.BEDROCK, ironPick), Infinity);
+  assert.ok(Math.abs(breakTime(BLOCK.STONE, null) - 7.5) < 1e-9);
+  assert.ok(Math.abs(breakTime(BLOCK.STONE, woodPick) - 1.125) < 1e-9);
+  assert.ok(breakTime(BLOCK.WOOD, stoneAxe) < breakTime(BLOCK.WOOD, null));
+  assert.equal(breakTime(BLOCK.TORCH, null), 0);
+  assert.deepEqual(blockDrops(BLOCK.STONE, woodPick), [[BLOCK.COBBLESTONE, 1]]);
+  assert.deepEqual(blockDrops(BLOCK.GRASS, null), [[BLOCK.DIRT, 1]]);
+  assert.deepEqual(blockDrops(BLOCK.COAL_ORE, woodPick), [[ITEM.COAL, 1]]);
+  assert.deepEqual(blockDrops(BLOCK.GLASS, null), []);
+  assert.deepEqual(blockDrops(BLOCK.LEAVES, null, () => 0.01), [[ITEM.APPLE, 1]]);
+});
+
+await test("inventory add/merge/overflow and tool durability", () => {
+  const inv = new Inventory();
+  assert.equal(inv.add(BLOCK.DIRT, 100), 0);
+  assert.equal(inv.slots[0].count, 64);
+  assert.equal(inv.slots[1].count, 36);
+  assert.equal(inv.add(BLOCK.DIRT, 10), 0);
+  assert.equal(inv.slots[1].count, 46, "merges into the partial stack");
+  assert.equal(inv.add(ITEM.IRON_SWORD, 2), 0);
+  assert.equal(inv.slots[2].count, 1, "tools don't stack");
+  assert.equal(inv.slots[3].count, 1);
+  assert.equal(inv.slots[2].dur, itemInfo(ITEM.IRON_SWORD).tool.durability);
+  for (let i = 0; i < 40; i++) inv.add(BLOCK.STONE + (i % 2 ? 0 : 7), 64); // fill it up
+  assert.ok(inv.add(BLOCK.WOOL, 5) > 0, "a full inventory reports leftovers");
+  assert.equal(inv.canFit(BLOCK.WOOL, 1), false);
+  // Durability: a wooden pickaxe breaks after its last use.
+  const inv2 = new Inventory();
+  inv2.add(ITEM.WOOD_PICKAXE);
+  inv2.slots[0].dur = 2;
+  assert.equal(inv2.damageSelected(), false);
+  assert.equal(inv2.damageSelected(), true);
+  assert.equal(inv2.slots[0], null);
+});
+
+await test("slot clicks: pick up, place, split, merge, swap", () => {
+  const slots = [makeStack(BLOCK.DIRT, 10), makeStack(BLOCK.DIRT, 60), null, makeStack(BLOCK.STONE, 3)];
+  let cursor = clickSlot(slots, 0, null, 2); // right-click: take half
+  assert.equal(cursor.count, 5);
+  assert.equal(slots[0].count, 5);
+  cursor = clickSlot(slots, 2, cursor, 2); // right-click on empty: place one
+  assert.equal(slots[2].count, 1);
+  assert.equal(cursor.count, 4);
+  cursor = clickSlot(slots, 1, cursor, 0); // left-click: merge up to 64
+  assert.equal(slots[1].count, 64);
+  assert.equal(cursor, null, "all 4 fit");
+  cursor = clickSlot(slots, 3, null, 0); // pick up the stone
+  cursor = clickSlot(slots, 0, cursor, 0); // swap stone and dirt
+  assert.equal(slots[0].id, BLOCK.STONE);
+  assert.equal(cursor.id, BLOCK.DIRT);
+  assert.equal(cursor.count, 5);
+});
+
+await test("crafting output: take, shift-craft all, quick-move", () => {
+  const inv = new Inventory();
+  const grid = [makeStack(BLOCK.WOOD, 3), null, null, null];
+  let cursor = takeCraftResult(grid, 2, null);
+  assert.equal(cursor.id, BLOCK.PLANKS);
+  assert.equal(cursor.count, 4);
+  assert.equal(grid[0].count, 2);
+  cursor = takeCraftResult(grid, 2, cursor); // stacks onto the cursor
+  assert.equal(cursor.count, 8);
+  assert.equal(craftAllInto(grid, 2, inv), 1);
+  assert.equal(inv.countItem(BLOCK.PLANKS), 4);
+  assert.equal(grid[0], null);
+  inv.add(BLOCK.SAND, 5);
+  const sandSlot = inv.slots.findIndex((s) => s && s.id === BLOCK.SAND);
+  assert.ok(quickMove(inv, sandSlot));
+  assert.ok(inv.slots.findIndex((s) => s && s.id === BLOCK.SAND) >= 9, "hotbar -> main");
+});
+
+await test("inventory survives serialize/load and rejects garbage", () => {
+  const inv = new Inventory();
+  inv.add(BLOCK.TORCH, 12);
+  inv.add(ITEM.DIAMOND_PICKAXE);
+  inv.slots[1].dur = 99;
+  const data = JSON.parse(JSON.stringify(inv.serialize()));
+  const inv2 = new Inventory();
+  inv2.load(data);
+  assert.deepEqual(inv2.slots[0], { id: BLOCK.TORCH, count: 12 });
+  assert.deepEqual(inv2.slots[1], { id: ITEM.DIAMOND_PICKAXE, count: 1, dur: 99 });
+  inv2.load([[9999, 3], ["x"], [BLOCK.DIRT, -4], [BLOCK.DIRT, 500], 5]);
+  assert.equal(inv2.slots[0], null);
+  assert.equal(inv2.slots[3].count, maxStack(BLOCK.DIRT), "counts are clamped to the stack size");
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 process.exit(failed > 0 ? 1 : 0);

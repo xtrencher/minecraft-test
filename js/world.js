@@ -304,6 +304,23 @@ export class World {
     }
   }
 
+  // Synchronously generates (radius r + 1) and meshes (radius r) the chunks
+  // around a world position, so the player can be placed there right away
+  // (at startup, or when respawning far from where they died).
+  prepareArea(wx, wz, r = 2) {
+    const pcx = floorDiv(Math.floor(wx), CHUNK_SIZE);
+    const pcz = floorDiv(Math.floor(wz), CHUNK_SIZE);
+    for (let dz = -r - 1; dz <= r + 1; dz++) {
+      for (let dx = -r - 1; dx <= r + 1; dx++) this._generate(pcx + dx, pcz + dz);
+    }
+    for (let dz = -r; dz <= r; dz++) {
+      for (let dx = -r; dx <= r; dx++) {
+        const chunk = this.getChunk(pcx + dx, pcz + dz);
+        if (chunk && (!chunk.meshed || this.remeshQueue.has(chunk))) this._buildMesh(chunk);
+      }
+    }
+  }
+
   // True once every chunk within the render distance is generated and meshed.
   get isIdle() {
     return this.genQueue.length === 0 && this.meshQueue.length === 0 && this.editRemeshQueue.size === 0;

@@ -161,3 +161,30 @@ export function saveSettings(settings) {
     console.warn("Voxelands: failed to save settings", err);
   }
 }
+
+// Player state per world: game mode, position, view, health, breath,
+// inventory, selected slot and time of day. Small JSON; saved alongside edits.
+export function playerKey(seed) {
+  return `${PREFIX}player_${seed}`;
+}
+
+export function loadPlayer(seed) {
+  try {
+    const raw = localStorage.getItem(playerKey(seed));
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    return data && typeof data === "object" && data.v === 1 ? data : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+export function savePlayer(seed, data) {
+  try {
+    localStorage.setItem(playerKey(seed), JSON.stringify({ v: 1, ...data }));
+    return true;
+  } catch (err) {
+    console.warn("Voxelands: failed to save player state", err);
+    return false;
+  }
+}

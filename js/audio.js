@@ -6,6 +6,18 @@
 
 const NOISE_SECONDS = 2.5;
 
+// Filtered-noise recipes for block materials (see Audio._material).
+const MATERIAL_SOUNDS = {
+  stone: { filter: "bandpass", freq: 1500, q: 0.9, duration: 0.1, volume: 1 },
+  wood: { filter: "lowpass", freq: 800, q: 2, duration: 0.1, volume: 1, knock: 170 },
+  grass: { filter: "highpass", freq: 1800, q: 0.7, duration: 0.13, volume: 0.8 },
+  plant: { filter: "highpass", freq: 2600, q: 0.7, duration: 0.09, volume: 0.6 },
+  dirt: { filter: "lowpass", freq: 520, q: 1, duration: 0.12, volume: 1.1 },
+  sand: { filter: "highpass", freq: 3000, q: 0.5, duration: 0.16, volume: 0.7 },
+  glass: { filter: "highpass", freq: 4000, q: 1, duration: 0.07, volume: 0.7, tinkle: true },
+  cloth: { filter: "lowpass", freq: 380, q: 0.7, duration: 0.12, volume: 0.9 },
+};
+
 export class Audio {
   constructor() {
     this.ctx = null;
@@ -66,13 +78,14 @@ export class Audio {
     return src;
   }
 
-  _playNoiseBurst({ duration = 0.12, volume = 0.3, filterFreq = 1200, filterType = "lowpass" } = {}) {
+  _playNoiseBurst({ duration = 0.12, volume = 0.3, filterFreq = 1200, filterType = "lowpass", q = 1 } = {}) {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
     const src = this._noise(now, duration);
     const filter = this.ctx.createBiquadFilter();
     filter.type = filterType;
     filter.frequency.value = filterFreq;
+    filter.Q.value = q;
     const gain = this.ctx.createGain();
     gain.gain.setValueAtTime(volume, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
@@ -81,9 +94,9 @@ export class Audio {
     gain.connect(this.master);
   }
 
-  _playTone({ freq = 220, duration = 0.1, volume = 0.2, type = "sine", slideTo = null } = {}) {
+  _playTone({ freq = 220, duration = 0.1, volume = 0.2, type = "sine", slideTo = null, delay = 0 } = {}) {
     if (!this.ctx) return;
-    const now = this.ctx.currentTime;
+    const now = this.ctx.currentTime + delay;
     const osc = this.ctx.createOscillator();
     osc.type = type;
     osc.frequency.setValueAtTime(freq, now);
@@ -99,16 +112,83 @@ export class Audio {
     osc.stop(now + duration + 0.02);
   }
 
-  playBreak() {
-    this._playNoiseBurst({ duration: 0.15, volume: 0.28, filterFreq: 900 + Math.random() * 400 });
+  // Break/place/dig/step sounds per block material: filtered noise shaped
+  // differently for stone, wood, soil, sand, plants, glass and cloth.
+  _material(sound, { volume = 0.25, duration = 1, pitch = 1 } = {}) {
+    const m = MATERIAL_SOUNDS[sound] || MATERIAL_SOUNDS.stone;
+    const jitter = 0.85 + Math.random() * 0.3;
+    this._playNoiseBurst({
+      duration: m.duration * duration,
+      volume: volume * m.volume,
+      filterFreq: m.freq * pitch * jitter,
+      filterType: m.filter,
+      q: m.q,
+    });
+    if (m.knock) this._playTone({ freq: m.knock * pitch * jitter, slideTo: m.knock * 0.6, duration: 0.07 * duration, volume: volume * 0.5, type: "triangle" });
+    if (m.tinkle) {
+      for (let i = 0; i < 3; i++) {
+        this._playTone({ freq: (2200 + Math.random() * 1800) * pitch, duration: 0.08 + Math.random() * 0.12, volume: volume * 0.18, type: "sine", delay: i * 0.035 });
+      }
+    }
   }
 
-  playPlace() {
-    this._playNoiseBurst({ duration: 0.09, volume: 0.22, filterFreq: 1800 + Math.random() * 400 });
+  playBreak(sound = "stone") {
+    this._material(sound, { volume: 0.32, duration: 1.4 });
   }
 
-  playFootstep() {
-    this._playNoiseBurst({ duration: 0.07, volume: 0.12, filterFreq: 400 + Math.random() * 200 });
+  playPlace(sound = "stone") {
+    this._material(sound, { volume: 0.24, duration: 0.8, pitch: 1.25 });
+  }
+
+  playDig(sound = "stone") {
+    this._material(sound, { volume: 0.14, duration: 0.6, pitch: 1.1 });
+  }
+
+  playFootstep(sound = "grass") {
+    this._material(sound, { volume: 0.1, duration: 0.6, pitch: 0.8 });
+  }
+
+  playPickup() {
+    this._playTone({ freq: 620 + Math.random() * 180, slideTo: 1250, duration: 0.09, volume: 0.1, type: "sine" });
+  }
+
+  playClick() {
+    this._playTone({ freq: 1500, slideTo: 900, duration: 0.03, volume: 0.06, type: "square" });
+  }
+
+  playCraft() {
+    this._playNoiseBurst({ duration: 0.07, volume: 0.12, filterFreq: 1500, filterType: "bandpass" });
+    this._playTone({ freq: 520, slideTo: 880, duration: 0.12, volume: 0.09, type: "triangle", delay: 0.04 });
+  }
+
+  playEat() {
+    this._playNoiseBurst({ duration: 0.08, volume: 0.16, filterFreq: 900 + Math.random() * 700, filterType: "bandpass", q: 2 });
+  }
+
+  playBurp() {
+    this._playTone({ freq: 140, slideTo: 90, duration: 0.25, volume: 0.16, type: "sawtooth" });
+  }
+
+  playToolBreak() {
+    this._playTone({ freq: 1800, slideTo: 600, duration: 0.18, volume: 0.14, type: "square" });
+    this._playNoiseBurst({ duration: 0.2, volume: 0.2, filterFreq: 3000, filterType: "highpass" });
+  }
+
+  // A short grunt: a low, falling buzz.
+  playHurt() {
+    this._playTone({ freq: 230, slideTo: 120, duration: 0.18, volume: 0.22, type: "sawtooth" });
+    this._playNoiseBurst({ duration: 0.08, volume: 0.12, filterFreq: 600 });
+  }
+
+  // Death: a long falling tone over a low thud.
+  playDeath() {
+    this._playTone({ freq: 440, slideTo: 55, duration: 1.2, volume: 0.22, type: "sawtooth" });
+    this._playTone({ freq: 90, slideTo: 40, duration: 0.5, volume: 0.35, type: "sine" });
+  }
+
+  playSplash() {
+    this._playNoiseBurst({ duration: 0.45, volume: 0.28, filterFreq: 1100, filterType: "lowpass" });
+    this._playNoiseBurst({ duration: 0.25, volume: 0.12, filterFreq: 3500, filterType: "bandpass" });
   }
 
   playJump() {

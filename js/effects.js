@@ -22,7 +22,7 @@ const MAX_BLAST_RADIUS = 9; // hard cap on the carve radius (cost grows with r^3
 export const ORB_COOLDOWN = 3;
 
 const MAX_DEBRIS_PER_BLAST = 170;
-const MAX_FLOOD_CELLS = 4000; // bound on how much water one blast can let in
+const MAX_FLOOD_CELLS = 12000; // bound on how much water one blast can let in
 
 // A lumpy crater shape: the blast radius varies smoothly with direction (a
 // few random low-frequency waves over the sphere of directions). Because the
@@ -243,6 +243,11 @@ export class EffectsSystem {
   // air pocket held up by invisible walls of water. The water also spreads
   // into any older air space the blast breached below sea level (an earlier
   // crater, a dug tunnel), up to MAX_FLOOD_CELLS blocks.
+  // Public for block mining too: a mined block next to the sea fills in.
+  floodInto(removed) {
+    this._floodCarved(removed);
+  }
+
   _floodCarved(removed) {
     const world = this.world;
     const dirs = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
@@ -256,12 +261,15 @@ export class EffectsSystem {
       if (dirs.some(([dx, dy, dz]) => world.getBlock(x + dx, y + dy, z + dz) === BLOCK.WATER)) queue.push(x, y, z);
     }
     if (queue.length === 0) return;
+    // Breadth-first, so the cells nearest the breach (the crater itself)
+    // fill before the cap is reached somewhere down a connected cave.
     const filled = new Set();
     const edits = [];
-    while (queue.length > 0 && filled.size < MAX_FLOOD_CELLS) {
-      const z = queue.pop();
-      const y = queue.pop();
-      const x = queue.pop();
+    let head = 0;
+    while (head < queue.length && filled.size < MAX_FLOOD_CELLS) {
+      const x = queue[head++];
+      const y = queue[head++];
+      const z = queue[head++];
       const key = `${x},${y},${z}`;
       if (filled.has(key) || world.getBlock(x, y, z) !== BLOCK.AIR || !world.getChunk(x >> 4, z >> 4)) continue;
       filled.add(key);

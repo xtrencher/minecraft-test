@@ -92,6 +92,59 @@ async function holdKeysUntilMoved(page, keys, minDist = 2, timeout = 20000) {
   return { dx: after.x - before.x, dy: after.y - before.y, dz: after.z - before.z };
 }
 
+// Builds a floating 9x9 stone platform with open air above it, well away
+// from spawn, and stands the player in the middle facing -Z. Returns the
+// platform's center block.
+async function setupArena(page, offX = 20, offZ = 20, y = 46) {
+  return page.evaluate(
+    ([offX, offZ, y]) => {
+      const { world, player, spawn } = window.__voxelands;
+      const x0 = spawn.x + offX;
+      const z0 = spawn.z + offZ;
+      const edits = [];
+      for (let dx = -4; dx <= 4; dx++) {
+        for (let dz = -4; dz <= 4; dz++) {
+          edits.push(x0 + dx, y, z0 + dz, 3);
+          for (let dy = 1; dy <= 5; dy++) edits.push(x0 + dx, y + dy, z0 + dz, 0);
+        }
+      }
+      world.setBlocks(edits);
+      player.flying = false;
+      player.velocity.set(0, 0, 0);
+      player.knockback.set(0, 0, 0);
+      player.position.set(x0 + 0.5, y + 1, z0 + 0.5);
+      player.yaw = 0;
+      player.pitch = 0;
+      return { x: x0, y, z: z0 };
+    },
+    [offX, offZ, y]
+  );
+}
+
+// Turns the view toward the center of block [x, y, z] and waits until the
+// crosshair raycast targets it.
+async function aimAt(page, block) {
+  await page.evaluate(([x, y, z]) => {
+    const { player } = window.__voxelands;
+    const eye = player.getEyePosition();
+    const dx = x + 0.5 - eye.x;
+    const dy = y + 0.5 - eye.y;
+    const dz = z + 0.5 - eye.z;
+    player.yaw = Math.atan2(-dx, -dz);
+    player.pitch = Math.atan2(dy, Math.hypot(dx, dz));
+  }, block);
+  await page
+    .waitForFunction(
+      ([x, y, z]) => {
+        const t = window.__voxelands.interaction.target;
+        return t && t.block[0] === x && t.block[1] === y && t.block[2] === z;
+      },
+      block,
+      { timeout: 10000, polling: 30 }
+    )
+    .catch(() => {});
+}
+
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   // The sandboxed test network cannot reach cdn.jsdelivr.net (policy-blocked),
@@ -108,6 +161,8 @@ try {
     if (msg.type() === "error") errors.push(`console.error: ${msg.text()}`);
   });
   page.on("pageerror", (err) => errors.push(`pageerror: ${err.message}`));
+  // Leaving the page mid-game asks for confirmation (beforeunload); accept it.
+  page.on("dialog", (dialog) => dialog.accept());
 
   await check("page loads and exposes debug hook", async () => {
     const t0 = Date.now();
@@ -158,6 +213,21 @@ try {
     await page.waitForFunction(() => window.__voxelands.gameState === "playing", null, { timeout: 10000 });
     const cls = await page.$eval("#start-menu", (el) => el.className);
     assert(cls.includes("hidden"), `start menu still visible (class="${cls}")`);
+  });
+
+  await check("a new world starts in Survival with full health and an empty inventory", async () => {
+    const s = await page.evaluate(() => {
+      const v = window.__voxelands;
+      return {
+        mode: v.player.mode,
+        health: v.player.health,
+        empty: v.inventory.isEmpty(),
+        hearts: document.querySelectorAll("#hearts canvas").length,
+        heartsVisible: !document.getElementById("hearts").classList.contains("hidden"),
+      };
+    });
+    assert(s.mode === "survival" && s.health === 20 && s.empty, `unexpected start state ${JSON.stringify(s)}`);
+    assert(s.hearts === 10 && s.heartsVisible, `expected 10 visible hearts: ${JSON.stringify(s)}`);
   });
 
   // --- Movement direction: W forward, S backward, A left, D right. ---
@@ -298,31 +368,47 @@ try {
     assert(dz < 0 || Math.hypot(dx, dz) < 0.05, `walking W at yaw 0 moved dz=${dz.toFixed(2)} (expected negative)`);
   });
 
-  await check("break/place blocks, hotbar input, Blast Orb, flight toggle", async () => {
-    // Pitch the camera down toward the ground (positive movementY = look
-    // down, per the pointer-lock mousemove handler in player.js) so the
-    // break/place raycast below reliably hits nearby terrain.
-    await page.mouse.move(640, 400);
-    await page.mouse.move(640, 550);
-    await page.mouse.move(640, 700);
-    await page.waitForTimeout(1000);
+  await check("creative: instant break, place from the hotbar, scroll, Blast Orb, flight toggle", async () => {
+    await page.evaluate(() => window.__voxelands.setMode("creative"));
+    const site = await setupArena(page, 12, 12);
+    const target = [site.x, site.y + 1, site.z - 2];
+    await page.evaluate(([x, y, z]) => window.__voxelands.world.setBlock(x, y, z, 1), target);
+    await aimAt(page, target);
     await page.mouse.down({ button: "left" });
     await page.waitForTimeout(100);
     await page.mouse.up({ button: "left" });
+    const broken = await page.evaluate(([x, y, z]) => window.__voxelands.world.getBlock(x, y, z), target);
+    assert(broken === 0, `creative left click should break the block instantly (block is ${broken})`);
+    // The creative hotbar starts with the building blocks; slot 3 is stone.
+    await page.keyboard.press("Digit3");
+    const sel = await page.evaluate(() => window.__voxelands.inventory.selectedStack);
+    assert(sel && sel.id === 3, `slot 3 should hold stone: ${JSON.stringify(sel)}`);
+    await aimAt(page, [site.x, site.y, site.z - 2]); // the floor where the block was
     await page.mouse.down({ button: "right" });
     await page.waitForTimeout(100);
     await page.mouse.up({ button: "right" });
-    await page.keyboard.press("Digit3");
+    const placed = await page.evaluate(([x, y, z]) => window.__voxelands.world.getBlock(x, y, z), target);
+    const count = await page.evaluate(() => window.__voxelands.inventory.selectedStack.count);
+    assert(placed === 3 && count === 64, `right click should place stone without using it up (block ${placed}, count ${count})`);
     await page.mouse.wheel(0, 200);
+    await page.waitForFunction(() => window.__voxelands.inventory.selected === 3, null, { timeout: 5000 });
     await page.keyboard.press("KeyF");
-    await page.waitForTimeout(2000);
-    // Double-tap space to toggle flight mode on, then off again.
-    await page.keyboard.press("Space");
-    await page.keyboard.press("Space");
-    await page.waitForTimeout(500);
-    await page.keyboard.press("Space");
-    await page.keyboard.press("Space");
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(1500);
+    // Double-tap space to toggle flight mode on, then off again. (Real key
+    // presses from the test driver arrive a slow software-rendered frame
+    // apart, too far apart for a double-tap, so both taps are dispatched
+    // in one go.)
+    const doubleTapSpace = () =>
+      page.evaluate(() => {
+        for (let i = 0; i < 2; i++) {
+          window.dispatchEvent(new KeyboardEvent("keydown", { code: "Space", key: " " }));
+          window.dispatchEvent(new KeyboardEvent("keyup", { code: "Space", key: " " }));
+        }
+      });
+    await doubleTapSpace();
+    await page.waitForFunction(() => window.__voxelands.player.flying, null, { timeout: 5000 });
+    await doubleTapSpace();
+    await page.waitForFunction(() => !window.__voxelands.player.flying, null, { timeout: 5000 });
   });
 
   // --- Blast Orb (Phase 2) ---
@@ -457,10 +543,231 @@ try {
     assert(result.pockets.length === 0, `${result.pockets.length} air cells left touching water below sea level`);
   });
 
+  // --- Survival (Phase 4) ---
+  const invState = () =>
+    page.evaluate(() => {
+      const v = window.__voxelands;
+      return { slots: v.inventory.serialize(), selected: v.inventory.selected, health: v.player.health, state: v.gameState };
+    });
+
+  await check("survival: mining takes time by hand, drops the block, and it gets picked up", async () => {
+    await page.evaluate(() => {
+      const v = window.__voxelands;
+      v.setMode("survival");
+      v.inventory.clear();
+      v.entities.clear();
+    });
+    const site = await setupArena(page);
+    const target = [site.x, site.y + 1, site.z - 2];
+    await page.evaluate(([x, y, z]) => window.__voxelands.world.setBlock(x, y, z, 2), target); // dirt
+    await aimAt(page, target);
+    await page.mouse.down({ button: "left" });
+    // Dirt by hand takes 0.75 s of game time: first it cracks, then it breaks.
+    await page.waitForFunction(() => window.__voxelands.interaction.miningProgress > 0.1, null, { timeout: 20000, polling: 16 });
+    const mid = await page.evaluate(([x, y, z]) => ({ id: window.__voxelands.world.getBlock(x, y, z), cracks: window.__voxelands.interaction.crackMesh.visible }), target);
+    assert(mid.id === 2 && mid.cracks, `block should still be there, cracking, while being mined (${JSON.stringify(mid)})`);
+    await page.waitForFunction(([x, y, z]) => window.__voxelands.world.getBlock(x, y, z) === 0, target, { timeout: 60000, polling: 50 });
+    await page.mouse.up({ button: "left" });
+    // The dropped dirt flies to the player and lands in the hotbar.
+    await page.waitForFunction(() => window.__voxelands.inventory.countItem(2) === 1, null, { timeout: 60000, polling: 100 });
+    const inv = await invState();
+    console.log(`        dirt mined by hand and collected: slot 1 = ${JSON.stringify(inv.slots[0])}`);
+    // Stone needs a pickaxe: with a wooden one it drops cobblestone and wears the tool.
+    await page.evaluate(([x, y, z]) => {
+      const v = window.__voxelands;
+      v.world.setBlock(x, y, z, 3);
+      v.inventory.slots[1] = { id: 274, count: 1, dur: 60 };
+      v.inventory.selected = 1;
+    }, target);
+    await aimAt(page, target);
+    await page.mouse.down({ button: "left" });
+    await page.waitForFunction(([x, y, z]) => window.__voxelands.world.getBlock(x, y, z) === 0, target, { timeout: 90000, polling: 50 });
+    await page.mouse.up({ button: "left" });
+    await page.waitForFunction(() => window.__voxelands.inventory.countItem(10) === 1, null, { timeout: 60000, polling: 100 });
+    const pick = await page.evaluate(() => window.__voxelands.inventory.slots[1]);
+    console.log(`        stone mined with a wooden pickaxe -> cobblestone; pickaxe durability ${pick.dur}/60`);
+    assert(pick.id === 274 && pick.dur === 59, `pickaxe should lose 1 durability: ${JSON.stringify(pick)}`);
+  });
+
+  await check("inventory screen: E opens it, a log crafts into planks by hand, E closes it", async () => {
+    await page.evaluate(() => {
+      const v = window.__voxelands;
+      v.inventory.clear();
+      v.inventory.slots[0] = { id: 6, count: 2 }; // 2 logs
+      v.inventory.selected = 0;
+    });
+    await page.keyboard.press("KeyE");
+    await page.waitForFunction(() => window.__voxelands.gameState === "inventory", null, { timeout: 10000 });
+    const visible = await page.$eval("#inventory-screen", (el) => !el.classList.contains("hidden"));
+    assert(visible, "inventory screen should be visible");
+    // Pick up the logs, put one into the 2x2 grid, the rest back.
+    await page.click(".inv-hotbar .slot:nth-child(1)", { timeout: 20000 });
+    await page.click(".craft-grid .slot:nth-child(1)", { button: "right", timeout: 20000 });
+    await page.click(".inv-hotbar .slot:nth-child(1)", { timeout: 20000 });
+    const result = await page.evaluate(() => window.__voxelands.invScreen.resultView.stack);
+    assert(result && result.id === 8 && result.count === 4, `a log should craft into 4 planks: ${JSON.stringify(result)}`);
+    await page.click(".result-slot", { timeout: 20000 });
+    await page.click(".inv-hotbar .slot:nth-child(2)", { timeout: 20000 });
+    await page.screenshot({ path: path.join(__dirname, "screenshot-inventory.png") }).catch(() => {});
+    await page.keyboard.press("KeyE");
+    await page.waitForFunction(() => window.__voxelands.gameState === "playing", null, { timeout: 10000 });
+    const inv = await invState();
+    console.log(`        after crafting: ${JSON.stringify(inv.slots.filter(Boolean))}`);
+    assert(JSON.stringify(inv.slots[0]) === "[6,1]" && JSON.stringify(inv.slots[1]) === "[8,4]", `expected 1 log + 4 planks, got ${JSON.stringify(inv.slots.slice(0, 3))}`);
+  });
+
+  await check("crafting table: the recipe book fills the 3x3 grid and crafts a pickaxe", async () => {
+    const site = await setupArena(page);
+    const table = [site.x, site.y + 1, site.z - 2];
+    await page.evaluate(([x, y, z]) => {
+      const v = window.__voxelands;
+      v.inventory.clear();
+      v.inventory.slots[0] = { id: 8, count: 3 }; // planks
+      v.inventory.slots[1] = { id: 256, count: 2 }; // sticks
+      v.world.setBlock(x, y, z, 19);
+    }, table);
+    await aimAt(page, table);
+    await page.mouse.down({ button: "right" });
+    await page.waitForTimeout(50);
+    await page.mouse.up({ button: "right" });
+    await page.waitForFunction(() => window.__voxelands.gameState === "inventory", null, { timeout: 10000 });
+    const kind = await page.evaluate(() => ({ kind: window.__voxelands.invScreen.kind, cells: window.__voxelands.invScreen.grid.length }));
+    assert(kind.kind === "table" && kind.cells === 9, `right-clicking a crafting table should open a 3x3 grid: ${JSON.stringify(kind)}`);
+    const craftable = await page.$$eval(".recipe.craftable", (els) => els.map((e) => e.title.split(":")[0]));
+    console.log(`        craftable with 3 planks + 2 sticks: ${craftable.join(", ")}`);
+    assert(craftable.includes("Wooden Pickaxe") && !craftable.includes("Crafting Table"), "the recipe book should mark what can be crafted");
+    await page.click('.recipe.craftable[title^="Wooden Pickaxe"]', { timeout: 20000 });
+    const result = await page.evaluate(() => window.__voxelands.invScreen.resultView.stack);
+    assert(result && result.id === 274, `recipe book should set up a wooden pickaxe: ${JSON.stringify(result)}`);
+    await page.click(".result-slot", { modifiers: ["Shift"], timeout: 20000 });
+    await page.keyboard.press("KeyE");
+    await page.waitForFunction(() => window.__voxelands.gameState === "playing", null, { timeout: 10000 });
+    const count = await page.evaluate(() => ({ pick: window.__voxelands.inventory.countItem(274), planks: window.__voxelands.inventory.countItem(8), sticks: window.__voxelands.inventory.countItem(256) }));
+    assert(count.pick === 1 && count.planks === 0 && count.sticks === 0, `expected a pickaxe and no leftovers: ${JSON.stringify(count)}`);
+  });
+
+  await check("survival: eating an apple heals", async () => {
+    await setupArena(page);
+    await page.evaluate(() => {
+      const v = window.__voxelands;
+      v.inventory.clear();
+      v.inventory.slots[0] = { id: 261, count: 2 };
+      v.inventory.selected = 0;
+      v.player.health = 10;
+    });
+    await page.mouse.down({ button: "right" });
+    await page.waitForFunction(() => window.__voxelands.inventory.countItem(261) === 1, null, { timeout: 60000, polling: 50 });
+    await page.mouse.up({ button: "right" });
+    const hp = await page.evaluate(() => window.__voxelands.player.health);
+    assert(hp >= 14, `an apple should heal 2 hearts (health ${hp})`);
+  });
+
+  await check("survival: falls hurt, a long fall kills, the NOOB! death screen shows the cause, Respawn works", async () => {
+    const site = await setupArena(page);
+    await page.evaluate(() => {
+      const v = window.__voxelands;
+      v.player.health = 20;
+      v.player.position.y += 5.5; // a 5.5-block drop: 2 half-hearts of damage
+    });
+    await page.waitForFunction(() => window.__voxelands.player.onGround && window.__voxelands.player.health < 20, null, { timeout: 30000, polling: 30 });
+    const small = await page.evaluate(() => window.__voxelands.player.health);
+    assert(small === 18, `a 5.5-block fall should cost 1 heart (health ${small})`);
+    await page.evaluate(() => {
+      const v = window.__voxelands;
+      v.inventory.clear();
+      v.inventory.slots[0] = { id: 10, count: 5 };
+      v.entities.clear();
+      v.player.position.y += 30;
+    });
+    await page.waitForFunction(() => window.__voxelands.gameState === "dead", null, { timeout: 30000, polling: 30 });
+    await page.waitForTimeout(1000);
+    const dead = await page.evaluate(() => ({
+      visible: !document.getElementById("death-screen").classList.contains("hidden"),
+      title: document.querySelector("#death-screen .noob").textContent,
+      cause: document.getElementById("death-cause").textContent,
+      dropped: window.__voxelands.entities.items.length,
+      empty: window.__voxelands.inventory.isEmpty(),
+    }));
+    await page.screenshot({ path: path.join(__dirname, "screenshot-death.png") }).catch(() => {});
+    console.log(`        death screen: "${dead.title}" / "${dead.cause}"; ${dead.dropped} item stack(s) dropped`);
+    assert(dead.visible && dead.title === "NOOB!" && dead.cause === "Fell from a high place", `unexpected death screen ${JSON.stringify(dead)}`);
+    assert(dead.dropped >= 1 && dead.empty, "the inventory should spill out on death");
+    await page.waitForFunction(() => !document.getElementById("respawn-btn").disabled, null, { timeout: 10000 });
+    await page.click("#respawn-btn", { timeout: 20000 });
+    await page.waitForFunction(() => window.__voxelands.gameState === "playing", null, { timeout: 10000 });
+    const after = await page.evaluate(() => {
+      const { player, spawn } = window.__voxelands;
+      return { hp: player.health, dx: player.position.x - (spawn.x + 0.5), dz: player.position.z - (spawn.z + 0.5), hidden: document.getElementById("death-screen").classList.contains("hidden") };
+    });
+    assert(after.hp === 20 && Math.hypot(after.dx, after.dz) < 0.01 && after.hidden, `respawn should restore full health at spawn: ${JSON.stringify(after)}`);
+    void site;
+  });
+
+  await check("survival: your own Blast Orb at your feet is deadly", async () => {
+    await setupArena(page, 20, -20);
+    await page.evaluate(() => {
+      const { player } = window.__voxelands;
+      player.pitch = -1.5;
+    });
+    await page.waitForFunction(() => window.__voxelands.effects.canThrow(), null, { timeout: 20000 });
+    await page.keyboard.press("KeyF");
+    await page.waitForFunction(() => window.__voxelands.gameState === "dead", null, { timeout: 30000, polling: 30 });
+    const cause = await page.$eval("#death-cause", (el) => el.textContent);
+    console.log(`        death cause: "${cause}"`);
+    assert(cause === "Blown up by your own Blast Orb", `unexpected cause "${cause}"`);
+    await page.waitForFunction(() => !document.getElementById("respawn-btn").disabled, null, { timeout: 10000 });
+    await page.click("#respawn-btn", { timeout: 20000 });
+    await page.waitForFunction(() => window.__voxelands.gameState === "playing", null, { timeout: 10000 });
+  });
+
+  await check("drowning: breath runs out under water, then health drops", async () => {
+    const site = await setupArena(page, -20, 20);
+    await page.evaluate(({ x, y, z }) => {
+      const { world, player } = window.__voxelands;
+      const edits = [];
+      for (let dy = 1; dy <= 3; dy++) edits.push(x, y + dy, z, 5);
+      world.setBlocks(edits);
+      player.air = 0.3;
+    }, site);
+    await page.waitForFunction(() => window.__voxelands.player.health < 20, null, { timeout: 30000, polling: 30 });
+    const s = await page.evaluate(() => ({ air: window.__voxelands.player.air, bubbles: !document.getElementById("bubbles").classList.contains("hidden") }));
+    assert(s.air === 0 && s.bubbles, `expected empty breath and visible bubbles: ${JSON.stringify(s)}`);
+    await page.evaluate(({ x, y, z }) => {
+      const { world, player } = window.__voxelands;
+      world.setBlocks([x, y + 1, z, 0, x, y + 2, z, 0, x, y + 3, z, 0]);
+      player.health = 20;
+    }, site);
+  });
+
+  await check("creative players take no damage", async () => {
+    await page.evaluate(() => window.__voxelands.setMode("creative"));
+    await setupArena(page);
+    await page.evaluate(() => {
+      window.__voxelands.player.position.y += 30;
+    });
+    await page.waitForFunction(() => window.__voxelands.player.onGround, null, { timeout: 30000, polling: 30 });
+    const s = await page.evaluate(() => ({ hp: window.__voxelands.player.health, state: window.__voxelands.gameState, hearts: document.getElementById("hearts").classList.contains("hidden") }));
+    assert(s.hp === 20 && s.state === "playing" && s.hearts, `creative fall: ${JSON.stringify(s)}`);
+    await page.evaluate(() => {
+      const v = window.__voxelands;
+      v.setMode("survival");
+      v.inventory.clear();
+      v.inventory.slots[4] = { id: 276, count: 1, dur: 100 };
+      v.inventory.slots[7] = { id: 4, count: 33 };
+      v.inventory.selected = 4;
+    });
+  });
+
   await check("HUD is live", async () => {
     const fpsText = await page.$eval("#fps-counter", (el) => el.textContent);
     console.log(`        FPS counter text: ${fpsText}`);
     assert(/FPS: \d+/.test(fpsText), `unexpected FPS text "${fpsText}"`);
+    const hud = await page.evaluate(() => ({
+      counts: [...document.querySelectorAll("#hotbar .slot-count")].map((e) => e.textContent).join(","),
+      selected: [...document.querySelectorAll("#hotbar .hotbar-slot")].findIndex((e) => e.classList.contains("selected")),
+      durability: [...document.querySelectorAll("#hotbar .slot-dur")].filter((e) => !e.classList.contains("hidden")).length,
+    }));
+    assert(hud.counts.includes("33") && hud.selected === 4 && hud.durability === 1, `hotbar should show the inventory: ${JSON.stringify(hud)}`);
   });
 
   await page.screenshot({ path: path.join(__dirname, "screenshot.png") }).catch(() => {});
@@ -485,7 +792,13 @@ try {
     assert(editCount > 300, "explosion edits missing");
   });
 
+  let savedPlayer = null;
   await check("edits survive a page reload", async () => {
+    savedPlayer = await page.evaluate(() => {
+      const v = window.__voxelands;
+      v.flushSave();
+      return { mode: v.player.mode, inv: JSON.stringify(v.inventory.serialize()), selected: v.inventory.selected, x: v.player.position.x, z: v.player.position.z };
+    });
     await page.reload({ waitUntil: "load", timeout: 30000 });
     await page.waitForFunction(() => !!window.__voxelands, null, { timeout: 30000 });
     await page.waitForTimeout(1000);
@@ -493,6 +806,16 @@ try {
     assert(reloadedRaw === savedRaw, "saved edits changed or vanished across reload");
     const reloadedCount = await countEdits();
     assert(reloadedCount === editCount, `reloaded ${reloadedCount} edits, expected ${editCount}`);
+  });
+
+  await check("game mode, inventory and position survive a page reload", async () => {
+    const now = await page.evaluate(() => {
+      const v = window.__voxelands;
+      return { mode: v.player.mode, inv: JSON.stringify(v.inventory.serialize()), selected: v.inventory.selected, x: v.player.position.x, z: v.player.position.z, menuMode: document.getElementById("mode-select").value };
+    });
+    assert(now.mode === savedPlayer.mode && now.menuMode === savedPlayer.mode, `mode ${now.mode}/${now.menuMode}, expected ${savedPlayer.mode}`);
+    assert(now.inv === savedPlayer.inv && now.selected === savedPlayer.selected, `inventory changed across reload: ${now.inv} vs ${savedPlayer.inv}`);
+    assert(Math.hypot(now.x - savedPlayer.x, now.z - savedPlayer.z) < 0.01, "position not restored");
   });
 } finally {
   await browser.close();

@@ -606,3 +606,153 @@ export function createSkyMaterial() {
     defines: { CLOUD_OCTAVES: 4 },
   });
 }
+
+// ---------------------------------------------------------------------------
+// Entities (dropped items, the held item, mobs)
+// ---------------------------------------------------------------------------
+// Lit with the same model as terrain. There is no per-vertex voxel light, so
+// each object supplies the light level at its position through uniforms,
+// set per draw in onBeforeRender (see bindEntityLight below).
+
+const entityVertex = /* glsl */ `
+varying vec3 vWorldPos;
+varying vec3 vNormalW;
+varying vec3 vViewPosition;
+varying vec2 vUv;
+#ifdef USE_ARRAY_TEX
+  attribute float aLayer;
+  varying float vLayer;
+#endif
+#if defined(USE_COLOR) || defined(USE_INSTANCING_COLOR)
+  varying vec3 vColor;
+#endif
+#include <common>
+#include <shadowmap_pars_vertex>
+void main() {
+  vec4 localPos = vec4(position, 1.0);
+  vec3 objectNormal = normal;
+  #ifdef USE_INSTANCING
+    localPos = instanceMatrix * localPos;
+    objectNormal = mat3(instanceMatrix) * objectNormal;
+  #endif
+  vec4 worldPosition = modelMatrix * localPos;
+  vec4 mvPosition = viewMatrix * worldPosition;
+  gl_Position = projectionMatrix * mvPosition;
+  vec3 transformedNormal = normalMatrix * objectNormal;
+  #include <shadowmap_vertex>
+  vWorldPos = worldPosition.xyz;
+  vNormalW = normalize(mat3(modelMatrix) * objectNormal);
+  vViewPosition = -mvPosition.xyz;
+  vUv = uv;
+  #ifdef USE_ARRAY_TEX
+    vLayer = aLayer;
+  #endif
+  #if defined(USE_INSTANCING_COLOR)
+    vColor = instanceColor;
+  #elif defined(USE_COLOR)
+    vColor = color;
+  #endif
+}
+`;
+
+const entityFragment = /* glsl */ `
+uniform vec2 uLight;   // sky, block light at the object (0-1)
+uniform vec3 uFlash;   // additive tint (hit flash)
+uniform float uGlow;   // 0-1: how much bright texels glow (mob eyes)
+uniform float uOpacity;
+uniform float uFill;   // extra ambient (the held item stays readable when backlit)
+#ifdef USE_ARRAY_TEX
+  uniform highp sampler2DArray uAtlas;
+  varying float vLayer;
+#endif
+#ifdef USE_MAP
+  uniform sampler2D uMap;
+#endif
+varying vec3 vWorldPos;
+varying vec3 vNormalW;
+varying vec3 vViewPosition;
+varying vec2 vUv;
+#if defined(USE_COLOR) || defined(USE_INSTANCING_COLOR)
+  varying vec3 vColor;
+#endif
+${FRAGMENT_LIGHT_INCLUDES}
+${WORLD_COMMON}
+${POINT_LIGHTS}
+void main() {
+  vec4 albedo = vec4(1.0);
+  #ifdef USE_ARRAY_TEX
+    albedo = texture(uAtlas, vec3(vUv, vLayer));
+  #endif
+  #ifdef USE_MAP
+    albedo = texture2D(uMap, vUv);
+  #endif
+  #if defined(USE_COLOR) || defined(USE_INSTANCING_COLOR)
+    albedo.rgb *= vColor;
+  #endif
+  if (albedo.a < 0.5) discard;
+  vec3 N = normalize(vNormalW);
+  if (!gl_FrontFacing) N = -N;
+  float shadow = getShadowMask();
+  vec3 light = worldLighting(N, uLight.x, uLight.y, 1.0, shadow);
+  light += (uAmbientSky * skyCurve(uLight.x) + uTorchColor * torchCurve(uLight.y)) * uFill;
+  #if NUM_POINT_LIGHTS > 0
+    light += pointLighting(N, -vViewPosition);
+  #endif
+  vec3 color = albedo.rgb * light + uFlash;
+  if (uGlow > 0.0) {
+    float lum = max(albedo.r, max(albedo.g, albedo.b));
+    color = mix(color, albedo.rgb * 5.0, uGlow * smoothstep(0.55, 0.9, lum));
+  }
+  color = applyFog(color, vWorldPos);
+  gl_FragColor = vec4(color, uOpacity);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}
+`;
+
+// kind: "array" (block faces from the texture array; needs an aLayer attribute),
+// "color" (vertex colors), or "map" (a regular 2D texture).
+export function createEntityMaterial(kind, texture = null, { transparent = false, side = THREE.FrontSide } = {}) {
+  const defines = {};
+  const uniforms = litUniforms({
+    uLight: { value: new THREE.Vector2(1, 0) },
+    uFlash: { value: new THREE.Color(0, 0, 0) },
+    uGlow: { value: 0 },
+    uOpacity: { value: 1 },
+    uFill: { value: 0 },
+  });
+  if (kind === "array") {
+    defines.USE_ARRAY_TEX = "";
+    uniforms.uAtlas = { value: texture };
+  } else if (kind === "map") {
+    defines.USE_MAP = "";
+    uniforms.uMap = { value: texture };
+  }
+  return new THREE.ShaderMaterial({
+    uniforms,
+    vertexShader: entityVertex,
+    fragmentShader: entityFragment,
+    lights: true,
+    defines,
+    vertexColors: kind === "color",
+    transparent,
+    side,
+  });
+}
+
+// Makes `mesh` (and any child meshes) upload its own light level and flash
+// color right before it's drawn. getState() returns { sky, block, flash?, glow? }.
+export function bindEntityLight(object, getState) {
+  object.traverse((m) => {
+    if (!m.isMesh) return;
+    m.onBeforeRender = (renderer, scene, camera, geometry, material) => {
+      if (!material.uniforms || !material.uniforms.uLight) return;
+      const s = getState();
+      material.uniforms.uLight.value.set(s.sky / 15, s.block / 15);
+      if (s.flash) material.uniforms.uFlash.value.copy(s.flash);
+      else material.uniforms.uFlash.value.setRGB(0, 0, 0);
+      material.uniforms.uGlow.value = s.glow ?? 0;
+      material.uniformsNeedUpdate = true;
+    };
+  });
+}
