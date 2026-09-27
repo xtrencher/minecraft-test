@@ -1,46 +1,73 @@
-// Small procedural Web Audio sound effects — no external audio files.
+// Procedural Web Audio sound effects, no audio files.
+//
+// Almost everything is shaped noise: short filtered bursts with natural
+// envelopes (fast attack, exponential decay), resonant band-pass filters for
+// "material" (a woody knock, a glassy chink), and several layered hits for
+// grains and debris. The only pitched sounds are creature voices, which run a
+// buzzy source through vowel-like formant filters with a little vibrato, the
+// way a throat shapes sound, rather than bare oscillator sweeps.
 //
 // Everything routes through a master gain and a dynamics compressor, so loud
-// layered sounds (like the Blast Orb explosion) can peak hard without
-// clipping or drowning out everything else.
+// layered sounds (explosions) can peak hard without clipping.
+
+import { explosionSound } from "./falloff.js";
 
 const NOISE_SECONDS = 2.5;
 
-// Mob voices: lists of tones (or noise bursts) played together.
-const MOB_VOICES = {
-  fluffalo: {
-    idle: [{ freq: 105, slideTo: 82, duration: 0.8, volume: 0.2, type: "sawtooth" }, { freq: 210, slideTo: 160, duration: 0.6, volume: 0.05, type: "sine" }],
-    hurt: [{ freq: 180, slideTo: 115, duration: 0.3, volume: 0.24, type: "sawtooth" }],
-    death: [{ freq: 150, slideTo: 50, duration: 0.9, volume: 0.24, type: "sawtooth" }],
-  },
-  hoplet: {
-    idle: [{ freq: 1500, slideTo: 1900, duration: 0.07, volume: 0.07, type: "sine" }, { freq: 1600, slideTo: 2100, duration: 0.06, volume: 0.06, type: "sine", delay: 0.11 }],
-    hurt: [{ freq: 2300, slideTo: 1300, duration: 0.14, volume: 0.12, type: "sine" }],
-    death: [{ freq: 1900, slideTo: 420, duration: 0.35, volume: 0.13, type: "sine" }],
-  },
-  mossback: {
-    idle: [{ noise: { duration: 0.05, volume: 0.12, filterFreq: 700, filterType: "bandpass", q: 3 } }, { freq: 90, slideTo: 70, duration: 0.25, volume: 0.1, type: "triangle", delay: 0.08 }],
-    hurt: [{ freq: 320, slideTo: 200, duration: 0.12, volume: 0.2, type: "triangle" }, { noise: { duration: 0.08, volume: 0.2, filterFreq: 800, filterType: "bandpass", q: 2 } }],
-    death: [{ freq: 220, slideTo: 55, duration: 0.7, volume: 0.2, type: "triangle" }],
-  },
-  zombie: {
-    idle: [{ freq: 118, slideTo: 82, duration: 1.1, volume: 0.2, type: "sawtooth" }, { freq: 123, slideTo: 86, duration: 1.0, volume: 0.12, type: "sawtooth", delay: 0.05 }],
-    hurt: [{ freq: 190, slideTo: 115, duration: 0.3, volume: 0.24, type: "sawtooth" }],
-    death: [{ freq: 150, slideTo: 38, duration: 1.3, volume: 0.26, type: "sawtooth" }, { freq: 75, slideTo: 30, duration: 1.0, volume: 0.2, type: "sine" }],
-    attack: [{ freq: 210, slideTo: 140, duration: 0.22, volume: 0.22, type: "sawtooth" }],
-  },
+// Block material sounds: layers of filtered noise.
+//   f: filter frequency, q: resonance, type: filter type, d: duration (s),
+//   v: volume, n: number of staggered grains, spread: seconds between grains.
+const MATERIALS = {
+  stone: [
+    { type: "bandpass", f: 1700, q: 1.1, d: 0.08, v: 1 },
+    { type: "lowpass", f: 420, q: 0.7, d: 0.1, v: 0.7 },
+  ],
+  wood: [
+    { type: "bandpass", f: 320, q: 4, d: 0.14, v: 1.2 },
+    { type: "bandpass", f: 1100, q: 1.2, d: 0.05, v: 0.5 },
+  ],
+  grass: [{ type: "bandpass", f: 2800, q: 0.8, d: 0.07, v: 0.7, n: 3, spread: 0.035 }],
+  plant: [{ type: "bandpass", f: 3400, q: 0.9, d: 0.05, v: 0.5, n: 2, spread: 0.03 }],
+  dirt: [{ type: "lowpass", f: 500, q: 0.8, d: 0.11, v: 1.1, n: 2, spread: 0.025 }],
+  sand: [{ type: "bandpass", f: 3200, q: 0.6, d: 0.05, v: 0.6, n: 4, spread: 0.028 }],
+  glass: [
+    { type: "highpass", f: 2500, q: 0.7, d: 0.05, v: 0.5 },
+    { type: "bandpass", f: 4200, q: 14, d: 0.12, v: 1.4, n: 4, spread: 0.03, jitter: 0.5 },
+  ],
+  cloth: [{ type: "lowpass", f: 380, q: 0.7, d: 0.12, v: 0.9 }],
 };
 
-// Filtered-noise recipes for block materials (see Audio._material).
-const MATERIAL_SOUNDS = {
-  stone: { filter: "bandpass", freq: 1500, q: 0.9, duration: 0.1, volume: 1 },
-  wood: { filter: "lowpass", freq: 800, q: 2, duration: 0.1, volume: 1, knock: 170 },
-  grass: { filter: "highpass", freq: 1800, q: 0.7, duration: 0.13, volume: 0.8 },
-  plant: { filter: "highpass", freq: 2600, q: 0.7, duration: 0.09, volume: 0.6 },
-  dirt: { filter: "lowpass", freq: 520, q: 1, duration: 0.12, volume: 1.1 },
-  sand: { filter: "highpass", freq: 3000, q: 0.5, duration: 0.16, volume: 0.7 },
-  glass: { filter: "highpass", freq: 4000, q: 1, duration: 0.07, volume: 0.7, tinkle: true },
-  cloth: { filter: "lowpass", freq: 380, q: 0.7, duration: 0.12, volume: 0.9 },
+// Creature voices. Each call: f0 -> f1 pitch glide, formants [freq, q, gain]
+// (vowel shape), vib: vibrato depth (fraction), breath: noise mixed in.
+const VOICES = {
+  fluffalo: {
+    // A low, nasal grumble.
+    idle: [{ f0: 92, f1: 78, d: 0.9, v: 0.32, formants: [[260, 5, 1.2], [620, 6, 0.5]], vib: 0.02, breath: 0.2 }],
+    hurt: [{ f0: 150, f1: 110, d: 0.3, v: 0.36, formants: [[320, 5, 1], [760, 5, 0.5]], vib: 0.03, breath: 0.3 }],
+    death: [{ f0: 130, f1: 60, d: 0.9, v: 0.34, formants: [[280, 5, 1], [640, 6, 0.4]], vib: 0.03, breath: 0.3 }],
+  },
+  hoplet: {
+    // Tiny squeaks: short, breathy whistles.
+    idle: [
+      { f0: 1500, f1: 1800, d: 0.06, v: 0.1, formants: [[1700, 8, 1]], breath: 0.5 },
+      { f0: 1600, f1: 1950, d: 0.05, v: 0.08, formants: [[1800, 8, 1]], breath: 0.5, delay: 0.1 },
+    ],
+    hurt: [{ f0: 2100, f1: 1400, d: 0.13, v: 0.16, formants: [[1900, 6, 1]], breath: 0.5 }],
+    death: [{ f0: 1700, f1: 700, d: 0.3, v: 0.16, formants: [[1500, 5, 1]], breath: 0.5 }],
+  },
+  mossback: {
+    // Clicks and a slow hiss.
+    idle: [{ noise: { type: "bandpass", f: 900, q: 3, d: 0.04, v: 0.35, n: 2, spread: 0.09 } }],
+    hurt: [{ noise: { type: "bandpass", f: 2600, q: 0.8, d: 0.35, v: 0.3, attack: 0.05 } }],
+    death: [{ noise: { type: "bandpass", f: 2200, q: 0.8, d: 0.7, v: 0.3, attack: 0.08 } }],
+  },
+  zombie: {
+    // A hollow, breathy moan ("uhh") with a slow waver.
+    idle: [{ f0: 105, f1: 82, d: 1.2, v: 0.38, formants: [[480, 6, 1], [900, 7, 0.6], [2400, 9, 0.15]], vib: 0.035, breath: 0.35 }],
+    hurt: [{ f0: 160, f1: 115, d: 0.28, v: 0.38, formants: [[560, 5, 1], [1000, 6, 0.5]], vib: 0.02, breath: 0.4 }],
+    death: [{ f0: 130, f1: 48, d: 1.3, v: 0.4, formants: [[440, 5, 1], [820, 6, 0.5]], vib: 0.05, breath: 0.4 }],
+    attack: [{ f0: 190, f1: 140, d: 0.22, v: 0.36, formants: [[620, 4, 1], [1150, 5, 0.6]], vib: 0.02, breath: 0.5 }],
+  },
 };
 
 export class Audio {
@@ -103,170 +130,233 @@ export class Audio {
     return src;
   }
 
-  _playNoiseBurst({ duration = 0.12, volume = 0.3, filterFreq = 1200, filterType = "lowpass", q = 1 } = {}) {
+  // One filtered noise hit (or `n` staggered grains of it) into `dest`.
+  _hit({ type = "lowpass", f = 1000, q = 1, d = 0.1, v = 0.3, n = 1, spread = 0.03, jitter = 0.15, attack = 0.004, fEnd = null }, when = 0, dest = null) {
     if (!this.ctx) return;
-    const now = this.ctx.currentTime;
-    const src = this._noise(now, duration);
-    const filter = this.ctx.createBiquadFilter();
-    filter.type = filterType;
-    filter.frequency.value = filterFreq;
-    filter.Q.value = q;
-    const gain = this.ctx.createGain();
-    gain.gain.setValueAtTime(volume, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
-    src.connect(filter);
-    filter.connect(gain);
-    gain.connect(this.master);
-  }
-
-  _playTone({ freq = 220, duration = 0.1, volume = 0.2, type = "sine", slideTo = null, delay = 0 } = {}) {
-    if (!this.ctx) return;
-    const now = this.ctx.currentTime + delay;
-    const osc = this.ctx.createOscillator();
-    osc.type = type;
-    osc.frequency.setValueAtTime(freq, now);
-    if (slideTo !== null) {
-      osc.frequency.exponentialRampToValueAtTime(Math.max(1, slideTo), now + duration);
+    const out = dest || this.master;
+    for (let i = 0; i < n; i++) {
+      const t = this.ctx.currentTime + when + i * spread * (0.7 + Math.random() * 0.6);
+      const src = this._noise(t, d + attack);
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = type;
+      const freq = f * (1 + (Math.random() - 0.5) * 2 * jitter);
+      filter.frequency.setValueAtTime(freq, t);
+      if (fEnd) filter.frequency.exponentialRampToValueAtTime(fEnd, t + d);
+      filter.Q.value = q;
+      const g = this.ctx.createGain();
+      const peak = v * (n > 1 ? 0.75 + Math.random() * 0.5 : 1);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(peak, t + attack);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + attack + d);
+      src.connect(filter).connect(g).connect(out);
     }
-    const gain = this.ctx.createGain();
-    gain.gain.setValueAtTime(volume, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
-    osc.connect(gain);
-    gain.connect(this.master);
-    osc.start(now);
-    osc.stop(now + duration + 0.02);
   }
 
-  // Break/place/dig/step sounds per block material: filtered noise shaped
-  // differently for stone, wood, soil, sand, plants, glass and cloth.
+  // A creature voice: a buzzy source through formant filters.
+  _voice({ f0, f1, d, v, formants, vib = 0, breath = 0, delay = 0 }, gainScale = 1) {
+    const ctx = this.ctx;
+    const t = ctx.currentTime + delay;
+    const bus = ctx.createGain();
+    bus.gain.setValueAtTime(0.0001, t);
+    bus.gain.exponentialRampToValueAtTime(v * gainScale, t + Math.min(0.06, d * 0.3));
+    bus.gain.setValueAtTime(v * gainScale, t + d * 0.55);
+    bus.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    bus.connect(this.master);
+
+    const osc = ctx.createOscillator();
+    osc.type = "sawtooth";
+    const jitter = 0.94 + Math.random() * 0.12;
+    osc.frequency.setValueAtTime(f0 * jitter, t);
+    osc.frequency.exponentialRampToValueAtTime(f1 * jitter, t + d);
+    if (vib > 0) {
+      const lfo = ctx.createOscillator();
+      lfo.frequency.value = 5 + Math.random() * 2;
+      const depth = ctx.createGain();
+      depth.gain.value = f0 * vib;
+      lfo.connect(depth).connect(osc.frequency);
+      lfo.start(t);
+      lfo.stop(t + d + 0.05);
+    }
+    // Soften the raw buzz, then shape it with the formants.
+    const soften = ctx.createBiquadFilter();
+    soften.type = "lowpass";
+    soften.frequency.value = Math.max(formants[formants.length - 1][0] * 1.6, 800);
+    osc.connect(soften);
+    for (const [ff, q, g] of formants) {
+      const bp = ctx.createBiquadFilter();
+      bp.type = "bandpass";
+      bp.frequency.value = ff;
+      bp.Q.value = q;
+      const fg = ctx.createGain();
+      fg.gain.value = g * 2.2;
+      soften.connect(bp).connect(fg).connect(bus);
+    }
+    osc.start(t);
+    osc.stop(t + d + 0.05);
+    if (breath > 0) {
+      // Breath: noise through the main formant.
+      const src = this._noise(t, d);
+      const bp = ctx.createBiquadFilter();
+      bp.type = "bandpass";
+      bp.frequency.value = formants[0][0] * 1.4;
+      bp.Q.value = 1.2;
+      const bg = ctx.createGain();
+      bg.gain.value = breath;
+      src.connect(bp).connect(bg).connect(bus);
+    }
+  }
+
+  // Break/place/dig/step sounds per block material.
   _material(sound, { volume = 0.25, duration = 1, pitch = 1 } = {}) {
-    const m = MATERIAL_SOUNDS[sound] || MATERIAL_SOUNDS.stone;
-    const jitter = 0.85 + Math.random() * 0.3;
-    this._playNoiseBurst({
-      duration: m.duration * duration,
-      volume: volume * m.volume,
-      filterFreq: m.freq * pitch * jitter,
-      filterType: m.filter,
-      q: m.q,
-    });
-    if (m.knock) this._playTone({ freq: m.knock * pitch * jitter, slideTo: m.knock * 0.6, duration: 0.07 * duration, volume: volume * 0.5, type: "triangle" });
-    if (m.tinkle) {
-      for (let i = 0; i < 3; i++) {
-        this._playTone({ freq: (2200 + Math.random() * 1800) * pitch, duration: 0.08 + Math.random() * 0.12, volume: volume * 0.18, type: "sine", delay: i * 0.035 });
-      }
+    const layers = MATERIALS[sound] || MATERIALS.stone;
+    for (const layer of layers) {
+      this._hit({ ...layer, f: layer.f * pitch, d: layer.d * duration, v: layer.v * volume });
     }
   }
 
   playBreak(sound = "stone") {
-    this._material(sound, { volume: 0.32, duration: 1.4 });
+    this._material(sound, { volume: 0.34, duration: 1.5, pitch: 0.95 });
+    // Crumbs settling after the break.
+    this._hit({ type: "bandpass", f: 1800, q: 1, d: 0.03, v: 0.06, n: 3, spread: 0.05 }, 0.08);
   }
 
   playPlace(sound = "stone") {
-    this._material(sound, { volume: 0.24, duration: 0.8, pitch: 1.25 });
+    this._material(sound, { volume: 0.26, duration: 0.8, pitch: 1.1 });
   }
 
   playDig(sound = "stone") {
-    this._material(sound, { volume: 0.14, duration: 0.6, pitch: 1.1 });
+    this._material(sound, { volume: 0.15, duration: 0.6, pitch: 1.05 });
   }
 
   playFootstep(sound = "grass") {
     this._material(sound, { volume: 0.1, duration: 0.6, pitch: 0.8 });
   }
 
+  // Picking up an item: a soft little pop.
   playPickup() {
-    this._playTone({ freq: 620 + Math.random() * 180, slideTo: 1250, duration: 0.09, volume: 0.1, type: "sine" });
+    this._hit({ type: "bandpass", f: 1400, q: 3, d: 0.035, v: 0.16, jitter: 0.2 });
   }
 
+  // UI click: a quiet tick.
   playClick() {
-    this._playTone({ freq: 1500, slideTo: 900, duration: 0.03, volume: 0.06, type: "square" });
+    this._hit({ type: "bandpass", f: 3200, q: 1.5, d: 0.015, v: 0.08, jitter: 0.1 });
   }
 
+  // Crafting: two quick woody taps.
   playCraft() {
-    this._playNoiseBurst({ duration: 0.07, volume: 0.12, filterFreq: 1500, filterType: "bandpass" });
-    this._playTone({ freq: 520, slideTo: 880, duration: 0.12, volume: 0.09, type: "triangle", delay: 0.04 });
+    this._hit({ type: "bandpass", f: 700, q: 3, d: 0.05, v: 0.22, n: 2, spread: 0.08 });
   }
 
+  // A crunchy bite.
   playEat() {
-    this._playNoiseBurst({ duration: 0.08, volume: 0.16, filterFreq: 900 + Math.random() * 700, filterType: "bandpass", q: 2 });
+    this._hit({ type: "bandpass", f: 1400, q: 1.2, d: 0.05, v: 0.14, n: 3, spread: 0.022, jitter: 0.4 });
   }
 
-  playBurp() {
-    this._playTone({ freq: 140, slideTo: 90, duration: 0.25, volume: 0.16, type: "sawtooth" });
-  }
-
+  // A tool breaking: a sharp snap and a few small bits.
   playToolBreak() {
-    this._playTone({ freq: 1800, slideTo: 600, duration: 0.18, volume: 0.14, type: "square" });
-    this._playNoiseBurst({ duration: 0.2, volume: 0.2, filterFreq: 3000, filterType: "highpass" });
+    this._hit({ type: "highpass", f: 2200, q: 0.8, d: 0.06, v: 0.3 });
+    this._hit({ type: "bandpass", f: 900, q: 2, d: 0.05, v: 0.2, n: 3, spread: 0.04 }, 0.04);
   }
 
-  // A short grunt: a low, falling buzz.
+  // Getting hurt: a dull body thud.
   playHurt() {
-    this._playTone({ freq: 230, slideTo: 120, duration: 0.18, volume: 0.22, type: "sawtooth" });
-    this._playNoiseBurst({ duration: 0.08, volume: 0.12, filterFreq: 600 });
+    this._hit({ type: "lowpass", f: 320, q: 1.2, d: 0.14, v: 0.55, fEnd: 120 });
+    this._hit({ type: "bandpass", f: 900, q: 1, d: 0.05, v: 0.1 });
   }
 
-  // Death: a long falling tone over a low thud.
+  // Dying: a heavier thud as the body hits the ground, and a low rumble.
   playDeath() {
-    this._playTone({ freq: 440, slideTo: 55, duration: 1.2, volume: 0.22, type: "sawtooth" });
-    this._playTone({ freq: 90, slideTo: 40, duration: 0.5, volume: 0.35, type: "sine" });
+    this._hit({ type: "lowpass", f: 380, q: 1.2, d: 0.25, v: 0.7, fEnd: 90 });
+    this._hit({ type: "lowpass", f: 180, q: 0.8, d: 0.8, v: 0.35, attack: 0.05 }, 0.12);
   }
 
   playSplash() {
-    this._playNoiseBurst({ duration: 0.45, volume: 0.28, filterFreq: 1100, filterType: "lowpass" });
-    this._playNoiseBurst({ duration: 0.25, volume: 0.12, filterFreq: 3500, filterType: "bandpass" });
+    this._hit({ type: "lowpass", f: 1400, q: 0.7, d: 0.4, v: 0.3, fEnd: 400, attack: 0.01 });
+    this._hit({ type: "bandpass", f: 2600, q: 1.5, d: 0.04, v: 0.08, n: 5, spread: 0.06, jitter: 0.4 }, 0.1); // droplets
   }
 
-  playJump() {
-    this._playTone({ freq: 300, slideTo: 420, duration: 0.1, volume: 0.12, type: "triangle" });
-  }
-
+  // Flight on/off (creative): a short soft rush of air.
   playFlightToggle(enabled) {
-    if (enabled) this._playTone({ freq: 260, slideTo: 620, duration: 0.25, volume: 0.16, type: "sine" });
-    else this._playTone({ freq: 500, slideTo: 180, duration: 0.2, volume: 0.14, type: "sine" });
+    this._hit({ type: "bandpass", f: enabled ? 700 : 1200, fEnd: enabled ? 1400 : 600, q: 1.2, d: 0.22, v: 0.1, attack: 0.05 });
   }
 
+  // Throwing: an airy whoosh.
   playThrow() {
-    this._playTone({ freq: 420, slideTo: 900, duration: 0.14, volume: 0.15, type: "sine" });
-    // A short airy whoosh under the tone.
-    this._playNoiseBurst({ duration: 0.22, volume: 0.12, filterFreq: 1400, filterType: "bandpass" });
+    this._hit({ type: "bandpass", f: 700, fEnd: 1600, q: 1.4, d: 0.2, v: 0.16, attack: 0.03 });
+  }
+
+  // Pistol shot: a sharp crack, a punchy body, a low thump and a short tail.
+  playGunshot() {
+    this._hit({ type: "highpass", f: 2600, q: 0.7, d: 0.03, v: 0.55, attack: 0.001 });
+    this._hit({ type: "bandpass", f: 950, q: 1, d: 0.08, v: 0.6, attack: 0.001 });
+    this._hit({ type: "lowpass", f: 200, q: 1, d: 0.12, v: 0.55, attack: 0.002 });
+    this._hit({ type: "lowpass", f: 1400, fEnd: 300, q: 0.7, d: 0.35, v: 0.12, attack: 0.01 }, 0.02);
+  }
+
+  // A bullet hitting a block `distance` blocks away: a small sharp tick.
+  playRicochet(distance = 0) {
+    this._hit({ type: "bandpass", f: 2900, q: 7, d: 0.05, v: 0.14 / (1 + distance / 10), jitter: 0.3 }, Math.min(distance / 343, 0.5));
+  }
+
+  // Bazooka launch: a heavy thump and a rising rush of burning propellant.
+  playRocketLaunch() {
+    this._hit({ type: "lowpass", f: 160, q: 1, d: 0.25, v: 0.7, attack: 0.002 });
+    this._hit({ type: "bandpass", f: 400, fEnd: 1500, q: 1.1, d: 0.5, v: 0.4, attack: 0.01 });
+    this._hit({ type: "highpass", f: 3000, q: 0.7, d: 0.4, v: 0.14, attack: 0.02 });
+  }
+
+  // A grenade bouncing: a small metallic clink and a thud (strength 0-1).
+  playGrenadeBounce(strength = 1, distance = 0) {
+    const v = strength / (1 + distance / 8);
+    if (v < 0.02) return;
+    this._hit({ type: "bandpass", f: 2400, q: 6, d: 0.035, v: 0.18 * v, jitter: 0.2 });
+    this._hit({ type: "lowpass", f: 420, q: 1, d: 0.06, v: 0.22 * v });
   }
 
   // Mob voices: `event` is "idle", "hurt", "death" or "attack"; quieter
   // with distance (blocks), silent beyond 40.
   playMob(kind, event, distance = 0) {
     if (!this.ctx || distance > 40) return;
-    const v = 1 / (1 + distance / 7);
-    const voice = MOB_VOICES[kind]?.[event];
-    if (!voice) return;
-    for (const part of voice) {
-      if (part.noise) this._playNoiseBurst({ ...part.noise, volume: part.noise.volume * v });
-      else this._playTone({ ...part, freq: part.freq * (0.92 + Math.random() * 0.16), volume: part.volume * v });
+    const gain = 1 / (1 + distance / 7);
+    const parts = VOICES[kind]?.[event];
+    if (!parts) return;
+    for (const part of parts) {
+      if (part.noise) this._hit({ ...part.noise, v: part.noise.v * gain }, part.delay || 0);
+      else this._voice(part, gain);
     }
   }
 
   // The player's weapon landing (a heavier crack on a critical hit).
   playHit(crit = false) {
-    this._playNoiseBurst({ duration: 0.09, volume: 0.3, filterFreq: 900, filterType: "lowpass" });
-    this._playTone({ freq: 150, slideTo: 80, duration: 0.08, volume: 0.25, type: "triangle" });
-    if (crit) this._playNoiseBurst({ duration: 0.12, volume: 0.2, filterFreq: 3500, filterType: "highpass" });
+    this._hit({ type: "lowpass", f: 700, q: 1, d: 0.08, v: 0.35, fEnd: 200 });
+    this._hit({ type: "bandpass", f: 1600, q: 1.2, d: 0.03, v: 0.12 });
+    if (crit) this._hit({ type: "highpass", f: 3000, q: 0.8, d: 0.1, v: 0.2 });
   }
 
   // A swing that hits nothing.
   playSwing() {
-    this._playNoiseBurst({ duration: 0.12, volume: 0.07, filterFreq: 1300, filterType: "bandpass", q: 1.5 });
+    this._hit({ type: "bandpass", f: 1100, fEnd: 700, q: 1.5, d: 0.12, v: 0.08, attack: 0.02 });
   }
 
   // Layered explosion: a sub-bass thump, a distorted low-passed noise body
   // with a falling cutoff, a sharp crack on top, a long rumble tail, and a
-  // patter of falling debris. `distance` (blocks) attenuates the volume and
-  // delays the sound slightly, like sound travelling through air.
-  playExplosion(distance = 0) {
+  // patter of falling debris. Distance (blocks) makes it quieter, more
+  // muffled (a low-pass filter, like sound travelling through air) and a
+  // little delayed; `size` (1 = grenade, 5 = bazooka) makes it bigger.
+  playExplosion(distance = 0, size = 1) {
     const ctx = this.ctx;
     if (!ctx) return;
-    const t0 = ctx.currentTime + Math.min(distance / 343, 0.3);
+    const p = explosionSound(distance, size);
+    if (p.gain < 0.004) return;
+    const t0 = ctx.currentTime + p.delay;
+    const long = Math.sqrt(size); // bigger blasts ring out longer
+    const muffle = ctx.createBiquadFilter();
+    muffle.type = "lowpass";
+    muffle.frequency.value = p.cutoff;
+    muffle.Q.value = 0.5;
     const out = ctx.createGain();
-    out.gain.value = 1.3 / (1 + distance / 22);
-    out.connect(this.master);
+    out.gain.value = p.gain;
+    muffle.connect(out).connect(this.master);
 
     const env = (gainNode, attackEnd, peak, decayEnd) => {
       gainNode.gain.setValueAtTime(0.0001, t0);
@@ -274,29 +364,29 @@ export class Audio {
       gainNode.gain.exponentialRampToValueAtTime(0.0001, decayEnd);
     };
 
-    // Sub-bass thump.
+    // Sub-bass thump (deeper for bigger blasts).
     const sub = ctx.createOscillator();
     sub.type = "sine";
-    sub.frequency.setValueAtTime(95, t0);
-    sub.frequency.exponentialRampToValueAtTime(28, t0 + 0.9);
+    sub.frequency.setValueAtTime(95 / Math.sqrt(long), t0);
+    sub.frequency.exponentialRampToValueAtTime(26, t0 + 0.9 * long);
     const subGain = ctx.createGain();
-    env(subGain, t0 + 0.012, 1.1, t0 + 1.4);
-    sub.connect(subGain).connect(out);
+    env(subGain, t0 + 0.012, 1.1, t0 + 1.4 * long);
+    sub.connect(subGain).connect(muffle);
     sub.start(t0);
-    sub.stop(t0 + 1.5);
+    sub.stop(t0 + 1.5 * long);
 
     // Distorted body with a falling low-pass cutoff.
-    const body = this._noise(t0, 2.0);
+    const body = this._noise(t0, Math.min(2.4, 2.0 * long));
     const bodyFilter = ctx.createBiquadFilter();
     bodyFilter.type = "lowpass";
     bodyFilter.Q.value = 0.8;
     bodyFilter.frequency.setValueAtTime(3200, t0);
-    bodyFilter.frequency.exponentialRampToValueAtTime(160, t0 + 1.4);
+    bodyFilter.frequency.exponentialRampToValueAtTime(140, t0 + 1.4 * long);
     const shaper = ctx.createWaveShaper();
     shaper.curve = this._shaperCurve;
     const bodyGain = ctx.createGain();
-    env(bodyGain, t0 + 0.008, 1.5, t0 + 1.9);
-    body.connect(bodyFilter).connect(shaper).connect(bodyGain).connect(out);
+    env(bodyGain, t0 + 0.008, 1.5, t0 + Math.min(2.4, 1.9 * long));
+    body.connect(bodyFilter).connect(shaper).connect(bodyGain).connect(muffle);
 
     // Sharp crack transient.
     const crack = this._noise(t0, 0.12);
@@ -305,22 +395,24 @@ export class Audio {
     crackFilter.frequency.value = 1800;
     const crackGain = ctx.createGain();
     env(crackGain, t0 + 0.003, 0.9, t0 + 0.1);
-    crack.connect(crackFilter).connect(crackGain).connect(out);
+    crack.connect(crackFilter).connect(crackGain).connect(muffle);
 
-    // Long low rumble tail.
-    const rumble = this._noise(t0, 2.4);
+    // Long low rumble tail (several seconds for the bazooka).
+    const rumbleLen = Math.min(NOISE_SECONDS - 0.1, 2.4 * long);
+    const rumble = this._noise(t0, rumbleLen);
     const rumbleFilter = ctx.createBiquadFilter();
     rumbleFilter.type = "lowpass";
     rumbleFilter.frequency.value = 140;
     const rumbleGain = ctx.createGain();
     rumbleGain.gain.setValueAtTime(0.0001, t0);
-    rumbleGain.gain.exponentialRampToValueAtTime(0.9, t0 + 0.15);
-    rumbleGain.gain.exponentialRampToValueAtTime(0.0001, t0 + 2.4);
-    rumble.connect(rumbleFilter).connect(rumbleGain).connect(out);
+    rumbleGain.gain.exponentialRampToValueAtTime(0.9 * Math.min(long, 1.6), t0 + 0.15);
+    rumbleGain.gain.exponentialRampToValueAtTime(0.0001, t0 + rumbleLen);
+    rumble.connect(rumbleFilter).connect(rumbleGain).connect(muffle);
 
     // Debris patter: a handful of tiny ticks as chunks rain back down.
-    for (let i = 0; i < 9; i++) {
-      const when = t0 + 0.35 + Math.random() * 1.3;
+    const ticks = Math.round(9 * long);
+    for (let i = 0; i < ticks; i++) {
+      const when = t0 + 0.35 + Math.random() * 1.3 * long;
       const tick = this._noise(when, 0.05);
       const tickFilter = ctx.createBiquadFilter();
       tickFilter.type = "bandpass";
@@ -328,7 +420,7 @@ export class Audio {
       const tickGain = ctx.createGain();
       tickGain.gain.setValueAtTime(0.05 + Math.random() * 0.12, when);
       tickGain.gain.exponentialRampToValueAtTime(0.0001, when + 0.05);
-      tick.connect(tickFilter).connect(tickGain).connect(out);
+      tick.connect(tickFilter).connect(tickGain).connect(muffle);
     }
   }
 }

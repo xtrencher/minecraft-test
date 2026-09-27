@@ -3,12 +3,12 @@
 // given seed still produces the same landscape (and shared seed links keep
 // working); newer features (caves, ores, plants) only add to it.
 import { Noise, hash2, mulberry32 } from "./noise.js";
+import { TreeGrower } from "./trees.js";
 import { BLOCK } from "./blocks.js";
 import { CHUNK_SIZE, WORLD_HEIGHT, SEA_LEVEL } from "./constants.js";
 
 const BASE_HEIGHT = 26;
 const AMPLITUDE = 14;
-const TREE_CHANCE = 0.02;
 const PLANT_SALT = 0x5bd1e995;
 
 // Caves: tunnels where two independent 3D noise fields are both near zero
@@ -43,11 +43,69 @@ export class TerrainGenerator {
     this.seed = seed >>> 0;
     this.noise = new Noise(this.seed);
     this.caveNoise = new Noise((this.seed ^ 0x6a09e667) >>> 0);
+    this.trees = new TreeGrower(this);
   }
 
   heightAt(wx, wz) {
     const n = this.noise.fbm2(wx, wz, 4, 0.5, 2, 1 / 80);
     return Math.floor(BASE_HEIGHT + n * AMPLITUDE);
+  }
+
+  // Where new players start: the first land column along a diagonal from the
+  // origin, moved to the nearest land column that no tree stands in (so
+  // nobody starts on top of a canopy). Returns [wx, wz].
+  spawnColumn() {
+    let bx = 0;
+    let bz = 0;
+    for (let i = 0; i < 10 && this.heightAt(bx, bz) <= SEA_LEVEL + 1; i++) {
+      bx += 6;
+      bz += 4;
+    }
+    for (let r = 0; r <= 16; r++) {
+      for (let dz = -r; dz <= r; dz++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+          const x = bx + dx;
+          const z = bz + dz;
+          if (this.heightAt(x, z) > SEA_LEVEL + 1 && !this.trees.coversColumn(x, z)) return [x, z];
+        }
+      }
+    }
+    return [bx, bz];
+  }
+
+  // Whether the cave carver removes solid terrain at (wx, y, wz) above sea
+  // level. Samples the same noise lattice as _carveCaves (lattice points sit
+  // at world multiples of CAVE_STEP, stored as 32-bit floats there, so the
+  // result is identical), which lets trees rooted in a neighbouring chunk
+  // know whether their ground exists without generating that chunk.
+  isCarved(wx, y, wz) {
+    const n = this.caveNoise;
+    const fx = wx / CAVE_STEP;
+    const fy = y / CAVE_STEP;
+    const fz = wz / CAVE_STEP;
+    const i = Math.floor(fx);
+    const j = Math.floor(fy);
+    const k = Math.floor(fz);
+    const tx = fx - i;
+    const ty = fy - j;
+    const tz = fz - k;
+    const sample = (fn) => {
+      const at = (ii, jj, kk) => Math.fround(fn(ii * CAVE_STEP, jj * CAVE_STEP, kk * CAVE_STEP));
+      const c00 = at(i, j, k) + (at(i + 1, j, k) - at(i, j, k)) * tx;
+      const c10 = at(i, j, k + 1) + (at(i + 1, j, k + 1) - at(i, j, k + 1)) * tx;
+      const c01 = at(i, j + 1, k) + (at(i + 1, j + 1, k) - at(i, j + 1, k)) * tx;
+      const c11 = at(i, j + 1, k + 1) + (at(i + 1, j + 1, k + 1) - at(i, j + 1, k + 1)) * tx;
+      const c0 = c00 + (c10 - c00) * tz;
+      const c1 = c01 + (c11 - c01) * tz;
+      return c0 + (c1 - c0) * ty;
+    };
+    const a = sample((x, yy, z) => n.perlin3(x * TUNNEL_FREQ_XZ, yy * TUNNEL_FREQ_Y, z * TUNNEL_FREQ_XZ));
+    const b = sample((x, yy, z) => n.perlin3(x * TUNNEL_FREQ_XZ + 71.3, yy * TUNNEL_FREQ_Y - 33.1, z * TUNNEL_FREQ_XZ + 19.7));
+    if (a * a + b * b < TUNNEL_WIDTH * TUNNEL_WIDTH) return true;
+    if (y >= 34) return false;
+    const c = sample((x, yy, z) => n.perlin3(x * CAVERN_FREQ_XZ - 51.9, yy * CAVERN_FREQ_Y + 12.4, z * CAVERN_FREQ_XZ - 83.2));
+    return c > CAVERN_THRESHOLD + Math.max(0, y - 20) * 0.012;
   }
 
   // Fills a zeroed chunk.blocks array for the chunk at (chunk.cx, chunk.cz).
@@ -88,18 +146,9 @@ export class TerrainGenerator {
     this._placeVeins(blocks, chunk.cx, chunk.cz);
     this._placeCrystals(blocks, baseX, baseZ);
 
-    // Trees: only rooted well inside the chunk so canopies never cross chunk
-    // borders, and only where the ground wasn't carved away by a cave.
-    for (let lz = 3; lz < S - 3; lz++) {
-      for (let lx = 3; lx < S - 3; lx++) {
-        const h = hAt(lx, lz);
-        if (h <= SEA_LEVEL + 1 || h >= WORLD_HEIGHT - 10) continue;
-        const r = hash2(this.seed, baseX + lx, baseZ + lz);
-        if (r >= TREE_CHANCE) continue;
-        if (blocks[idx(lx, h, lz)] !== BLOCK.GRASS) continue;
-        this._placeTree(blocks, lx, h, lz, r);
-      }
-    }
+    // Trees (trees.js): every tree whose crown or roots reach into this
+    // chunk, including trees rooted in neighbouring chunks.
+    this.trees.placeInChunk(blocks, chunk.cx, chunk.cz);
 
     // Ground cover: tall grass everywhere on grass, flowers in patches.
     for (let lz = 0; lz < S; lz++) {
@@ -224,29 +273,6 @@ export class TerrainGenerator {
           // A small cluster around it.
           if (x + 1 < S && blocks[above + 1] === BLOCK.STONE && hash3(this.seed, baseX + x, y + 1, baseZ + z) < 0.5) blocks[above + 1] = BLOCK.LUMEN;
           if (z + 1 < S && blocks[above + S] === BLOCK.STONE && hash3(this.seed, baseX + x, y + 2, baseZ + z) < 0.4) blocks[above + S] = BLOCK.LUMEN;
-        }
-      }
-    }
-  }
-
-  _placeTree(blocks, lx, h, lz, r) {
-    const S = CHUNK_SIZE;
-    const set = (x, y, z, id) => {
-      if (x < 0 || x >= S || z < 0 || z >= S || y < 0 || y >= WORLD_HEIGHT) return;
-      blocks[(y * S + z) * S + x] = id;
-    };
-    const get = (x, y, z) => blocks[(y * S + z) * S + x];
-    const trunkHeight = 4 + (Math.floor(r * 30000) % 3);
-    for (let i = 1; i <= trunkHeight; i++) set(lx, h + i, lz, BLOCK.WOOD);
-    const canopyCenterY = h + trunkHeight;
-    for (let dy = -2; dy <= 1; dy++) {
-      const radius = dy >= 1 ? 1 : 2;
-      for (let dx = -radius; dx <= radius; dx++) {
-        for (let dz = -radius; dz <= radius; dz++) {
-          if (dx * dx + dz * dz > radius * radius + 0.5) continue;
-          const y = canopyCenterY + dy;
-          if (y < 0 || y >= WORLD_HEIGHT) continue;
-          if (get(lx + dx, y, lz + dz) === BLOCK.AIR) set(lx + dx, y, lz + dz, BLOCK.LEAVES);
         }
       }
     }

@@ -434,6 +434,74 @@ await test("caves, ores and crystals appear in sensible amounts", () => {
   assert.ok((counts[BLOCK.LUMEN] || 0) > 0, "no lumen crystals generated");
 });
 
+await test("trees: oaks, birches, pines and old oaks grow, and trees are whole across chunk borders", async () => {
+  const { TREE } = await import("../js/trees.js");
+  const counts = {};
+  for (const seed of [42, 7, 12345]) {
+    const gen = new TerrainGenerator(seed);
+    for (let x = -320; x < 320; x++) {
+      for (let z = -320; z < 320; z++) {
+        const r = gen.trees.rootAt(x, z);
+        if (r) counts[r.species] = (counts[r.species] || 0) + 1;
+      }
+    }
+  }
+  console.log(`        oak ${counts[TREE.OAK]}, birch ${counts[TREE.BIRCH]}, pine ${counts[TREE.PINE]}, old oak ${counts[TREE.OLD_OAK]} in three 640x640 areas`);
+  for (const sp of [TREE.OAK, TREE.BIRCH, TREE.PINE, TREE.OLD_OAK]) assert.ok(counts[sp] > 0, `no trees of species ${sp}`);
+  assert.ok(counts[TREE.OLD_OAK] < counts[TREE.OAK] / 4, "old oaks should be rare");
+  // Every leaf and trunk block of every tree in a region ends up in the
+  // generated chunks, even where the tree spans several chunks.
+  const { gen, get } = generateRegion(42, 7, -3, -3);
+  let trees = 0;
+  let crossing = 0;
+  let missing = 0;
+  for (let x = -48 + 10; x < 64 - 10; x++) {
+    for (let z = -48 + 10; z < 64 - 10; z++) {
+      const root = gen.trees.rootAt(x, z);
+      if (!root) continue;
+      trees++;
+      const shape = gen.trees.shape(root);
+      let spans = false;
+      for (let i = 0; i < shape.length; i += 4) {
+        const X = x + shape[i];
+        const Y = root.h + 1 + shape[i + 1];
+        const Z = z + shape[i + 2];
+        if (Y < 1 || Y >= H || shape[i + 1] < 0) continue;
+        if (X >> 4 !== x >> 4 || Z >> 4 !== z >> 4) spans = true;
+        if (get(X, Y, Z) === BLOCK.AIR) missing++;
+      }
+      if (spans) crossing++;
+    }
+  }
+  console.log(`        ${trees} trees in the region, ${crossing} spanning chunk borders, ${missing} blocks missing`);
+  assert.ok(trees > 15 && crossing > 5, `too few trees to check (${trees}, ${crossing} crossing)`);
+  assert.equal(missing, 0, "every tree block should be placed, whichever chunk it falls in");
+});
+
+await test("new players start on the ground, never on top of a tree", async () => {
+  let moved = 0;
+  for (let i = 0; i < 120; i++) {
+    const seed = i === 0 ? 42 : i * 7919;
+    const gen = new TerrainGenerator(seed);
+    const [x, z] = gen.spawnColumn();
+    const h = gen.heightAt(x, z);
+    assert.ok(h > SEA_LEVEL + 1, `seed ${seed}: spawn (${x}, ${z}) is not on land`);
+    if (Math.hypot(x, z) > 0 && gen.heightAt(0, 0) > SEA_LEVEL + 1) moved++;
+    // Nothing solid above the ground in the generated chunk (plants are fine).
+    const { IS_SOLID } = await import("../js/blocks.js");
+    const cx = Math.floor(x / 16);
+    const cz = Math.floor(z / 16);
+    const blocks = new Uint8Array(16 * 16 * H);
+    gen.generate({ cx, cz, blocks });
+    for (let y = h + 1; y < H; y++) {
+      const id = blocks[(y * 16 + (z - cz * 16)) * 16 + (x - cx * 16)];
+      assert.ok(!IS_SOLID[id], `seed ${seed}: block ${id} above the spawn at y=${y}`);
+    }
+  }
+  console.log(`        120 worlds, ${moved} spawns moved to the side of a tree`);
+  assert.ok(moved > 0, "some spawns should have needed moving off a tree");
+});
+
 await test("terrain generation is fast enough to stream (< 3 ms per chunk)", () => {
   const gen = new TerrainGenerator(5);
   const t0 = performance.now();
@@ -612,6 +680,157 @@ console.log("\nCollision (physics.js)");
     assert.equal(rayAabb(v(0, 2, 2), v(1, 0, 0), min, max, 10), null);
     assert.equal(rayAabb(v(0, 2, 0), v(1, 0, 0), min, max, 3), null);
     assert.equal(rayAabb(v(4.5, 2, 0), v(1, 0, 0), min, max, 10), 0, "starting inside counts as an immediate hit");
+  });
+}
+
+console.log("\nExplosion falloff (falloff.js)");
+{
+  const { shakeFalloff, explosionSound } = await import("../js/falloff.js");
+  await test("camera shake fades smoothly with distance, to nothing far away, and reaches farther for bigger blasts", () => {
+    let prev = Infinity;
+    for (let d = 0; d <= 300; d += 5) {
+      const s = shakeFalloff(d, 7);
+      assert.ok(s <= prev + 1e-12 && s >= 0 && s <= 1, `not monotonic at ${d}`);
+      prev = s;
+    }
+    assert.equal(shakeFalloff(0, 7), 1);
+    assert.equal(shakeFalloff(200, 7), 0);
+    assert.ok(shakeFalloff(80, 35) > shakeFalloff(80, 7), "a bazooka shakes from farther away");
+  });
+
+  await test("explosions sound quieter, more muffled and later with distance; bigger blasts are louder", () => {
+    let prev = explosionSound(0, 1);
+    for (let d = 10; d <= 400; d += 10) {
+      const s = explosionSound(d, 1);
+      assert.ok(s.gain < prev.gain && s.cutoff <= prev.cutoff && s.delay > prev.delay, `not smooth at ${d}`);
+      prev = s;
+    }
+    assert.ok(explosionSound(400, 1).cutoff < 500, "far explosions are muffled to a rumble");
+    assert.ok(explosionSound(0, 1).cutoff > 15000, "close explosions are crisp");
+    assert.ok(explosionSound(60, 5).gain > explosionSound(60, 1).gain, "the bazooka is louder");
+  });
+}
+
+console.log("\nDistant terrain (lod-mesher.js)");
+{
+  const { LodTerrain, buildLodTile, makeLodPalette, tileSpan, LOD_CELLS, LOD_WATER_TOP, LOD_KIND } = await import("../js/lod-mesher.js");
+  const { BLOCK } = await import("../js/blocks.js");
+  const { SEA_LEVEL } = await import("../js/constants.js");
+  const flat = new Float32Array(256 * 3).fill(0.4);
+  const pal = makeLodPalette({ top: flat, side: flat });
+  const seed = 4242;
+
+  // Faces of a built tile, from its quads: { normal, kind, x0, x1, y0, y1, z0, z1 }.
+  const facesOf = (m) => {
+    const faces = [];
+    for (let v = 0; v < m.vertexCount; v += 4) {
+      const xs = [];
+      const ys = [];
+      const zs = [];
+      for (let k = 0; k < 4; k++) {
+        xs.push(m.position[(v + k) * 3]);
+        ys.push(m.position[(v + k) * 3 + 1]);
+        zs.push(m.position[(v + k) * 3 + 2]);
+      }
+      faces.push({ normal: m.info[v * 4], kind: m.info[v * 4 + 1], x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys), z0: Math.min(...zs), z1: Math.max(...zs) });
+    }
+    return faces;
+  };
+
+  await test("tiles are well-formed: quads, valid indices, tops at the terrain height sampled at each cell's centre", () => {
+    const lt = new LodTerrain(seed);
+    for (const level of [1, 2, 4]) {
+      const m = buildLodTile(lt, level, -1, 2, pal);
+      const step = 1 << level;
+      assert.equal(m.vertexCount % 4, 0);
+      assert.equal(m.index.length, (m.vertexCount / 4) * 6);
+      for (const i of m.index) assert.ok(i < m.vertexCount);
+      for (const p of m.position) assert.ok(Number.isFinite(p));
+      // Every cell centre is covered by exactly one terrain top at its sampled height.
+      const tops = facesOf(m).filter((f) => f.normal === 2 && f.kind !== LOD_KIND.LEAVES);
+      for (let j = 0; j < LOD_CELLS; j += 5) {
+        for (let i = 0; i < LOD_CELLS; i += 3) {
+          const cx = i * step + step / 2;
+          const cz = j * step + step / 2;
+          const hits = tops.filter((f) => f.x0 < cx && f.x1 > cx && f.z0 < cz && f.z1 > cz);
+          assert.equal(hits.length, 1, `cell ${i},${j} at level ${level}: ${hits.length} tops`);
+          const h = lt.terrain.heightAt(m.x0 + cx, m.z0 + cz);
+          assert.ok(Math.abs(hits[0].y0 - (h < SEA_LEVEL ? LOD_WATER_TOP : h + 1)) < 1e-4, `cell ${i},${j}: top ${hits[0].y0}, ground ${h}`);
+        }
+      }
+      assert.equal(m.span, tileSpan(level));
+    }
+  });
+
+  await test("walls exactly cover every height step inside a tile, and skirts close every border", () => {
+    const lt = new LodTerrain(seed);
+    for (const level of [1, 3]) {
+      const m = buildLodTile(lt, level, 3, -2, pal);
+      const step = 1 << level;
+      const N = LOD_CELLS;
+      const heights = [];
+      for (let j = 0; j < N; j++) {
+        const row = [];
+        for (let i = 0; i < N; i++) {
+          const out = {};
+          lt.sample(m.x0 + i * step + step / 2, m.z0 + j * step + step / 2, out);
+          row.push(out.top);
+        }
+        heights.push(row);
+      }
+      let expected = 0;
+      for (let j = 0; j < N; j++) {
+        for (let i = 0; i < N; i++) {
+          if (i + 1 < N) expected += Math.abs(heights[j][i + 1] - heights[j][i]) * step;
+          if (j + 1 < N) expected += Math.abs(heights[j + 1][i] - heights[j][i]) * step;
+        }
+      }
+      const walls = facesOf(m).filter((f) => f.normal !== 2 && f.kind !== LOD_KIND.LEAVES && !(f.x1 - f.x0 < 1 && f.z1 - f.z0 < 1));
+      const onBorder = (f) => (f.normal < 2 ? f.x0 === 0 || f.x0 === N * step : f.z0 === 0 || f.z0 === N * step);
+      const inner = walls.filter((f) => !onBorder(f));
+      const border = walls.filter((f) => !inner.includes(f));
+      const area = inner.reduce((a, f) => a + (f.y1 - f.y0) * Math.max(f.x1 - f.x0, f.z1 - f.z0), 0);
+      assert.ok(Math.abs(area - expected) < 1e-3, `level ${level}: wall area ${area} vs height steps ${expected}`);
+      // Skirts: along each of the 4 borders, walls cover the full length,
+      // reaching from below the lowest top in the tile up to each cell's top.
+      const lowest = Math.min(...heights.flat());
+      for (const [normal, len] of [[0, N * step], [1, N * step], [4, N * step], [5, N * step]]) {
+        const side = border.filter((f) => f.normal === normal && (normal < 2 ? f.x0 === (normal === 0 ? N * step : 0) : f.z0 === (normal === 4 ? N * step : 0)));
+        const covered = side.reduce((a, f) => a + Math.max(f.x1 - f.x0, f.z1 - f.z0), 0);
+        assert.equal(covered, len, `level ${level}: skirt ${normal} covers ${covered} of ${len}`);
+        for (const f of side) assert.ok(f.y0 <= lowest - step, "skirts reach below the tile's lowest surface");
+      }
+    }
+  });
+
+  await test("trees become canopy boxes on near levels and a grass tint far away", () => {
+    const lt = new LodTerrain(seed);
+    const near = buildLodTile(lt, 2, 0, 0, pal);
+    const leaves = facesOf(near).filter((f) => f.kind === LOD_KIND.LEAVES).length;
+    let trees = 0;
+    for (let z = 0; z < near.span; z++) for (let x = 0; x < near.span; x++) if (lt.treeAt(x, z) && lt.terrain.heightAt(x, z) >= SEA_LEVEL) trees++;
+    assert.ok(trees > 5 && leaves >= trees * 5, `${trees} trees, ${leaves} leaf faces`);
+    const far = buildLodTile(lt, 4, 0, 0, pal);
+    assert.equal(facesOf(far).filter((f) => f.kind === LOD_KIND.LEAVES).length, 0);
+  });
+
+  await test("player edits show in distant terrain: a crater lowers the surface and felled trees disappear", () => {
+    const lt = new LodTerrain(seed);
+    // Find a tree and dig out its whole chunk down to y = 10.
+    let tree = null;
+    for (let z = 0; z < 512 && !tree; z++) for (let x = 0; x < 512 && !tree; x++) if (lt.treeAt(x, z)) tree = [x, z];
+    assert.ok(tree, "no tree found");
+    const cx = tree[0] >> 4;
+    const cz = tree[1] >> 4;
+    const list = [];
+    for (let y = 10; y < 64; y++) for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) list.push((y * 16 + z) * 16 + x, BLOCK.AIR);
+    lt.setChunkEdits(`${cx},${cz}`, list);
+    const out = {};
+    lt.sample(cx * 16 + 5, cz * 16 + 7, out);
+    assert.equal(out.top, 10);
+    assert.equal(lt.treeAt(tree[0], tree[1]), null);
+    lt.setChunkEdits(`${cx},${cz}`, []);
+    assert.ok(lt.treeAt(tree[0], tree[1]), "clearing the edits restores the tree");
   });
 }
 

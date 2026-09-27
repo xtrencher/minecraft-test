@@ -331,3 +331,356 @@ The codebase grew from ~2,000 lines of JavaScript in 11 modules to ~10,800 lines
 - *What went well:* the phases build on each other cleanly. The Phase 3 voxel light engine is what makes caves dark, torches meaningful, and zombies spawn in the right places in Phase 5. The inventory and crafting logic was written as pure, unit-tested modules before any UI existed, so the UI stayed thin. The smoke test paid for itself repeatedly by catching real bugs in systems that looked fine in screenshots. The game now has an actual survival loop, from punching a tree to diamond tools with zombies at night, and it all stays procedural.
 - *What's weaker:* I couldn't judge the "RTX look" or the smoothness on real hardware, only through software-rendered screenshots, so the graphics tuning (exposure, bloom, fog density) may need adjustment on a real GPU. Mob AI is simple. It's believable at a glance, but not clever. The mob and item art is decent programmer art; a pixel artist would do better. main.js has grown into a long wiring file that could be split (game state machine, persistence, rendering).
 - *Scope decisions:* when something threatened to balloon (real pathfinding, flowing water, furnaces with timers), I chose the simpler version, and noted it above rather than leaving it half-finished.
+
+---
+
+# Round 3 — upgrade log
+
+## Phase 1: Bug fixes — DONE
+
+**1. Water glitch (screenshot 1).** *Root cause:* two different definitions of "under water". The top block of a body of water draws its surface lowered (at 0.875 of the block, minus a little more, moved by waves), but the game decided "the camera is under water" from the block grid: any eye position inside a water block's cell counted. With the eye just above the drawn surface (swimming at the surface, standing in shallows), the whole screen got the murky under-water fog. On top of that, the water shader decided *per fragment* whether it was looking at the surface from below, by which side of the face the camera was on. Near the waterline, wave crests rise above the eye, so a band of surface quads along a crest was drawn with the "underside" colour: the strip of light teal quads in the screenshot. I reproduced both in the sandbox with the eye at 0.86, 0.9 and 0.95 of the top water block. *Fix:* a new `js/water.js` holds the surface/wave formula shared with the shader and decides once per frame whether the eye is below the *drawn* surface; the water shader uses that one camera state for every face. Verified with the same renders: above the surface you now see the surface from above with no fog, and there is no band.
+
+**2. Lighting (screenshot 2).** *Diagnosis:* the lighting function multiplied direct sunlight by the per-vertex ambient occlusion (down to 0.69 at an occluded corner) and by a factor from the voxel sky light level. AO is interpolated across each 1-block face, so a sunlit face touching the ground or another block got a large diagonal dark gradient unrelated to any shadow: lit and shaded at the same time. The sky-light factor did the same under overhangs, where the shadow map said "lit" but the voxel light said "dark". *Fix:* direct light is now decided by the shadow map wherever it covers the scene. It fades to the voxel sky light only beyond the shadow map's range, and on Low, which has no shadow maps (so distant caves stay dark). Ambient occlusion now only darkens *ambient* light, as in reality: a corner in full sun isn't darker, only a corner in the shade is. I verified this with before/after renders of the same inner-corner scene and pixel diffs, which show exactly the AO gradients disappearing from sunlit faces and sunlit ground. The dark wedge that remains near a sunlit inner corner is the neighbouring block's real shadow.
+
+**3. Black "outlines" through water and terrain (screenshot 3).** *Diagnosis:* these are NaN/infinite pixels, not lines. With MSAA (Medium and up), a pixel on a triangle's edge can be shaded at its centre even when that point lies outside the triangle, so per-vertex values get *extrapolated*. For faces seen nearly edge-on (thin slivers, like the vertical sides of seabed steps viewed from above), the extrapolated voxel light can go below 0 or above 1. `pow(light, 1.7)` of a negative number is NaN, and the torch curve `l / (4 − 3l)` divides by zero at 4/3. The post-processing guard turned those pixels black, and because blending water over a NaN pixel is still NaN, they showed through even deep, almost opaque water. That's why they appeared exactly along the edges of steps and holes. *Fix:* the per-vertex light, AO and water depth now use `centroid` interpolation (never extrapolated outside the triangle), and the lighting function clamps its inputs as well. *Honest caveat:* the sandbox's software renderer doesn't extrapolate at MSAA edges, so I couldn't reproduce the lines themselves (a render with NaN pixels marked in magenta showed none). The evidence points to this cause: crisp black through almost opaque water, only along silhouettes of thin faces, and only with MSAA. A new test compiles the real lighting function on the GPU and checks that extrapolated inputs give finite results.
+
+**4. Sand gravity (new `js/falling.js`).** Sand and gravel fall when nothing solid is under them. Every edit batch reports its changed cells, and a loose block that lost its support detaches *together with the whole loose column resting on it*, so a column falls as one and lands stacked. Falling blocks are entities with gravity (the real block texture, lit by the voxel light) that turn back into blocks where they land. They fall through air, water and plants, and a block that lands in a torch's cell breaks into an item (as in Minecraft). Works after explosions, mining, placing sand in mid-air, and chains. For performance, at most 64 blocks animate at a time; any further loose columns settle instantly with one batched edit (moved straight down to where they'd land). A blast in a sand bank animated 64 blocks and settled 161 more in 1.2 ms.
+
+**5. Sound cleanup (`js/audio.js`, rewritten).** Almost every sound is now shaped noise with natural envelopes: resonant filters give it the material (a woody knock, a glassy chink), and several layered grains give texture. The only pitched sounds left are creature voices, which run a buzzy source through vowel-like formant filters with vibrato and breath instead of bare oscillator sweeps.
+- **Removed:** the jump sound (as asked), and the burp after eating (odd, synthetic).
+- **Redesigned:**
+  - **Block sounds:** stone has a click plus a low body; wood a resonant knock (was a sine "boop"); grass, plants and sand are grain rustles; dirt a soft thud; cloth a muffled pat. Glass is now a cluster of resonant noise chinks (was sine tones).
+  - **Small feedback sounds:** item pickup is a soft pop (was a sine chirp), and the UI click a quiet tick (was a harsh square wave). Crafting is two woody taps (was a triangle-wave chirp), and tool break a snap with bits (was a square-wave squeal).
+  - **Hurt and death:** getting hurt is a dull body thud (was a sawtooth "grunt"), and dying a heavy thud plus a low rumble (was a 1.2 s descending sawtooth).
+  - **Movement and weapons:** the flight toggle and the throw are soft air whooshes (were sine sweeps), and a weapon hit is a noise thwack (was a triangle-wave thump).
+  - **Mob voices** go through formant filters: the Fluffalo grumbles, the Hoplet squeaks breathily, the Mossback clicks and hisses, and the zombie moans hollowly (all were raw sawtooth or sine sweeps).
+- **Kept as they were:** footsteps (now using the new material sounds), the splash (now with droplets), the swing whoosh and the explosion.
+
+**Testing.** New smoke checks:
+- **Lighting:** the real lighting function, compiled into a tiny GPU shader, gives the same direct light for an open and a fully occluded corner (0.936 vs 0.932; the difference is a constant ambient floor), and finite values for out-of-range inputs; the terrain and water shaders use centroid light.
+- **Water:** the under-water test follows the drawn surface: just above it, and anywhere in the rest of the top block, is not under water; just below it and deeper is.
+- **Sand gravity:** a 6-block sand column on a pillar falls together when the pillar is removed and lands stacked, while supported sand stays put. Gravel landing on a torch breaks and leaves the torch.
+- **Explosions and loose blocks:** a blast in a sand bank animates at most 64 blocks, settles the rest in one batch, and leaves nothing floating.
+- **Sounds:** every sound effect and mob voice plays without errors, and the jump and burp sounds are gone.
+
+**40 smoke checks and 24 unit tests pass with zero console errors.**
+
+## Phase 2: Weapons, part 1 — DONE
+
+**Blast Orb → Grenade.** The Blast Orb, its separate HUD indicator and the F key are gone. The **Grenade** is now a normal item (stack of 1 in creative, craftable from 1 iron ingot + 2 coal). With it selected, holding right-click charges the throw, and a small bar under the crosshair fills (red glow when full). A quick click lobs it about 6 blocks; a full charge (1.5 s) throws it about 25. It's a physical object: gravity, sub-stepped collision with blocks, bounces with energy loss (restitution 0.38) plus friction, and it rolls to a stop. It explodes after a 5 s fuse (it blinks red), or at once when it hits a mob directly. The blast size is unchanged (radius 7).
+
+**Pistol** (new `js/weapons.js`, crafted from 3 iron ingots + 1 plank). Right-click fires a hitscan shot with slight spread. It hits the first solid block (bullets pass through grass, flowers and torches) or the first mob hitbox, whichever is nearer.
+- **On blocks:** sparks, dust in the block's colour, a ricochet sound, and a bullet hole decal (`js/decals.js`, pooled, 96 at most). A hole disappears when its block is broken or blown up.
+- **On mobs:** 5 damage and knockback, with a hit flash and blood puffs.
+- **Every shot:** a muzzle flash (an additive sprite plus a short point light), a recoil kick on the camera and the gun model, and a noise-based gunshot sound.
+
+**Bazooka** (crafted from 8 iron ingots around a grenade). Right-click fires a rocket from the tube (or from the eye when the tube is inside a wall) toward the crosshair point.
+- **Flight:** 75 blocks/s, nearly flat (gravity -2.5), with a glowing exhaust (a sprite plus a moving light) and a smoke trail. It lives up to 12 s or until it leaves the loaded terrain.
+- **Collision:** each step casts a ray against blocks and mob hitboxes, so it can't tunnel through thin walls or small mobs.
+- **Blast:** radius 35 (5× the grenade), with a much bigger fireball, more debris, a heavy shake, a longer and deeper boom, and strong knockback. You can kill yourself with it: "Blown up by your own bazooka" (a fall right after your own blast reads "Sent flying by your own bazooka"; grenades work the same way).
+
+**Controls.** With a grenade, pistol or bazooka selected, right-click uses the weapon instead of placing a block. There's no ammo and no reloading. Every click fires, with only a tiny minimum interval (70 ms pistol, 200 ms bazooka, 120 ms between grenade throws).
+
+**Hitboxes and damage.** Mobs have ray and sphere hit tests (`mobs.raycast`, `mobs.sphereHit`), used by bullets, rockets and grenades. Explosions damage and fling mobs and the player by distance, scaled with the blast size. Damage and knockback are capped so a bazooka throws a mob far but not into orbit.
+
+**Explosion falloff (all explosives, new pure `js/falloff.js`).**
+- **Camera shake:** falls smoothly with distance (smoothstep to zero at `6 × radius + 20` blocks), so a grenade 40 blocks away is a light rumble and one 90 blocks away is felt only through sound.
+- **Sound:** gain drops with distance, a low-pass filter closes (18 kHz up close, down to about 220 Hz far away) so distant blasts are muffled, and the sound is delayed by distance / 343 m/s (capped at 1.2 s). Bigger blasts are louder, deeper and longer.
+
+**Performance of big blasts.** A bazooka blast can remove tens of thousands of blocks, so:
+- **Carving:** reads chunk arrays directly, column by column, and applies everything with one batched `setBlocks` (one light update, one change notification).
+- **Rebuilds:** chunks are no longer all rebuilt in the same frame. The 8 nearest rebuild at once, then more only while the frame's 10 ms edit budget lasts; the rest continue over the next frames, nearest first.
+- **Loose blocks:** falling sand is capped at 64 animated blocks; any more settle instantly in one batch (Phase 1).
+- **Measured in the sandbox's software renderer:** a surface bazooka blast removed 21,270 blocks with 68 ms of carving. A worst-case underground blast removed about 67,000 blocks in about 170 ms total (carving plus light), with the chunk rebuilds spread over several frames. That's a hitch, but no longer a freeze.
+
+**Other fixes.**
+- The held item now follows the selected slot every frame (it could get out of sync when the slot changed without a key press).
+- A pending equip animation no longer restarts every frame.
+- Gun models were resized and posed so they sit in the lower right like the other tools (the bazooka's rear used to clip the near plane as a black block).
+
+**Testing.** New and rewritten smoke checks, all using real mouse input:
+- **Grenade throw:** holding the button shows the charge bar; a quick click lands about 6 blocks away and a full charge about 25; grenades bounce; the fuse is 5.05 s.
+- **Grenade blast:** the crater is still about 7 blocks (radius 6.7, 523 blocks).
+- **Direct hit:** a grenade thrown straight at a zombie explodes 0.4 s after the throw and kills it.
+- **Pistol:** 6 clicks give 6 shots and 6 bullet holes, with no reload. A zombie hit takes exactly 5 damage and is pushed back, and the holes disappear with their blocks.
+- **Right-click with a weapon:** places no block.
+- **Bazooka:** the rocket flies at 75 blocks/s with little drop and a smoke trail; the blast radius is 35 (21,270 blocks removed, reach 34.9); falling blocks stay within the cap.
+- **Shake:** a grenade shakes the camera 0.56 at 6 blocks, 0.11 at 40, and 0 at 90 and 200.
+- **Deaths:** your own grenade at your feet, and a point-blank bazooka shot, both kill you in survival with the right death message.
+- **Removed:** the old Blast Orb checks. The creative check now also asserts that F does nothing and the orb UI is gone.
+
+New unit tests check that shake and loudness fall monotonically with distance, that distant blasts are muffled and delayed, and that bigger blasts are louder.
+
+While running these, the full suite exposed two test-order problems, which I fixed:
+1. The "animals spawn at the start" check ran after weapon checks that clear mobs, so it now runs before them.
+2. The sword check could be hit by the zombie between aiming and swinging. A hit knocks the player into the air, which turned the swing into a critical hit, so the check now holds off the zombie's attack and waits until the player is on the ground.
+
+**46 smoke checks and 26 unit tests pass with zero console errors.**
+
+## Phase 3: Render distance with level of detail — DONE
+
+**What changed for the player.** The render distance slider now goes up to **100 chunks** (1,600 blocks), and the default is **20** (was 10, max 16). Only the area around the player is drawn in full detail. Beyond it, the land is drawn with simplified, blocky meshes that get coarser with distance, so far-away hills, beaches, lakes and forests are visible out to the horizon.
+
+**How it works (new `js/lod.js`, `js/lod-mesher.js`, `js/lod-worker.js`).**
+- **Quadtree of tiles.** The ground is divided into a quadtree of square tiles. A tile at level L covers 2^(L+1) × 2^(L+1) chunks as 32 × 32 cells of 2^L blocks. It splits into its 4 children while the player is closer than `detailDistance × 2^(L−1)` chunks (with a quarter-tile of hysteresis, so walking back and forth over a boundary doesn't flip it). So cells are 2 blocks from about the detail distance out, 4 blocks from twice that, 8 from four times, and so on: the step grows in proportion to distance.
+- **Detail area.** A split level-1 tile is the "detail" area. Its chunks are generated, lit and meshed by the World exactly as before. Mobs, physics, falling blocks and explosions only exist there (and in its one-chunk margin).
+- **Tile meshes.** Each cell is a column at the ground height sampled at the cell centre from the terrain generator: a flat top, plus walls down to lower neighbours, so distant land keeps the voxel look.
+  - **Merging:** tops are merged into runs, and walls along the border direction.
+  - **Water:** a flat surface at the drawn water level that carries its depth. The LOD shader colours it like the near water (depth colour, sandy floor, fresnel sky reflection, sun glint).
+  - **Trees:** canopy boxes on levels 1–3 (they use the same tree placement rule as terrain generation, now shared through `TerrainGenerator.treeAt`, verified to generate byte-identical chunks). Farther out, trees become a tint of the grass.
+  - **Skirts:** every tile border gets a deep wall, so tiles of different levels, and the detail area, never leave cracks.
+- **Colours** come from each block's texture average in linear light (what a mipmapped texture shows from far away), and the tiles use the same lighting and fog code as the chunks.
+- **Player edits reach distant terrain.** For chunks the player has changed, the worker generates the real chunk, applies the saved edits and uses its actual surface, and it drops trees that were cut down or blown up. A crater stays visible from afar, and tiles over an edited chunk are rebuilt when needed.
+- **Web Worker.** Tile meshes are built in a module Web Worker (nearest first, a few requests in flight so a new plan can re-prioritize), and handed back as transferable typed arrays. The main thread only turns them into geometry, within 3 ms per frame. If module workers aren't available, tiles are built on the main thread within a per-frame budget instead.
+- **Seamless hand-over.** The planned leaves exactly partition the ground, and a region keeps its old look until the new one is complete:
+  - When a tile splits, it stays visible until all its children, or all its chunks, are ready. Around the player, a gap is preferred over coarse ground underfoot.
+  - When tiles merge, the children (or chunks) stay visible, and loaded, until the parent tile is built.
+  - New chunks start hidden, and the LOD system decides which ones show.
+- **Memory.**
+  - Tiles that are neither planned nor needed as a stand-in are disposed.
+  - Chunks more than 3 chunks outside the detail area are unloaded. Chunks that were only kept as stand-ins are released as soon as they're no longer shown, not only at the next re-plan.
+  - After a 1,500-block move, the test finds exactly the planned tiles and no chunk beyond the render distance.
+- **Fog and far plane.** Fog ends at the render distance as before, and the camera's far plane now follows the render distance (at least 1,000).
+- **Presets** now set how far full detail reaches (`detailDistance`) and suggest a render distance:
+
+  | Preset | Full detail distance | Suggested render distance |
+  |---|---|---|
+  | Low | 4 chunks | 12 |
+  | Medium | 6 chunks | 16 |
+  | High | 8 chunks | 20 |
+  | Ultra | 8 chunks | 20 |
+
+  The detail area on Ultra (about 320 chunks) is about what Ultra drew in full before at distance 10. The render distance slider still goes to 100 on every preset.
+
+**Measured.**
+- **Build cost:** a Node benchmark builds a tile in 1–5 ms.
+- **Tiles at each render distance (Ultra):**
+
+  | Render distance | LOD tiles | Vertices | Memory | Total build time |
+  |---|---|---|---|---|
+  | 20 | 70 | about 290k | 6 MB | about 0.3 s |
+  | 64 | 224 | 1.4M | 32 MB | — |
+  | 100 | 300 | 2.4M | 52 MB | about 0.3 s |
+
+- **In the browser, on Low:** render distance 64 streamed in within 3.8 s after its detail area was loaded. The longest main-thread LOD update (plan, uploads and visibility pass) was 2.8 ms.
+- **Transition quality:** I rendered the same view at render distance 16 twice on High, once with LOD beyond 8 chunks and once with every chunk in full detail (797 chunks). The mean pixel difference is 2.1/255, mostly in the shapes of distant tree canopies. Side-by-side crops of the horizon are hard to tell apart.
+
+**Testing.** New unit tests (lod-mesher.js, in Node):
+- Tiles are well-formed, and every cell top sits at the terrain height sampled at its centre.
+- Walls exactly cover every height step inside a tile (total wall area equals the sum of height differences), and skirts cover all four borders, reaching below the tile's lowest surface.
+- Trees are boxes on near levels and a tint far away.
+- A dug-out chunk lowers the distant surface and removes its tree, and clearing the edits restores both.
+
+New smoke checks:
+- The default render distance is 20 of a maximum of 100.
+- Detail chunks and LOD tiles stream in, built in a worker, and **every chunk within the render distance is drawn exactly once** (no gaps, no overlaps).
+- Flying 14 chunks while sampling coverage every couple of frames finds no overlaps and no gaps inside half the render distance at any moment (42 samples), and full coverage after settling.
+- A crater dug 12 chunks away shows in the distant tile (surface y=10 instead of 25).
+- Render distance 64 streams in with short main-thread updates and a far plane beyond it, and moving 1,500 blocks away releases every out-of-range tile and chunk.
+
+The test arenas that are built at an offset from spawn now load their chunks first (`prepareArea`), because with the smaller detail area on Low they may lie outside it.
+
+**49 smoke checks and 30 unit tests pass with zero console errors.**
+
+## Phase 4: Graphics upgrade — DONE
+
+**Relief textures (High and Ultra).**
+- **Relief maps:** every block texture now has a matching relief map (a second texture array): a tangent-space normal, a height and a roughness per pixel. The heights come from each material's own structure where it has one: the stone's mottling, the domes of cobbles and gravel (from the same Voronoi cells that paint them), and the sand's ripples. Brightness fills in the rest, because in these pixel-art textures light pixels are the raised bits (pebbles, blades, leaf clusters) and dark ones the cracks.
+- **Lighting:** the terrain shader turns the relief into per-pixel normals, with each face's tangent frame taken from the mesher's UV layout, so bumps catch and lose the sun. A GGX specular highlight follows each pixel's roughness: leaves and ore get a sheen, while dirt stays matte.
+- **Parallax (Ultra):** parallax occlusion mapping (up to 28 steps, refined between the last two) gives nearby pixels real depth, fading out between 10 and 20 blocks.
+- **Richer textures:** grass has clumps and shaded gaps; dirt has roots and flint chips; stone has faint strata and mica specks; sand has lit ripple crests, coarse grains and shell bits; leaves have sunlit leaflets.
+
+**Cascaded, soft sun shadows.**
+- **Cascades:**
+  - Ultra: 3 shadow maps of growing size (±22, ±64 and ±180 blocks, 2048² each).
+  - High: 2 maps (±28 and ±110).
+  - Medium: 1 map.
+  - Each map is snapped to its own texel grid. Each pixel uses the finest map that covers it and blends into the next near its edge. Beyond all of them the voxel sky light takes over, as before. The extra cascade lights give no light of their own, so three's built-in materials don't get lit three times.
+- **Soft edges:** filtering is done in the shader, over a Poisson disc rotated per pixel (interleaved gradient noise), with 6, 12 or 16 taps depending on the preset. On Ultra the finest cascade uses percentage-closer soft shadows: it first searches for the occluder, then widens the filter with its distance. A post's shadow is crisp where it meets the ground and soft farther away, like a real sun.
+
+**Water (High and Ultra).** The frame is now drawn in two passes (new `js/layers.js`):
+1. **The world**, without water. Its colour and depth are resolved from the multisampled buffer (depth into a depth texture).
+2. **The water**, which reads that image, followed by transparent effects (smoke, sparks, exhaust) on top. The second pass reuses the frame's shadow maps.
+
+The water shader:
+- **Refraction:** bends what's behind by the wave normals (without borrowing pixels from anything in front of the water).
+- **Absorption:** uses the real thickness of water along the view ray (from the depth buffer), with red absorbed first. Shallows are clear and turquoise, over the sand and seabed caustics; depths fade to deep blue.
+- **Reflections:** on Ultra, screen-space reflections march the reflected ray through the depth buffer (48 steps, 5 refinement steps, fading at the screen edges); on High, and wherever that misses, the sky is reflected.
+- **Fresnel and glint:** a fresnel blend between the two, plus the sun glint.
+- **Foam:** where the water gets shallow along the view ray, so it follows shores and anything standing in the water.
+- **From below:** the world above shows through Snell's window, and total internal reflection shows beyond it.
+
+Low and Medium keep the cheaper blended water.
+
+**Vegetation (High and Ultra).**
+- **3D grass:** instanced tufts of thin blades on grass blocks with air above: 1 per block within 16 blocks on High, 2 within 24 on Ultra. They are lit like the terrain (voxel light, sun shadows, light through the blades), sway in the wind, bend away from the player's feet, and shrink away toward the edge so they never pop. Each chunk's grass tops are cached until the chunk is rebuilt.
+- **Fuller leaves:** each leaf block on the outside of a canopy gets two extra leaf cards at a random angle. They stay within the block's height, so flat canopy tops don't sprout fins, and poke out past its edges and corners, which breaks up the cube silhouette. They sway with the leaves, and toggling the preset rebuilds chunks gradually.
+
+**Low stays light.** Low has no shadow maps, no post-processing, no relief sampling, the old water, no grass and no leaf cards. Its frame is the same as before, apart from the richer textures.
+
+**Bug found by the probe.** The first High/Ultra run failed because the new water shader used `projectionMatrix` in the fragment stage, which three.js only declares for vertex shaders. The shader didn't compile, so water on those presets broke. The projection is now passed as its own uniform.
+
+**Testing.** Two new smoke checks:
+- **Presets:** each preset sets the right number of cascades, relief textures, parallax, water mode, grass level and leaf cards.
+- **Ultra functional check:** a purpose-built pool with a white floor under 1 block of water on one side and 12 blocks on the other.
+  - **Water:** the shallow half shows the floor through the water (luminance 229) while the deep half is dark blue (57).
+  - **Rendering:** all 3 shadow cascades render, there are 2,824 grass tufts around the player, and fuller leaves add cards to a leaf chunk.
+  - **Low:** switching back turns the extras off.
+
+I also checked every feature visually in the sandbox on a relief test wall, a floating leaf slab, a pool with a sloping sandy seabed and markers, and underwater views.
+
+**51 smoke checks and 30 unit tests pass with zero console errors.**
+
+## Phase 5: Visual realism — DONE
+
+The three references were the mood target: light shafts in teal water, a grassy marsh with mist over the water, and realistic trees. The world stays blocky; the atmosphere and the life on it are what changed.
+
+**1. Under water (new `js/motes.js`, `UW_RAYS` in `js/postfx.js`).**
+- **Light shafts (High/Ultra):** a volumetric pass at a third of the resolution. It marches each view ray through the water, up to the first surface in the depth buffer. At every step it traces the light back up to where it entered the surface, along the sun direction refracted into the water, and samples slowly drifting bands of focused light there. So the shafts are slanted like the sun, move like caustics, and fade with depth and distance. Their strength follows the sky light at the eye, so a sealed, flooded cave has none.
+- **Colour:** the water murk is now teal. It gets brighter looking up toward the surface and glows toward the sun, where earlier it was a flat dark blue.
+- **Motes (every preset):** 420 particles drift in a 14-block box that wraps around the camera in the vertex shader, so they never have to be moved on the CPU. They show only while the camera is submerged.
+
+**2. Sunbeams through clouds and canopies.** The light-shaft pass marches toward the sun through the sky mask:
+- **What blocks the sun:** the sky shader writes cloud cover into it, and terrain and leaves block it. Light pours through gaps in clouds, foliage and terrain.
+- **Quality:** the march is dithered per pixel (no banding), with 72 samples on Ultra and 48 on High.
+- **Dawn and dusk:** the shafts get stronger and much wider in the low, hazy light at the ends of the day.
+- **Tested:** in the sandbox with a leafy wall between the camera and a low sun, with rays streaming through each gap.
+
+**3. Mist over water.** The fog now has a thin mist layer lying on the water level:
+- **Physics:** its density falls off exponentially with height, and the fog integrates it exactly along each view ray, so it looks right both from the shore and from a hilltop.
+- **Movement:** smooth noise makes it drift in patches.
+- **Timing and colour:** it is about 7× denser around sunrise and sunset than at noon (a little denser at night too), and warmed by the low sun.
+- **Presets:** half strength on Low and 0.8 on Medium. It costs only a few shader instructions.
+
+**4. Ground plants (rewritten `js/grass.js`).** Instanced plants on the blocks around the player (High: within 20 blocks; Ultra: within 32, denser):
+- **Grass:** short tufts, and tall arching grass that yellows toward the tips (2.2 per block on Ultra).
+- **Reeds:** stalks with cattails and long leaves, along shores and standing in shallow water.
+- **Ferns:** where sky light is reduced under trees.
+- **Flowers:** five colours, in scattered patches.
+
+Each plant type is its own geometry with per-vertex colours. All are lit like the terrain (voxel light, shadows, light shining through), sway in the wind (tall plants more), bend away from the player's feet, and thin out and shrink toward the edge of the radius. Medium and Low have none.
+
+**5. Trees (new `js/trees.js`).**
+- **Four species:**
+  - **Oak:** irregular crowns of 2–3 overlapping blobs with noisy, ragged edges and a few holes, sometimes with a branch reaching into a side blob.
+  - **Birch:** tall and slender, with pale bark and narrow crowns.
+  - **Pine:** tall, dark trunks with tiered, tapering rings of needles.
+  - **Old oak (rare):** a 2×2 trunk, roots that run through the ground's top block, crooked branches and a huge crown.
+- **Where they grow:** forests and meadows alternate following a noise field; birches and pines grow in groves, and pines take over high ground. Trees keep a minimum distance: the one with the lower placement hash wins, which is symmetric, so no generation order is needed.
+- **New blocks:** birch log and leaves, pine log and needles, and oak wood (bark on every face, for branches and roots, so they don't show sawn-off rings). They have new textures, craft into planks and appear in the creative inventory. Mobs don't spawn on any kind of leaves.
+- **Across chunk borders:** crowns and roots now reach up to 9 blocks from the trunk. Each chunk places every tree that reaches into it, in one fixed order, and each tree's "is my ground carved away by a cave?" check uses a new per-block cave test. That test samples the same noise lattice as chunk generation, and matched it on all 68,482 blocks I compared. So every chunk agrees on which trees exist.
+- **Distant terrain:** the LOD tiles draw a crown per species (a narrow two-tier cone for pines, a wide crown for old oaks).
+- **Leaves and plants:** sunlight shines through them when you look toward the sun (a new foliage flag in the mesher). They also vary in colour: from tree to tree and block to block, and across broad patches of meadow for grass tops and tall grass (a per-vertex tint).
+- **Existing worlds:** tree placement and shapes changed, and cave carving matches the old generator exactly. Saved worlds keep all their edits, but trees in untouched areas regrow in the new shapes. The height map, caves and ores are unchanged.
+
+**6. Softer haze and aerial perspective.**
+- **Height:** the haze is now thickest near the ground and thins with height (integrated along the ray, scale height 40 blocks), so a view from a hilltop gets clearer.
+- **Colour:** it takes the sky's colour toward the horizon, plus a forward-scattering glow around the sun.
+- **Result:** distant hills fade into warm, soft light at dawn and into blue at noon, as in the references.
+
+**Performance.**
+- **Generation:** chunk generation with the new trees takes 1.0 ms per chunk in the unit test on an idle machine, and up to 2.2 ms while the browser tests run alongside (limit 3 ms; the old trees cost about 0.45 ms less). The shape cache stores 4 bytes per tree block.
+- **Leaves:** leaf blocks per chunk average about the same as before (66); forests are denser, meadows sparser.
+- **Plants:** the Ultra plant layers hold about 3,500–6,000 instances around the player.
+- **Shafts and mist:** the underwater shafts run only while submerged (24 steps per pixel at a third of the resolution); the mist is a few shader instructions.
+- **Low and Medium** get the new trees and a little mist and haze math, but no plants and no shafts.
+
+**Process fix.** The first Phase 5 browser run failed to load the game, although `node --check` had passed:
+- A GLSL comment with backticks ended its JavaScript template string early.
+- A patch duplicated a function header in textures.js.
+
+`node --check` doesn't parse these files strictly as ES modules, so both slipped through. The smoke test would have caught them, but I now also run a strict ES-module parse of every file after each change.
+
+**Bug found by the smoke run: spawning on a tree.** The first full run failed the grenade crater check: its grenade blew away only 41 blocks. The player had started on top of a birch crown, and the grenade went off up there. The spawn column was picked from the height map alone, and the bigger crowns now often grow over it: 38 of 300 worlds I checked started the player on a tree. The spawn now moves to the nearest land column that no tree stands in (`TerrainGenerator.spawnColumn`). The check uses the tree shapes, so no chunks need to be generated. The crater check also gives itself a grenade now instead of relying on the check before it.
+
+**Testing.**
+- **New unit test (spawn):** in 120 worlds the player starts on land with nothing solid above; 12 of those spawns had to move off a tree.
+- **New unit test (trees):** all four species grow (2,852 oaks, 997 birches, 1,303 pines and 81 old oaks in three 640×640 areas). Every block of every tree in a 7×7-chunk region ends up in the generated chunks (23 trees, 13 of them spanning chunk borders, 0 blocks missing).
+- **Ultra plants check:** on a purpose-built marsh (grass, a beach, shallow and deeper water, a leafy roof) there are tall and short grass, reeds and ferns, and at least three tree species grow near spawn.
+- **Ultra atmosphere check:**
+  - Under water, the light shafts render and the motes show (and hide again above water). In a sealed, flooded stone cell there are no shafts.
+  - The mist over water is more than 3× denser at dawn than at noon.
+  - Facing a low sun through a gappy leaf wall draws sunbeams.
+
+**53 smoke checks and 32 unit tests pass with zero console errors.**
+
+## Round 3 — final summary
+
+**What changed in this round.**
+
+1. **Phase 1 (bug fixes):**
+   - **Water surface:** the glitch at the surface is gone; the game and the shader now share one definition of "under water".
+   - **Lighting:** ambient occlusion no longer darkens sunlit faces.
+   - **Black edges:** the black NaN pixels along edges seen through water with MSAA are gone.
+   - **Sand and gravel** now fall when nothing supports them.
+   - **Sounds:** almost every sound was rebuilt from shaped noise, and the jump and burp sounds are gone.
+2. **Phase 2 (weapons):**
+   - **Grenade:** the Blast Orb became an item with a charged throw, bounces and a 5-second fuse.
+   - **Pistol:** hitscan shots with sparks and bullet holes.
+   - **Bazooka:** a rocket with five times the grenade's blast radius.
+   - **Distance:** camera shake, sound and damage all fall off with distance from a blast.
+3. **Phase 3 (level of detail):**
+   - **Range:** render distance goes up to 100 chunks (default 20).
+   - **Far terrain:** a quadtree of simplified tiles, built in a Web Worker, surrounds the full-detail area. The land is covered exactly once (no gaps, no overlaps).
+   - **Edits and memory:** player edits show in the far terrain, and memory is freed behind the player.
+4. **Phase 4 (graphics):**
+   - **Textures:** relief textures with normal maps and specular light, plus parallax on Ultra.
+   - **Shadows:** cascaded soft shadows with contact hardening.
+   - **Water:** drawn over the finished world image, for refraction, absorption and reflections.
+   - **Vegetation:** 3D grass and fuller leaves.
+5. **Phase 5 (visual realism):**
+   - **Light:** light shafts and drifting motes under water, and sunbeams through clouds and canopies.
+   - **Air:** mist over water at dawn and dusk, and haze that thins with height.
+   - **Plants:** grass, reeds, ferns and flowers.
+   - **Trees:** four procedural species that grow across chunk borders.
+
+The codebase grew from ~10,800 lines of JavaScript in 34 modules to ~15,200 lines in 46 modules, plus a ~560-line `index.html` and ~2,800 lines of tests. It is still plain ES modules with no build step, it still loads only three.js r160 from the pinned CDN, and it still has no asset files.
+
+**Testing.**
+- **Per phase:** every phase ended with `node --check` on the changed files (plus a strict ES-module parse since Phase 5), both test suites, and a check for zero console errors.
+- **At the end:** **32 unit tests** and **53 browser smoke checks** pass with zero console errors. That is up from 24 and 35 at the end of Round 2.
+- **Real bugs the browser runs caught this round:**
+  - The High/Ultra water shader didn't compile (found by a test render).
+  - New players started on top of trees.
+  - Two syntax errors got past `node --check`.
+- **Test fixes:** some checks depended on test order or timing. I fixed their causes rather than adding retries.
+
+**Known issues and limitations.**
+- **Performance on real GPUs is still unmeasured.** The sandbox renders with a software rasterizer (a few FPS), so I verified correctness and CPU-side costs, not frame rates. Ultra does a lot per frame:
+  - 3 shadow maps (2048² each) with contact-hardening soft shadows;
+  - 4× MSAA HDR, parallax, and a second pass for the water with screen-space reflections;
+  - up to ~6,000 instanced plants and 72-sample sunbeams.
+
+  Ultra is meant for good desktop GPUs; High, Medium and Low scale down step by step. At render distance 64 the far terrain is ~690,000 vertices, and more at 100.
+- **Saved worlds from before Phase 5 grow new trees.** Tree generation changed; the height map, caves and ores didn't.
+  - **Edits:** saved edits are kept, but untouched areas regrow trees in the new shapes.
+  - **Gaps:** old edits apply on top of the new trees, so a tree felled in an old save can leave a gap in a new crown.
+- **Some effects only use what's on screen or skip shadows:**
+  - **Reflections:** on Ultra they only show what's on screen, and fall back to the sky elsewhere.
+  - **Sunbeams** appear only when the sun is on or near the screen.
+  - **Underwater shafts** are computed, not shadowed. They ignore shade on the water surface (from a tree overhanging a pond, say). They do follow the sky light at the eye, so a sealed, flooded cave has none.
+- **Plants grow only near the player:** within 20 blocks on High and 32 on Ultra. Farther grass is the block texture. Plants don't cast shadows.
+- **Distant trees are simple:** the far terrain draws each crown as one or two boxes, and farther out only as a tint of the ground.
+- **Main-thread work:** chunk generation and meshing still run on the main thread (time-budgeted per frame); only the distant tiles are built in a worker.
+- **Unchanged from Round 2:**
+  - Water doesn't flow.
+  - Mob pathfinding is steering, not search.
+  - Mobs and dropped items aren't saved.
+  - Pointer lock quirks remain.
+
+**Honest self-assessment.**
+- *What went well:*
+  - **Root causes first:** the Phase 1 fixes started from root causes reproduced in the sandbox (the two definitions of "under water", AO applied to direct light).
+  - **LOD safety:** exact tests cover the LOD system (flying across the land, every point is drawn exactly once, by a chunk or a tile). That made the hand-over logic safe to change.
+  - **Trees:** trees that cross chunk borders are deterministic without any generation order, and a unit test checks that every block lands.
+  - **Smoke tests:** they kept catching things screenshots would have missed.
+- *What's weaker:*
+  - **Tuning:** I tuned all the visuals from software-rendered screenshots. On a real GPU the balance of haze, mist, bloom and light shafts may need adjusting, and Ultra may be too heavy for mid-range hardware.
+  - **Large files:** `shaders.js` (1,300 lines) and `main.js` are now large; the shaders would be easier to work on split per material.
+  - **Look, not detail:** the plants and trees are procedural approximations that capture the mood of the reference pictures, not their detail.
+- *Scope decisions:* I picked the cheaper version of each effect:
+  - screen-space sunbeams and computed underwater shafts instead of shadow-mapped volumetric light;
+  - instanced plants near the player instead of across the whole view;
+  - boxes for distant tree crowns.
+
+  Each was much cheaper and close enough for the look.

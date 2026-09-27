@@ -83,6 +83,9 @@ export class Hud {
     this.deathEl = document.getElementById("death-screen");
     this.deathCauseEl = document.getElementById("death-cause");
     this.respawnBtn = document.getElementById("respawn-btn");
+    this.throwEl = document.getElementById("throw-charge");
+    this.throwFill = this.throwEl.firstElementChild;
+    this._throw = 0;
     this.chargeEl = document.getElementById("attack-charge");
     this.chargeFill = this.chargeEl.firstElementChild;
     this._charge = 1;
@@ -173,6 +176,16 @@ export class Hud {
     this._charge = shown;
     this.chargeEl.classList.toggle("hidden", shown >= 1);
     this.chargeFill.style.width = `${Math.round(shown * 100)}%`;
+  }
+
+  // Throw strength (0-1) while a grenade is drawn back: a bar under the crosshair.
+  setThrowCharge(charge) {
+    const shown = Math.round(charge * 40) / 40;
+    if (shown === this._throw) return;
+    this._throw = shown;
+    this.throwEl.classList.toggle("hidden", shown <= 0);
+    this.throwFill.style.width = `${Math.round(shown * 100)}%`;
+    this.throwEl.classList.toggle("full", shown >= 1);
   }
 
   hurt() {

@@ -7,7 +7,7 @@
 //   position  Float32 x3  chunk-local position
 //   uv        Float32 x2  texture coordinate within the block's tile
 //   aData     Uint8   x4  [normalIndex * 4 + ao (0-3), sky light * 17, block light * 17, flags]
-//   aExtra    Uint8   x4  [texture layer, water depth * 16, 0, 0]
+//   aExtra    Uint8   x4  [texture layer, water depth * 16, color tint (128 = none), 0]
 import { CHUNK_SIZE, WORLD_HEIGHT } from "./constants.js";
 import {
   BLOCK,
@@ -19,9 +19,11 @@ import {
   FACE_TILES,
   WAVES,
   EMISSIVE,
+  IS_LEAVES,
 } from "./blocks.js";
 
-export const FLAG = Object.freeze({ WAVE: 1, EMISSIVE: 2, SURFACE: 4, UNDERWATER: 8 });
+// FOLIAGE: leaves and plants (sunlight shines through them).
+export const FLAG = Object.freeze({ WAVE: 1, EMISSIVE: 2, SURFACE: 4, UNDERWATER: 8, FOLIAGE: 16 });
 export const WATER_SURFACE_HEIGHT = 0.875;
 
 const S = CHUNK_SIZE;
@@ -82,6 +84,7 @@ class GeoBuilder {
     this._alloc(capacity);
     this.vc = 0;
     this.ic = 0;
+    this.tint = 128; // color tint written with every vertex (128 = none)
   }
   _alloc(cap) {
     const old = this.cap ? this : null;
@@ -122,6 +125,7 @@ class GeoBuilder {
     this.data[i * 4 + 3] = flags;
     this.extra[i * 4] = layer;
     this.extra[i * 4 + 1] = depth;
+    this.extra[i * 4 + 2] = this.tint;
   }
   // Indices for the last 4 vertices; `flip` picks the other diagonal.
   quad(flip) {
@@ -208,6 +212,34 @@ function hash01(x, y, z) {
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 }
 
+// Smooth value noise (0-1) over the ground, with lattice cells `cell` blocks wide.
+function smooth01(x, z, cell, salt) {
+  const fx = x / cell;
+  const fz = z / cell;
+  const ix = Math.floor(fx);
+  const iz = Math.floor(fz);
+  let tx = fx - ix;
+  let tz = fz - iz;
+  tx = tx * tx * (3 - 2 * tx);
+  tz = tz * tz * (3 - 2 * tz);
+  const a = hash01(ix, salt, iz);
+  const b = hash01(ix + 1, salt, iz);
+  const c = hash01(ix, salt, iz + 1);
+  const d = hash01(ix + 1, salt, iz + 1);
+  return a + (b - a) * tx + (c - a) * tz + (a - b - c + d) * tx * tz;
+}
+
+// Natural color variation: leaves differ from tree to tree and block to
+// block, grass drifts in broad patches across a meadow (128 = no tint).
+function foliageTint(wx, y, wz) {
+  const v = smooth01(wx, wz, 7, 3) * 0.65 + hash01(wx, y, wz) * 0.35;
+  return Math.max(16, Math.min(240, Math.round(128 + (v - 0.5) * 230)));
+}
+function grassTint(wx, wz) {
+  const v = smooth01(wx, wz, 11, 5) * 0.75 + smooth01(wx, wz, 3, 9) * 0.25;
+  return Math.max(24, Math.min(232, Math.round(128 + (v - 0.5) * 200)));
+}
+
 // Depth of water in the column at padded (x, z) starting at y and going
 // down (0 if that cell isn't water).
 function waterDepth(x, y, z) {
@@ -292,6 +324,7 @@ function emitCross(b, x, y, z, wx, wz, id, pi) {
   const lo = 0.15;
   const hi = 0.85;
   const top = WAVES[id] ? FLAG.WAVE : 0;
+  b.tint = id === BLOCK.TALL_GRASS ? grassTint(wx, wz) : 128;
   const up = 2 * 4 + 3; // normal index "up", no AO
   const quads = [
     [lo, lo, hi, hi],
@@ -302,10 +335,51 @@ function emitCross(b, x, y, z, wx, wz, id, pi) {
     const az = z + z0 + jz;
     const bx = x + x1 + jx;
     const bz = z + z1 + jz;
-    b.vertex(ax, y, az, 0, 0, up, sky, blk, 0, layer, 0);
-    b.vertex(ax, y + height, az, 0, 1, up, sky, blk, top, layer, 0);
-    b.vertex(bx, y + height, bz, 1, 1, up, sky, blk, top, layer, 0);
-    b.vertex(bx, y, bz, 1, 0, up, sky, blk, 0, layer, 0);
+    b.vertex(ax, y, az, 0, 0, up, sky, blk, FLAG.FOLIAGE, layer, 0);
+    b.vertex(ax, y + height, az, 0, 1, up, sky, blk, top | FLAG.FOLIAGE, layer, 0);
+    b.vertex(bx, y + height, bz, 1, 1, up, sky, blk, top | FLAG.FOLIAGE, layer, 0);
+    b.vertex(bx, y, bz, 1, 0, up, sky, blk, FLAG.FOLIAGE, layer, 0);
+    b.quad(false);
+  }
+  b.tint = 128;
+}
+
+// Fancy leaves (High/Ultra): two extra leaf "cards" through every leaf
+// block on the outside of a canopy, turned to a random angle and a little
+// larger than the block, so canopies look fuller and their silhouettes
+// break up instead of reading as stacked cubes. They sway with the leaves
+// and take the brightest light around the block (leaves themselves block
+// sky light).
+const NEIGHBOR_STEPS = [OX, -OX, OY, -OY, OZ, -OZ];
+function emitLeafCards(b, x, y, z, wx, wz, id, pi) {
+  const layer = FACE_TILES[id * 6 + 2];
+  let sky = 0;
+  let blk = 0;
+  for (const step of NEIGHBOR_STEPS) {
+    const l = padLight[pi + step];
+    sky = Math.max(sky, l >> 4);
+    blk = Math.max(blk, l & 15);
+  }
+  sky *= 17;
+  blk *= 17;
+  const flags = (WAVES[id] ? FLAG.WAVE : 0) | FLAG.FOLIAGE;
+  const up = 2 * 4 + 3;
+  const angle = hash01(wx, y, wz) * Math.PI;
+  // Within the block's height (no fins above a flat canopy top), but wider
+  // than the block, so the cards poke out past its edges and corners.
+  const half = 0.66 + hash01(wz, y, wx) * 0.1;
+  const cx = x + 0.5 + (hash01(wx + 3, y, wz) - 0.5) * 0.16;
+  const cz = z + 0.5 + (hash01(wx, y, wz + 5) - 0.5) * 0.16;
+  const y0 = y + 0.02;
+  const y1 = y + 0.98;
+  for (let k = 0; k < 2; k++) {
+    const a = angle + k * (Math.PI / 2);
+    const dx = Math.cos(a) * half;
+    const dz = Math.sin(a) * half;
+    b.vertex(cx - dx, y0, cz - dz, 0, 0, up, sky, blk, flags, layer, 0);
+    b.vertex(cx - dx, y1, cz - dz, 0, 1, up, sky, blk, flags, layer, 0);
+    b.vertex(cx + dx, y1, cz + dz, 1, 1, up, sky, blk, flags, layer, 0);
+    b.vertex(cx + dx, y0, cz + dz, 1, 0, up, sky, blk, flags, layer, 0);
     b.quad(false);
   }
 }
@@ -350,8 +424,10 @@ function emitTorch(b, x, y, z, id, pi) {
 }
 
 // neighbors: 9 chunks as described in fillPadded (center at index 4).
+// options: { fancyLeaves } (see emitLeafCards).
 // Returns { opaque, cutout, water } where each is null or a buffer set.
-export function meshChunk(neighbors) {
+export function meshChunk(neighbors, options = {}) {
+  const fancyLeaves = !!options.fancyLeaves;
   const center = neighbors[4];
   const maxY = fillPadded(neighbors);
   for (const b of Object.values(builders)) b.reset();
@@ -384,6 +460,12 @@ export function meshChunk(neighbors) {
         let baseFlags = 0;
         if (WAVES[id]) baseFlags |= FLAG.WAVE;
         if (EMISSIVE[id]) baseFlags |= FLAG.EMISSIVE;
+        const leaves = IS_LEAVES[id] === 1;
+        if (leaves) {
+          baseFlags |= FLAG.FOLIAGE;
+          b.tint = foliageTint(baseX + x, y, baseZ + z);
+        }
+        let exposed = false;
 
         for (let f = 0; f < 6; f++) {
           const face = FACES[f];
@@ -393,8 +475,10 @@ export function meshChunk(neighbors) {
           // Water's top face is visible from below the lowered surface even
           // if something non-opaque (e.g. a plant) sits on top; other faces
           // of water next to water were skipped above.
+          exposed = true;
           shadeCorners(pi, face);
           let flags = baseFlags;
+          if (id === BLOCK.GRASS) b.tint = f === 2 ? grassTint(baseX + x, baseZ + z) : 128;
           let faceDepths = null;
           if (isWater) {
             if (f === 2) {
@@ -418,6 +502,8 @@ export function meshChunk(neighbors) {
           }
           emitCubeFace(b, face, x, y, z, FACE_TILES[id * 6 + f], flags, isWater ? topY : 1, faceDepths);
         }
+        if (fancyLeaves && exposed && leaves) emitLeafCards(b, x, y, z, baseX + x, baseZ + z, id, pi);
+        b.tint = 128;
       }
     }
   }

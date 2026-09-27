@@ -18,7 +18,8 @@ mouse.
 - **Survival:** start with nothing. Punch a tree for logs, turn them into
   planks and a crafting table, make a wooden pickaxe, dig down for stone,
   coal and iron, and work your way up to diamond tools. Watch your hearts:
-  falls, drowning, zombies and your own Blast Orb can all kill you.
+  falls, drowning, zombies and your own grenades and rockets can all kill
+  you.
 - **Creative:** every block and item from the inventory palette, instant
   mining, flight, and no damage.
 
@@ -36,11 +37,12 @@ mode, your position, inventory and health.
 | Sneak (slow, won't walk off edges) | `Shift` |
 | Mine a block / attack (hold to keep mining) | Left click |
 | Place a block / use / eat (hold to eat) | Right click |
+| Throw a grenade | Hold right click to charge (bar under the crosshair), release to throw |
+| Fire the pistol or bazooka | Right click (every click fires; no ammo, no reloading) |
 | Open a crafting table | Right click it (`Shift` + right click places against it) |
 | Select hotbar slot | `1`-`9` or scroll wheel |
 | Inventory and crafting | `E` |
 | Drop the held item (whole stack with `Ctrl`) | `Q` |
-| Throw a Blast Orb | `F` |
 | Fly up / down (Creative) | Double-tap `Space` to toggle, then `Space` / `Shift` |
 | Pick the targeted block (Creative) | Middle click |
 | Pause menu (render distance, graphics, game mode) | `Esc` |
@@ -82,13 +84,29 @@ make right now highlighted: click one to fill the grid.
   swings (watch the bar under the crosshair); hit while falling for a
   critical hit.
 
-### The Blast Orb
+### Weapons
 
-Press `F` to lob a glowing orb. Where it lands it blasts out a big crater,
-with fire, smoke, debris, a shockwave, screen shake and a boom. It has a
-short cooldown (the round indicator next to the hotbar). Blasts below sea
-level let the water in. In Survival it hurts you (and anything else) up
-close, so throw it far.
+Weapons sit in the hotbar like any other item (all three are in the
+Creative inventory, and can be crafted in Survival). With one selected,
+right click uses it instead of placing a block. There's no ammo and no
+reloading.
+
+- **Grenade** (1 iron ingot + 2 coal): hold right click to charge the throw
+  (the bar under the crosshair fills in about 1.5 s), release to throw. A
+  quick click lobs it a few blocks, a full charge about 25. It bounces and
+  rolls, blinks, and explodes after 5 seconds, or at once if it hits a
+  creature. The blast carves a crater (below sea level the water floods
+  in), throws debris, fire and smoke, and knocks everything back.
+- **Pistol** (3 iron ingots + 1 plank): hitscan shots with a muzzle flash
+  and recoil. Bullets spark and leave holes in blocks, and hurt and push
+  back creatures.
+- **Bazooka** (8 iron ingots around a grenade): a fast rocket with a smoke
+  trail that explodes on terrain or creatures, with five times a grenade's
+  blast radius. It can hit you too: keep your distance.
+
+Explosions shake the camera and sound quieter, more muffled and later the
+farther away they are. Sand and gravel fall when the ground under them is
+blown away.
 
 ## Graphics
 
@@ -96,12 +114,33 @@ The pause menu has a **Graphics** setting, saved in your browser:
 
 - **Low:** no shadows or post-processing. For weak laptops.
 - **Medium:** sun shadows and bloom.
-- **High:** soft shadows, bloom, light shafts and water caustics.
-- **Ultra** (default): higher-resolution shadows over a wider area, stronger
-  bloom, and full resolution on high-DPI screens.
+- **High:** two cascades of soft sun shadows, normal-mapped textures with
+  specular light, refractive water, light shafts, 3D grass, reeds, ferns
+  and flowers, and fuller tree crowns.
+- **Ultra** (default): everything on High, plus a third shadow cascade with
+  contact-hardening soft shadows, parallax (3D) textures up close, water
+  reflections of the world, denser plants, and full resolution on high-DPI
+  screens.
 
-Picking a preset also sets its suggested render distance, which you can
-still change with the slider (2 to 16 chunks; default 10).
+On every preset you get animated water, light that glows through leaves,
+haze that thickens with distance, and low mist over water at sunrise and
+sunset. Under water, High and Ultra add light shafts from the surface, and
+every preset shows drifting particles.
+
+**Render distance** goes up to 100 chunks (default 20). The area around you
+is drawn in full detail, and the land beyond it in simplified level-of-detail
+tiles, so you can see hills, lakes and forests to the horizon. Picking a
+preset also sets its suggested render distance (Low 12, Medium 16, High and
+Ultra 20), which you can still change with the slider.
+
+## The world
+
+Rolling hills, beaches and lakes, with caves, ores and glowing crystals
+underground. Forests and meadows alternate: oaks with irregular crowns and
+branches, pale birch groves, dark pine woods on the hills, and rare huge old
+oaks with roots spreading over the ground. On High and Ultra the ground
+comes alive with grass, reeds along the water, ferns in the shade of trees,
+and flowers.
 
 ## Sharing a world
 
@@ -151,14 +190,16 @@ smoke test needs a Chromium binary, set with the `CHROMIUM_PATH` environment
 variable):
 
 - `unit-tests.mjs`: fast Node tests of the pure logic (save format, the
-  voxel light engine against a brute-force reference, terrain and caves,
-  recipes, mining rules, inventory, collision).
+  voxel light engine against a brute-force reference, terrain, caves and
+  trees, recipes, mining rules, inventory, collision, explosion falloff,
+  distant-terrain meshes).
 - `smoke-test.mjs`: loads the real game in headless Chromium and plays it
   with real keyboard and mouse input: movement, every graphics preset,
-  lighting, the Blast Orb, mining and pickup, crafting through the inventory
+  lighting, the level-of-detail terrain, grenades, the pistol and the
+  bazooka, falling sand, mining and pickup, crafting through the inventory
   screens, eating, fall and drowning damage, the death screen, zombies
-  chasing and fighting, and saving and reloading. It fails on any console
-  error.
+  chasing and fighting, the water, shadows, plants and atmosphere on Ultra,
+  and saving and reloading. It fails on any console error.
 
 ## Tech notes
 
@@ -168,8 +209,14 @@ variable):
   scratch (`js/noise.js`, `js/terrain.js`).
 - Lighting is a Minecraft-style flood-fill voxel light engine (sky light and
   block light) feeding per-vertex smooth lighting and ambient occlusion
-  (`js/light.js`, `js/mesher.js`), combined with sun shadow maps, HDR bloom,
-  light shafts and ACES tone mapping (`js/shaders.js`, `js/postfx.js`).
+  (`js/light.js`, `js/mesher.js`), combined with cascaded soft sun shadows,
+  per-pixel relief, HDR bloom, light shafts and ACES tone mapping
+  (`js/shaders.js`, `js/postfx.js`). On High and Ultra the water is drawn in
+  its own pass over the finished image of the world, for refraction,
+  absorption and reflections.
+- Distant terrain is a quadtree of simplified tiles built in a Web Worker
+  (`js/lod.js`, `js/lod-mesher.js`, `js/lod-worker.js`); trees come from
+  `js/trees.js`, ground plants from `js/grass.js`.
 - Block textures (32x32), item icons and mob skins are painted pixel by
   pixel in code (`js/textures.js`, `js/itemtextures.js`, `js/mob-models.js`).
 - All sounds are synthesized with the Web Audio API (`js/audio.js`).

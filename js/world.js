@@ -34,6 +34,37 @@ function numKey(cx, cz) {
   return (cx + KEY_OFFSET) * 2097152 + (cz + KEY_OFFSET);
 }
 
+// A streaming plan that meshes every chunk within `r` chunks of the player
+// (see World.ensureChunksAround), cached per distance.
+const circlePlans = new Map();
+function circlePlan(r) {
+  let plan = circlePlans.get(r);
+  if (!plan) {
+    plan = { id: `circle:${r}`, reach: r, meshed: (cx, cz, dx, dz) => dx * dx + dz * dz <= r * r };
+    circlePlans.set(r, plan);
+  }
+  return plan;
+}
+
+// Max filter of radius r over a W x W grid of 0/1 flags (square neighborhood).
+function dilate(grid, W, r) {
+  const tmp = new Uint8Array(W * W);
+  const out = new Uint8Array(W * W);
+  for (let z = 0; z < W; z++) {
+    for (let x = 0; x < W; x++) {
+      if (!grid[z * W + x]) continue;
+      for (let i = Math.max(0, x - r); i <= Math.min(W - 1, x + r); i++) tmp[z * W + i] = 1;
+    }
+  }
+  for (let z = 0; z < W; z++) {
+    for (let x = 0; x < W; x++) {
+      if (!tmp[z * W + x]) continue;
+      for (let j = Math.max(0, z - r); j <= Math.min(W - 1, z + r); j++) out[j * W + x] = 1;
+    }
+  }
+  return out;
+}
+
 // Selection boxes for non-cube shapes: [minX, minY, minZ, maxX, maxY, maxZ].
 const SELECTION = {
   [SHAPE.CUBE]: [0, 0, 0, 1, 1, 1],
@@ -44,6 +75,9 @@ const SELECTION = {
 export function selectionBox(id) {
   return SELECTION[SHAPE_OF[id]] || SELECTION[SHAPE.CUBE];
 }
+
+const EDIT_REMESH_AT_ONCE = 8; // chunks rebuilt immediately after an edit
+const EDIT_REMESH_BUDGET_MS = 10; // extra per-frame time for rebuilding after huge edits
 
 export class World {
   constructor(scene, seed) {
@@ -56,11 +90,14 @@ export class World {
     this.edits = new Map();
     this.dirtyEditChunks = new Set(); // chunk keys with edits not yet saved
 
-    const { texture, canvases, blockColors } = buildBlockTextures();
+    const { texture, reliefTexture, canvases, blockColors, facePalette } = buildBlockTextures();
     this.atlas = texture;
+    this.relief = reliefTexture;
     this.tileCanvases = canvases;
     this.blockColors = blockColors; // blockId -> [r,g,b] sRGB 0-1
-    this.materials = createChunkMaterials(texture, TILE.water);
+    this.facePalette = facePalette; // linear top/side colors per block (distant terrain)
+    this.materials = createChunkMaterials(texture, TILE.water, reliefTexture);
+    this.meshOptions = { fancyLeaves: false }; // see mesher.js; setMeshOptions() rebuilds
     this.light = new LightEngine(this);
 
     this.genQueue = []; // { cx, cz, dist }
@@ -73,11 +110,15 @@ export class World {
     this._nb = new Array(9).fill(null);
     this._planCx = null;
     this._planCz = null;
-    this._planR = null;
-    this.meshRadius = 0;
+    this._planId = null;
+    this._meshSet = new Set(); // numKeys of the chunks the current plan meshes
+    this._keep = null; // chunks the current plan keeps loaded
+    this.keepChunk = null; // (chunk) => true to keep a chunk loaded outside the plan
+    this.chunksHidden = false; // new chunks start hidden (the LOD system shows them)
 
     this.onEdit = null; // () => void, after any recorded edit
     this.onBlockPopped = null; // (x, y, z, id) when a torch/plant loses its support
+    this.changeListeners = []; // fns called with (flat [x, y, z, ...]) after every edit batch
   }
 
   key(cx, cz) {
@@ -161,6 +202,7 @@ export class World {
       if (c.meshed) this.editRemeshQueue.add(c);
     }
     if (recordEdit && this.onEdit) this.onEdit();
+    for (const fn of this.changeListeners) fn(changed);
     return changed.length / 3;
   }
 
@@ -180,67 +222,113 @@ export class World {
 
   // ---------- Streaming ----------
 
-  // Plans chunk loading/unloading around the player. Cheap to call every
+  // Plans chunk loading/unloading around the player. `plan` says which
+  // chunks get meshes: either a render distance (every chunk within it), or
+  // { id, reach, meshed(cx, cz, dx, dz) } from the LOD system (dx, dz: the
+  // offset from the player's chunk) (the detailed area
+  // around the player; `reach` bounds it in chunks, and `id` changes
+  // whenever the area does). The 8 neighbors of every meshed chunk are
+  // generated as well, and chunks farther than 3 from any meshed chunk are
+  // unloaded (unless keepChunk(chunk) still wants them). Cheap to call every
   // frame: re-planning only runs when the player crosses into another chunk
-  // or the render distance changes.
-  ensureChunksAround(px, pz, renderDistance) {
+  // or the plan changes.
+  ensureChunksAround(px, pz, plan) {
+    if (typeof plan === "number") plan = circlePlan(plan);
     const pcx = floorDiv(px, CHUNK_SIZE);
     const pcz = floorDiv(pz, CHUNK_SIZE);
-    if (pcx === this._planCx && pcz === this._planCz && renderDistance === this._planR) return;
+    if (pcx === this._planCx && pcz === this._planCz && plan.id === this._planId) return;
     this._planCx = pcx;
     this._planCz = pcz;
-    this._planR = renderDistance;
-    this.meshRadius = renderDistance;
+    this._planId = plan.id;
 
-    const meshR2 = renderDistance * renderDistance;
-    const dataR = renderDistance + 1.5; // covers the 8 neighbors of every meshed chunk
-    const dataR2 = dataR * dataR;
+    // Flags on a square grid around the player: meshed, generated (meshed
+    // dilated by 1), kept (meshed dilated by 3).
+    const R = Math.ceil(plan.reach) + 3;
+    const W = 2 * R + 1;
+    const meshed = new Uint8Array(W * W);
+    this._meshSet = new Set();
+    for (let dz = -R; dz <= R; dz++) {
+      for (let dx = -R; dx <= R; dx++) {
+        if (dx * dx + dz * dz > (plan.reach + 1) * (plan.reach + 1)) continue;
+        if (!plan.meshed(pcx + dx, pcz + dz, dx, dz)) continue;
+        meshed[(dz + R) * W + (dx + R)] = 1;
+        this._meshSet.add(numKey(pcx + dx, pcz + dz));
+      }
+    }
+    const data = dilate(meshed, W, 1);
+    const keep = dilate(meshed, W, 3);
+    const flag = (grid, cx, cz) => {
+      const dx = cx - pcx;
+      const dz = cz - pcz;
+      return dx >= -R && dx <= R && dz >= -R && dz <= R && grid[(dz + R) * W + (dx + R)] === 1;
+    };
+    this._keep = { grid: keep, flag };
     const dist2 = (cx, cz) => (cx - pcx) * (cx - pcx) + (cz - pcz) * (cz - pcz);
 
     this.genQueue = this.genQueue.filter((e) => {
       e.dist = dist2(e.cx, e.cz);
-      if (e.dist > dataR2) {
+      if (!flag(data, e.cx, e.cz)) {
         this.genQueued.delete(numKey(e.cx, e.cz));
         return false;
       }
       return true;
     });
-    const reach = Math.ceil(dataR);
-    for (let dx = -reach; dx <= reach; dx++) {
-      for (let dz = -reach; dz <= reach; dz++) {
-        const d = dx * dx + dz * dz;
-        if (d > dataR2) continue;
+    for (let dz = -R; dz <= R; dz++) {
+      for (let dx = -R; dx <= R; dx++) {
+        if (data[(dz + R) * W + (dx + R)] !== 1) continue;
         const k = numKey(pcx + dx, pcz + dz);
         if (!this.chunks.has(k) && !this.genQueued.has(k)) {
-          this.genQueue.push({ cx: pcx + dx, cz: pcz + dz, dist: d });
+          this.genQueue.push({ cx: pcx + dx, cz: pcz + dz, dist: dx * dx + dz * dz });
           this.genQueued.add(k);
         }
       }
     }
     this.genQueue.sort((a, b) => a.dist - b.dist);
 
-    // Unload far chunks.
-    const unloadR = renderDistance + 3;
-    for (const [k, chunk] of this.chunks) {
-      if (dist2(chunk.cx, chunk.cz) > unloadR * unloadR) {
-        this.scene.remove(chunk.group);
-        chunk.dispose();
-        this.chunks.delete(k);
-        this.remeshQueue.delete(chunk);
-        this.editRemeshQueue.delete(chunk);
-      }
-    }
+    this.releaseChunks();
 
-    // Rebuild the mesh queue: ready, unmeshed chunks within range, nearest first.
+    // Rebuild the mesh queue: ready, unmeshed chunks in the meshed area, nearest first.
     this.meshQueue = [];
     this.meshQueued.clear();
     for (const chunk of this.chunks.values()) {
-      if (!chunk.meshed && dist2(chunk.cx, chunk.cz) <= meshR2 && this._isReady(chunk)) {
+      if (!chunk.meshed && this._meshSet.has(numKey(chunk.cx, chunk.cz)) && this._isReady(chunk)) {
         this.meshQueue.push(chunk);
         this.meshQueued.add(chunk);
       }
     }
     this.meshQueue.sort((a, b) => dist2(a.cx, a.cz) - dist2(b.cx, b.cz));
+  }
+
+  // Unloads chunks well outside the meshed area (unless keepChunk still
+  // wants them, e.g. while they stand in for distant terrain being built).
+  releaseChunks() {
+    if (!this._keep) return 0;
+    const { grid, flag } = this._keep;
+    let n = 0;
+    for (const [k, chunk] of this.chunks) {
+      if (flag(grid, chunk.cx, chunk.cz) || (this.keepChunk && this.keepChunk(chunk))) continue;
+      this.scene.remove(chunk.group);
+      chunk.dispose();
+      this.chunks.delete(k);
+      this.remeshQueue.delete(chunk);
+      this.editRemeshQueue.delete(chunk);
+      n++;
+    }
+    return n;
+  }
+
+  // Changes how chunks are meshed (e.g. fancy leaves) and queues every
+  // meshed chunk for a rebuild (spread over frames by processQueues).
+  setMeshOptions(options) {
+    const next = { ...this.meshOptions, ...options };
+    if (Object.keys(next).every((k) => next[k] === this.meshOptions[k])) return;
+    this.meshOptions = next;
+    for (const chunk of this.chunks.values()) if (chunk.meshed) this.remeshQueue.add(chunk);
+  }
+
+  // True if the current plan wants chunk (cx, cz) meshed.
+  wantsMesh(cx, cz) {
+    return this._meshSet.has(numKey(cx, cz));
   }
 
   _isReady(chunk) {
@@ -259,7 +347,7 @@ export class World {
   }
 
   _inMeshRange(chunk) {
-    return this._planCx !== null && this._dist2(chunk) <= this.meshRadius * this.meshRadius;
+    return this._meshSet.has(numKey(chunk.cx, chunk.cz));
   }
 
   // Generates and meshes queued chunks until `budgetMs` of main-thread time
@@ -269,10 +357,22 @@ export class World {
   processQueues(budgetMs = 4) {
     const start = performance.now();
     if (this.editRemeshQueue.size > 0) {
-      for (const chunk of this.editRemeshQueue) this._buildMesh(chunk);
-      this.stats.lastEditRemeshCount = this.editRemeshQueue.size;
+      // Everyday edits (a few chunks) rebuild at once. A huge blast touches
+      // dozens of chunks: those are spread over several frames, nearest
+      // first, within a time budget.
+      let list = [...this.editRemeshQueue];
+      if (list.length > EDIT_REMESH_AT_ONCE) list.sort((a, b) => this._dist2(a) - this._dist2(b));
+      let n = 0;
+      for (const chunk of list) {
+        if (n >= EDIT_REMESH_AT_ONCE && performance.now() - start > EDIT_REMESH_BUDGET_MS) break;
+        if (this.chunks.get(numKey(chunk.cx, chunk.cz)) === chunk) this._buildMesh(chunk);
+        this.editRemeshQueue.delete(chunk);
+        n++;
+      }
+      list = null;
+      this.stats.lastEditRemeshCount = n;
       this.stats.lastEditRemeshMs = performance.now() - start;
-      this.editRemeshQueue.clear();
+      if (this.editRemeshQueue.size > 0) this.stats.spreadRemeshFrames = (this.stats.spreadRemeshFrames || 0) + 1;
     }
 
     let didWork = false;
@@ -338,6 +438,7 @@ export class World {
     for (const c of this.light.initChunk(chunk)) {
       if (c.meshed) this.remeshQueue.add(c);
     }
+    if (this.chunksHidden) chunk.group.visible = false;
     this.scene.add(chunk.group);
     // This chunk, or a neighbor that was waiting on it, may now be meshable.
     for (let dz = -1; dz <= 1; dz++) {
@@ -356,8 +457,9 @@ export class World {
     for (let dz = -1; dz <= 1; dz++) {
       for (let dx = -1; dx <= 1; dx++) nb[(dz + 1) * 3 + (dx + 1)] = this.chunks.get(numKey(chunk.cx + dx, chunk.cz + dz)) || null;
     }
-    chunk.applyMesh(meshChunk(nb), this.materials);
+    chunk.applyMesh(meshChunk(nb, this.meshOptions), this.materials);
     chunk.meshed = true;
+    chunk.meshCount = (chunk.meshCount || 0) + 1; // lets caches of chunk contents (grass.js) notice rebuilds
     this.meshQueued.delete(chunk);
     this.remeshQueue.delete(chunk);
     this.stats.meshes++;
@@ -378,7 +480,8 @@ export class World {
   // Voxel traversal ray cast (Amanatides & Woo). Returns
   // { block: [x,y,z], place: [x,y,z], normal: [x,y,z], id, distance } for
   // the first selectable block (non-cube blocks use their selection box), or null.
-  raycast(origin, direction, maxDistance = 6) {
+  // solidOnly: pass through non-solid blocks (plants, torches), e.g. for bullets.
+  raycast(origin, direction, maxDistance = 6, { solidOnly = false } = {}) {
     const dir = direction.clone().normalize();
     let x = Math.floor(origin.x);
     let y = Math.floor(origin.y);
@@ -396,7 +499,7 @@ export class World {
     let t = 0;
     while (t <= maxDistance) {
       const id = this.getBlock(x, y, z);
-      if (IS_SELECTABLE[id]) {
+      if (IS_SELECTABLE[id] && (!solidOnly || IS_SOLID[id])) {
         const hitT = SHAPE_OF[id] === SHAPE.CUBE ? t : rayBox(origin, dir, x, y, z, selectionBox(id));
         if (hitT !== null && hitT <= maxDistance) {
           const n = normal || [0, 0, 0];

@@ -170,6 +170,11 @@ const P = {
   gravel: [0x5b5754, 0x6b6763, 0x7c7771, 0x8d8780, 0x9e978f, 0x746a5f, 0x877a6a].map(hex),
   brick: [0x7a3224, 0x8c3b2a, 0x9d4530, 0xad5037, 0xbb5c41].map(hex),
   wool: [0xc9c3b8, 0xd6d0c5, 0xe1dcd2, 0xebe7df, 0xf5f2ec].map(hex),
+  birchBark: [0xa9a49a, 0xc4bfb4, 0xd8d3c8, 0xe6e2d8, 0xf1eee6].map(hex),
+  birchLeaves: [0x3f6a1f, 0x4f7f26, 0x62942f, 0x76a83a, 0x8bbb47, 0xa2cc58].map(hex),
+  pineBark: [0x2a1a12, 0x3b251a, 0x4d3122, 0x5f3d2a, 0x724a33, 0x86583c].map(hex),
+  pineRings: [0x9a6d45, 0xab7c50, 0xba8a5c].map(hex),
+  pineNeedles: [0x0f2f25, 0x16402f, 0x1e5139, 0x286244, 0x357350, 0x44845c].map(hex),
 };
 
 // ---------- Painters ----------
@@ -191,13 +196,41 @@ function paintDirt(t, salt = 0) {
     t.set(x + w - 1, y + 1, hex(0x3d2a1c));
   }
   for (let i = 0; i < 22; i++) t.set(Math.floor(t.rand() * TEX), Math.floor(t.rand() * TEX), hex(0x35241a));
+  // Thin, wandering roots.
+  for (let i = 0; i < 3; i++) {
+    let x = Math.floor(t.rand() * TEX);
+    let y = Math.floor(t.rand() * TEX);
+    const len = 4 + Math.floor(t.rand() * 5);
+    for (let k = 0; k < len; k++) {
+      t.set(x, y, hex(0x4a3222));
+      x += t.rand() < 0.6 ? 1 : 0;
+      y += t.rand() < 0.5 ? 1 : 0;
+    }
+  }
+  // A few grey flint chips with a bright edge.
+  for (let i = 0; i < 4; i++) {
+    const x = Math.floor(t.rand() * TEX);
+    const y = Math.floor(t.rand() * TEX);
+    t.set(x, y, hex(0x8a8580));
+    t.set(x + 1, y, hex(0x6d6965));
+    t.set(x, y - 1, hex(0xb3aea7));
+  }
 }
 
 function paintGrassTop(t) {
   t.forEach((x, y) => {
-    const f = t.fbm(x, y, 4, 3) * 0.55 + t.rand() * 0.45;
+    // Broad clumps (light and dark patches) under the fine speckle.
+    const clump = t.fbm(x, y, 2, 2, 21) - 0.5;
+    const f = t.fbm(x, y, 4, 3) * 0.5 + t.rand() * 0.42 + clump * 0.35;
     t.set(x, y, ramp(P.grass, f));
   });
+  // Shadowed gaps between clumps of blades.
+  for (let i = 0; i < 26; i++) {
+    const x = Math.floor(t.rand() * TEX);
+    const y = Math.floor(t.rand() * TEX);
+    t.set(x, y, P.grass[0]);
+    if (t.rand() < 0.5) t.set(x + 1, y, P.grass[1]);
+  }
   // Blades: short vertical strokes, lighter at the tip.
   for (let i = 0; i < 110; i++) {
     const x = Math.floor(t.rand() * TEX);
@@ -258,6 +291,13 @@ function paintStone(t, salt = 0) {
     }
   }
   for (let i = 0; i < 18; i++) t.set(Math.floor(t.rand() * TEX), Math.floor(t.rand() * TEX), hex(0xa9a9af));
+  // Faint strata: gently wavy darker bands running across the rock.
+  t.forEach((x, y) => {
+    const band = Math.sin((y + Math.sin(x * 0.3 + t.noise(x, 0, 4, 13) * 4) * 1.6) * 0.7);
+    if (band > 0.93) t.shade(x, y, 0.9);
+  });
+  // Mica specks that catch the light.
+  for (let i = 0; i < 7; i++) t.set(Math.floor(t.rand() * TEX), Math.floor(t.rand() * TEX), hex(0xc4c6cf));
 }
 
 function paintCobblestone(t) {
@@ -284,10 +324,28 @@ function paintCobblestone(t) {
 
 function paintSand(t) {
   t.forEach((x, y) => {
-    const ripple = Math.sin((y + t.fbm(x, y, 4, 2, 4) * 7) * 0.75) * 0.12;
-    const f = t.fbm(x, y, 8, 2) * 0.35 + t.rand() * 0.5 + ripple + 0.1;
+    const phase = (y + t.fbm(x, y, 4, 2, 4) * 7) * 0.75;
+    const ripple = Math.sin(phase) * 0.12;
+    // Crests lit on their windward side, shaded on the lee side.
+    const slope = Math.cos(phase) * 0.07;
+    const f = t.fbm(x, y, 8, 2) * 0.35 + t.rand() * 0.45 + ripple + slope + 0.12;
     t.set(x, y, ramp(P.sand, f));
   });
+  // Coarse grains: a dark pixel with a light one beside it.
+  for (let i = 0; i < 14; i++) {
+    const x = Math.floor(t.rand() * TEX);
+    const y = Math.floor(t.rand() * TEX);
+    t.set(x, y, hex(0xb49c68));
+    t.set(x + 1, y, hex(0xf6ead0));
+  }
+  // Tiny pale shell fragments.
+  for (let i = 0; i < 3; i++) {
+    const x = Math.floor(t.rand() * TEX);
+    const y = Math.floor(t.rand() * TEX);
+    t.set(x, y, hex(0xfbf3e3));
+    t.set(x + 1, y, hex(0xe9d9c0));
+    t.set(x, y + 1, hex(0xd9c6a4));
+  }
   for (let i = 0; i < 22; i++) t.set(Math.floor(t.rand() * TEX), Math.floor(t.rand() * TEX), hex(0xad9563));
   for (let i = 0; i < 12; i++) t.set(Math.floor(t.rand() * TEX), Math.floor(t.rand() * TEX), hex(0xf8eed0));
 }
@@ -397,9 +455,131 @@ function paintLeaves(t) {
     t.set(x + 1, y + 1, scaleRgb(c, 0.72));
     if (f > 0.7) t.set(x, y, scaleRgb(c, 1.18));
   }
+  // Some leaves catch the sun: a bright tip and a darker midrib.
+  for (let i = 0; i < 18; i++) {
+    const x = Math.floor(t.rand() * TEX);
+    const y = Math.floor(t.rand() * TEX);
+    t.set(x, y, P.leaves[6]);
+    t.set(x + 1, y + 1, P.leaves[5]);
+    t.set(x + 1, y, P.leaves[2]);
+  }
   // Gaps between leaves let light (and the sky) through.
   t.forEach((x, y) => {
-    if (t.noise(x, y, 8, 11) * 0.7 + t.rand() * 0.3 < 0.2) t.set(x, y, [0, 0, 0], 0);
+    if (t.noise(x, y, 8, 11) * 0.7 + t.rand() * 0.3 < 0.17) t.set(x, y, [0, 0, 0], 0);
+  });
+}
+
+// Birch bark: pale, papery, with dark horizontal lenticels and black scars.
+function paintBirchBark(t) {
+  t.forEach((x, y) => {
+    const f = t.fbm(x, y, 4, 2, 3, 16) * 0.6 + t.rand() * 0.3 + t.noise(x, y, 2, 7) * 0.2;
+    t.set(x, y, ramp(P.birchBark, f));
+  });
+  // Lenticels: short dark horizontal dashes.
+  for (let i = 0; i < 26; i++) {
+    const x = Math.floor(t.rand() * TEX);
+    const y = Math.floor(t.rand() * TEX);
+    const len = 2 + Math.floor(t.rand() * 4);
+    for (let k = 0; k < len; k++) t.set(x + k, y, t.rand() < 0.75 ? hex(0x3a3531) : hex(0x6b655d));
+  }
+  // Black scars where branches fell off: an eye shape.
+  for (let i = 0; i < 2; i++) {
+    const cx = Math.floor(t.rand() * TEX);
+    const cy = Math.floor(t.rand() * TEX);
+    for (let dx = -3; dx <= 3; dx++) {
+      const h = dx === 0 ? 1 : Math.abs(dx) < 3 ? 1 : 0;
+      for (let dy = -h; dy <= h; dy++) t.set(cx + dx, cy + dy, dy === 0 ? hex(0x191715) : hex(0x2e2a27));
+    }
+  }
+}
+
+function paintBirchTop(t) {
+  const c = (TEX - 1) / 2;
+  t.forEach((x, y) => {
+    const edge = Math.max(Math.abs(x - c), Math.abs(y - c));
+    if (edge > 13.5) {
+      t.set(x, y, ramp(P.birchBark, t.fbm(x, y, 8, 2) * 0.6 + t.rand() * 0.3));
+      return;
+    }
+    const r = Math.hypot(x - c, y - c) + t.fbm(x, y, 4, 2, 7) * 2.2;
+    const ring = (r / 2.2) % 1;
+    const col = ring < 0.3 ? hex(0xc9b58c) : mixRgb(hex(0xe2d3ae), hex(0xecdfbf), t.rand());
+    t.set(x, y, edge > 12.5 ? scaleRgb(col, 0.85) : col);
+  });
+}
+
+// Leaves with individual light-edged leaflets, some yellowed, and gaps.
+function paintFoliage(t, pal, count, gap) {
+  t.forEach((x, y) => {
+    t.set(x, y, ramp(pal, 0.12 + t.fbm(x, y, 4, 2) * 0.3), 255);
+  });
+  for (let i = 0; i < count; i++) {
+    const x = Math.floor(t.rand() * TEX);
+    const y = Math.floor(t.rand() * TEX);
+    const f = 0.3 + t.rand() * 0.7;
+    let c = ramp(pal, f);
+    if (t.rand() < 0.08) c = mixRgb(c, hex(0xb8b24a), 0.45); // a yellowing leaf
+    t.set(x, y, c);
+    t.set(x + 1, y, c);
+    t.set(x, y + 1, scaleRgb(c, 0.85));
+    t.set(x + 1, y + 1, scaleRgb(c, 0.7));
+    if (f > 0.72) t.set(x, y, scaleRgb(c, 1.2));
+  }
+  t.forEach((x, y) => {
+    if (t.noise(x, y, 8, 11) * 0.7 + t.rand() * 0.3 < gap) t.set(x, y, [0, 0, 0], 0);
+  });
+}
+
+// Pine bark: dark, scaly plates split by deep vertical fissures.
+function paintPineBark(t) {
+  const vor = t.voronoi(18, 4, 0.25); // cells stretched vertically
+  t.forEach((x, y) => {
+    const v = vor(x, y);
+    const edge = v.d2 - v.d1;
+    if (edge < 0.9) {
+      t.set(x, y, P.pineBark[0]);
+      return;
+    }
+    const f = 0.35 + v.value * 0.4 + (t.rand() - 0.5) * 0.18 + (edge < 1.8 ? -0.12 : 0.06);
+    t.set(x, y, ramp(P.pineBark, f));
+  });
+  // Resin: a few amber drops.
+  for (let i = 0; i < 2; i++) {
+    const x = Math.floor(t.rand() * TEX);
+    const y = Math.floor(t.rand() * TEX);
+    t.set(x, y, hex(0xc98a2c));
+    t.set(x, y + 1, hex(0x9a6120));
+  }
+}
+
+function paintPineTop(t) {
+  const c = (TEX - 1) / 2;
+  t.forEach((x, y) => {
+    const edge = Math.max(Math.abs(x - c), Math.abs(y - c));
+    if (edge > 13.5) {
+      t.set(x, y, ramp(P.pineBark, t.fbm(x, y, 8, 2) * 0.7 + t.rand() * 0.3));
+      return;
+    }
+    const r = Math.hypot(x - c, y - c) + t.fbm(x, y, 4, 2, 7) * 1.8;
+    const ring = (r / 1.8) % 1;
+    const col = ring < 0.35 ? hex(0x7a5232) : ramp(P.pineRings, t.rand());
+    t.set(x, y, edge > 12.5 ? scaleRgb(col, 0.82) : col);
+  });
+}
+
+// Needles: clusters of short diagonal strokes, dark blue-green.
+function paintPineNeedles(t) {
+  t.forEach((x, y) => t.set(x, y, ramp(P.pineNeedles, 0.1 + t.fbm(x, y, 4, 2) * 0.3), 255));
+  for (let i = 0; i < 70; i++) {
+    const x = Math.floor(t.rand() * TEX);
+    const y = Math.floor(t.rand() * TEX);
+    const c = ramp(P.pineNeedles, 0.35 + t.rand() * 0.65);
+    const dir = t.rand() < 0.5 ? 1 : -1;
+    const len = 3 + Math.floor(t.rand() * 3);
+    for (let k = 0; k < len; k++) t.set(x + k * dir, y + k, k === 0 ? scaleRgb(c, 1.15) : c);
+  }
+  t.forEach((x, y) => {
+    if (t.noise(x, y, 8, 5) * 0.65 + t.rand() * 0.35 < 0.2) t.set(x, y, [0, 0, 0], 0);
   });
 }
 
@@ -645,6 +825,12 @@ const PAINTERS = {
   flower_yellow: (t) => paintFlower(t, [0xc98a0a, 0xf5cf2f, 0xfff29a, 0xd9661a]),
   bricks: paintBricks,
   wool: paintWool,
+  birch_side: paintBirchBark,
+  birch_top: paintBirchTop,
+  birch_leaves: (t) => paintFoliage(t, P.birchLeaves, 110, 0.2),
+  pine_side: paintPineBark,
+  pine_top: paintPineTop,
+  pine_leaves: paintPineNeedles,
 };
 
 export function paintTile(name) {
@@ -653,6 +839,135 @@ export function paintTile(name) {
   const t = new Tile(name);
   painter(t);
   return t.data;
+}
+
+// ---------- Relief: height, normal and roughness maps ----------
+//
+// Each tile also gets a relief map (for the High/Ultra terrain shader's
+// normal mapping, parallax and specular light), stored as RGBA bytes:
+//   r, g: the tangent-space normal's x and y (u right, v up), 0.5 = flat
+//   b:    height (1 = top, 0 = deepest), for parallax occlusion mapping
+//   a:    roughness (0 = glossy, 1 = matte)
+// Heights come from each material's own structure where it has one (the
+// stone's mottling, the domes of cobbles and gravel, sand ripples), plus
+// brightness: in these pixel-art textures, light pixels are the raised
+// bits (pebbles, blades, leaf clusters) and dark ones the cracks and gaps.
+
+const RELIEF = {
+  // name: [bump strength, base roughness, weight of brightness in the height]
+  grass_top: [2.2, 0.72, 1],
+  grass_side: [2.0, 0.85, 1],
+  dirt: [2.2, 0.95, 1],
+  stone: [2.6, 0.72, 0.45],
+  cobblestone: [3.2, 0.78, 0.25],
+  sand: [1.6, 0.9, 0.5],
+  gravel: [3.0, 0.82, 0.3],
+  leaves: [2.4, 0.5, 1],
+  wood_side: [3.0, 0.88, 1],
+  wood_top: [1.6, 0.8, 1],
+  planks: [2.0, 0.66, 1],
+  bricks: [2.6, 0.85, 1],
+  bedrock: [3.0, 0.85, 1],
+  coal_ore: [2.6, 0.72, 0.6],
+  iron_ore: [2.6, 0.6, 0.6],
+  gold_ore: [2.6, 0.5, 0.6],
+  diamond_ore: [2.6, 0.4, 0.6],
+  glass: [0.6, 0.08, 1],
+  lumen: [2.2, 0.3, 1],
+  wool: [1.4, 1.0, 1],
+  birch_side: [2.2, 0.8, 1],
+  birch_top: [1.6, 0.8, 1],
+  birch_leaves: [2.2, 0.5, 1],
+  pine_side: [3.4, 0.9, 1],
+  pine_top: [1.6, 0.8, 1],
+  pine_leaves: [2.0, 0.55, 1],
+};
+
+function luminance(p, i) {
+  return (0.2126 * p[i] + 0.7152 * p[i + 1] + 0.0722 * p[i + 2]) / 255;
+}
+
+// Structural height (0-1) for materials that have a shape beyond their
+// brightness, or null.
+function structureHeight(name, t) {
+  const h = new Float32Array(TEX * TEX);
+  const wrap = (d) => (d > TEX / 2 ? d - TEX : d < -TEX / 2 ? d + TEX : d);
+  if (name === "stone" || name.endsWith("_ore")) {
+    t.forEach((x, y) => (h[y * TEX + x] = t.fbm(x, y, 2, 4, 0) * 0.8 + t.noise(x, y, 16, 5) * 0.2));
+  } else if (name === "cobblestone" || name === "gravel") {
+    const vor = name === "cobblestone" ? t.voronoi(13, 1) : t.voronoi(30, 2);
+    const size = name === "cobblestone" ? 4.5 : 2.6;
+    t.forEach((x, y) => {
+      const v = vor(x, y);
+      const edge = Math.min(1, (v.d2 - v.d1) / size);
+      const r = Math.hypot(wrap(x + 0.5 - v.cx), wrap(y + 0.5 - v.cy)) / (size * 1.6);
+      h[y * TEX + x] = Math.sqrt(edge) * 0.75 + Math.max(0, 1 - r) * 0.25; // rounded stones, low mortar
+    });
+  } else if (name === "sand") {
+    t.forEach((x, y) => (h[y * TEX + x] = Math.sin((y + t.fbm(x, y, 4, 2, 4) * 7) * 0.75) * 0.5 + 0.5));
+  } else {
+    return null;
+  }
+  return h;
+}
+
+function paintRelief(name, t) {
+  const [strength, rough, lumWeight] = RELIEF[name] || [1.2, 0.85, 1];
+  const p = t.data;
+  const structure = structureHeight(name, t);
+  const height = new Float32Array(TEX * TEX);
+  for (let y = 0; y < TEX; y++) {
+    for (let x = 0; x < TEX; x++) {
+      const i = y * TEX + x;
+      if (p[i * 4 + 3] < 128) {
+        height[i] = 0; // holes in leaves and plants
+        continue;
+      }
+      const lum = luminance(p, i * 4);
+      height[i] = structure ? structure[i] * (1 - lumWeight) + lum * lumWeight : lum;
+    }
+  }
+  // Normalize to the full 0-1 range so every material uses the whole depth.
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (let i = 0; i < height.length; i++) {
+    if (p[i * 4 + 3] < 128) continue;
+    lo = Math.min(lo, height[i]);
+    hi = Math.max(hi, height[i]);
+  }
+  const span = hi - lo > 1e-4 ? hi - lo : 1;
+  for (let i = 0; i < height.length; i++) height[i] = p[i * 4 + 3] < 128 ? 0 : (height[i] - lo) / span;
+  const hAt = (x, y) => height[((y + TEX) % TEX) * TEX + ((x + TEX) % TEX)];
+  const out = new Uint8Array(TEX * TEX * 4);
+  for (let y = 0; y < TEX; y++) {
+    for (let x = 0; x < TEX; x++) {
+      const i = y * TEX + x;
+      // Canvas rows go down, texture v goes up: d/dv = -d/dy.
+      const du = (hAt(x + 1, y) - hAt(x - 1, y)) * 0.5;
+      const dv = -(hAt(x, y + 1) - hAt(x, y - 1)) * 0.5;
+      let nx = -du * strength;
+      let ny = -dv * strength;
+      const len = Math.hypot(nx, ny, 1);
+      nx /= len;
+      ny /= len;
+      const lum = luminance(p, i * 4);
+      out[i * 4] = Math.round((nx * 0.5 + 0.5) * 255);
+      out[i * 4 + 1] = Math.round((ny * 0.5 + 0.5) * 255);
+      out[i * 4 + 2] = Math.round(height[i] * 255);
+      // Raised, lighter bits are a little smoother (worn), crevices rougher.
+      out[i * 4 + 3] = Math.round(clamp01(rough + (0.5 - height[i]) * 0.16 - (lum - 0.5) * 0.08) * 255);
+    }
+  }
+  return out;
+}
+
+// Pixels and relief map of one tile.
+function paintTileWithRelief(name) {
+  const painter = PAINTERS[name];
+  if (!painter) throw new Error(`No texture painter for tile "${name}"`);
+  const t = new Tile(name);
+  painter(t);
+  return { pixels: t.data, relief: paintRelief(name, t) };
 }
 
 function tileCanvas(pixels) {
@@ -665,19 +980,30 @@ function tileCanvas(pixels) {
 
 // Builds every block tile. Returns:
 //   texture: THREE.DataArrayTexture (one layer per TILE_NAMES entry)
+//   reliefTexture: the matching normal / height / roughness layers
 //   canvases: tile name -> 32x32 canvas (for UI icons)
 //   blockColors: block id -> [r, g, b] (sRGB 0-1) average visible color
+//   facePalette: { top, side }: Float32Array(256 * 3), each block's average
+//     top / side texture color in linear light (for distant terrain)
+const SRGB_TO_LINEAR = new Float32Array(256).map((_, i) => {
+  const c = i / 255;
+  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+});
+
 export function buildBlockTextures() {
   const layers = TILE_NAMES.length;
   const data = new Uint8Array(TEX * TEX * 4 * layers);
+  const reliefData = new Uint8Array(TEX * TEX * 4 * layers);
   const canvases = {};
   const tileAvg = [];
+  const tileLinear = [];
   for (let l = 0; l < layers; l++) {
-    const pixels = paintTile(TILE_NAMES[l]);
+    const { pixels, relief } = paintTileWithRelief(TILE_NAMES[l]);
     // DataArrayTexture rows start at v = 0 (the bottom), canvas rows at the
     // top, so flip vertically while copying.
     for (let y = 0; y < TEX; y++) {
       data.set(pixels.subarray(y * TEX * 4, (y + 1) * TEX * 4), (l * TEX * TEX + (TEX - 1 - y) * TEX) * 4);
+      reliefData.set(relief.subarray(y * TEX * 4, (y + 1) * TEX * 4), (l * TEX * TEX + (TEX - 1 - y) * TEX) * 4);
     }
     canvases[TILE_NAMES[l]] = tileCanvas(pixels);
     let r = 0;
@@ -692,6 +1018,18 @@ export function buildBlockTextures() {
       n++;
     }
     tileAvg.push(n ? [r / n / 255, g / n / 255, b / n / 255] : [0.8, 0.8, 0.8]);
+    // The average in linear light, which is what a fully mipmapped texture
+    // shows from far away (used for distant terrain).
+    let lr = 0;
+    let lg = 0;
+    let lb = 0;
+    for (let i = 0; i < pixels.length; i += 4) {
+      if (pixels[i + 3] < 128) continue;
+      lr += SRGB_TO_LINEAR[pixels[i]];
+      lg += SRGB_TO_LINEAR[pixels[i + 1]];
+      lb += SRGB_TO_LINEAR[pixels[i + 2]];
+    }
+    tileLinear.push(n ? [lr / n, lg / n, lb / n] : [0.6, 0.6, 0.6]);
   }
 
   const texture = new THREE.DataArrayTexture(data, TEX, TEX, layers);
@@ -705,13 +1043,31 @@ export function buildBlockTextures() {
   texture.wrapT = THREE.RepeatWrapping;
   texture.needsUpdate = true;
 
+  // Relief (normal, height, roughness): linear data, crisp per pixel like
+  // the colors, so every texel reads as a tiny bevelled facet.
+  const reliefTexture = new THREE.DataArrayTexture(reliefData, TEX, TEX, layers);
+  reliefTexture.format = THREE.RGBAFormat;
+  reliefTexture.type = THREE.UnsignedByteType;
+  reliefTexture.colorSpace = THREE.NoColorSpace;
+  reliefTexture.magFilter = THREE.NearestFilter;
+  reliefTexture.minFilter = THREE.NearestMipmapLinearFilter;
+  reliefTexture.generateMipmaps = true;
+  reliefTexture.wrapS = THREE.RepeatWrapping;
+  reliefTexture.wrapT = THREE.RepeatWrapping;
+  reliefTexture.needsUpdate = true;
+
   const blockColors = {};
   for (const info of Object.values(BLOCK_INFO)) {
     const top = tileAvg[info.faces.top];
     const side = tileAvg[info.faces.side];
     blockColors[info.id] = [(top[0] + side[0]) / 2, (top[1] + side[1]) / 2, (top[2] + side[2]) / 2];
   }
-  return { texture, canvases, blockColors };
+  const facePalette = { top: new Float32Array(256 * 3), side: new Float32Array(256 * 3) };
+  for (const info of Object.values(BLOCK_INFO)) {
+    facePalette.top.set(tileLinear[info.faces.top], info.id * 3);
+    facePalette.side.set(tileLinear[info.faces.side], info.id * 3);
+  }
+  return { texture, reliefTexture, canvases, blockColors, facePalette };
 }
 
 // Draws a block as a small isometric cube icon (or a flat sprite for

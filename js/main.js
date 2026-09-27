@@ -11,6 +11,7 @@ import { PostFX } from "./postfx.js";
 import { PRESETS, applyPreset, normalizePreset } from "./graphics.js";
 import { worldUniforms } from "./shaders.js";
 import { Inventory, HOTBAR_SIZE, makeStack } from "./inventory.js";
+import { itemInfo } from "./items.js";
 import { IconCache } from "./slot-view.js";
 import { Hud } from "./hud.js";
 import { InventoryScreen } from "./inventory-ui.js";
@@ -18,6 +19,14 @@ import { ItemEntities } from "./entities.js";
 import { HeldItem } from "./held-item.js";
 import { Interaction } from "./interaction.js";
 import { MobManager } from "./mobs.js";
+import { isUnderwater, surfaceHeight } from "./water.js";
+import { FallingBlocks } from "./falling.js";
+import { WeaponSystem } from "./weapons.js";
+import { BulletHoles } from "./decals.js";
+import { GRENADE_RADIUS } from "./effects.js";
+import { LodSystem } from "./lod.js";
+import { GrassField } from "./grass.js";
+import { UnderwaterMotes } from "./motes.js";
 
 // ---------- Seed ----------
 function parseSeedFromURL() {
@@ -52,9 +61,11 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 const scene = new THREE.Scene();
 
 // ---------- Settings ----------
-const DEFAULT_RENDER_DISTANCE = 10;
+// Chunks. Beyond each preset's detail distance, terrain is drawn as
+// simplified level-of-detail tiles (see lod.js).
+const DEFAULT_RENDER_DISTANCE = 20;
 const MIN_RENDER_DISTANCE = 2;
-const MAX_RENDER_DISTANCE = 16;
+const MAX_RENDER_DISTANCE = 100;
 const settings = loadSettings();
 
 function clampRenderDistance(value) {
@@ -70,25 +81,41 @@ let graphicsPreset = normalizePreset(settings.graphics);
 // own shaders use the shared uniforms in shaders.js (same distances).
 scene.fog = new THREE.Fog(0x9fc3e8, 60, 150);
 
-function updateFogDistances() {
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+camera.layers.enableAll(); // world, water and effects (postfx.js splits them into passes when needed)
+
+// Fog ends at the render distance; the far plane reaches past it (and past
+// the sky dome) so distant terrain isn't clipped before it has faded out.
+function updateViewDistance() {
   const end = (renderDistance - 0.3) * 16;
   const start = end * 0.72;
   worldUniforms.uFog.value.set(start, end, 0.0024, 0.0);
   scene.fog.near = start;
   scene.fog.far = end;
+  camera.far = Math.max(1000, renderDistance * 16 * 1.3 + 100);
+  camera.updateProjectionMatrix();
 }
-updateFogDistances();
-
-const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+updateViewDistance();
 
 // The light rig never changes shape at runtime (adding/removing lights would
 // force every lit material to recompile): one shadow-casting directional
 // light (sun or moon), one hemisphere light for built-in materials.
 const hemiLight = new THREE.HemisphereLight(0xbfd6ff, 0x3a3228, 1);
 scene.add(hemiLight);
+hemiLight.layers.enableAll(); // lights shine in every render pass (see layers.js)
 const sunLight = new THREE.DirectionalLight(0xffffff, 1);
+sunLight.layers.enableAll();
 scene.add(sunLight);
 scene.add(sunLight.target);
+// Two more sun shadow cascades (larger, coarser maps). They give no light
+// of their own; only their shadow maps are used (see SUN_SHADOW in shaders.js).
+const cascadeLights = [1, 2].map(() => {
+  const light = new THREE.DirectionalLight(0xffffff, 0);
+  light.layers.enableAll();
+  scene.add(light);
+  scene.add(light.target);
+  return light;
+});
 
 const postfx = new PostFX(renderer);
 const drawingSize = new THREE.Vector2();
@@ -106,6 +133,19 @@ window.addEventListener("resize", onResize);
 // ---------- World ----------
 const world = new World(scene, SEED);
 world.loadEdits(loadEdits(SEED));
+postfx.setWaterMaterial(world.materials.water);
+world.meshOptions.fancyLeaves = PRESETS[graphicsPreset].fancyLeaves; // before the first chunks are meshed
+// Decides which chunks are meshed and shown, and draws the land beyond them.
+const lod = new LodSystem(scene, world, SEED);
+lod.configure({ renderDistance, detailDistance: PRESETS[graphicsPreset].detailDistance });
+// 3D grass blades near the player (High/Ultra).
+const grass = new GrassField(scene, world);
+
+// Plans chunk streaming and LOD tiles around a position (cheap when nothing changed).
+function streamAround(x, z) {
+  lod.plan(x, z);
+  world.ensureChunksAround(x, z, lod.worldPlan);
+}
 
 let pendingSave = false;
 let lastSaveTime = 0;
@@ -117,19 +157,7 @@ world.onEdit = () => {
 // changed since the last save get re-encoded.
 const encodedEditCache = new Map();
 
-function findSpawnColumn() {
-  let bestX = 0;
-  let bestZ = 0;
-  for (let r = 0; r < 40; r += 4) {
-    const h = world.heightAt(bestX, bestZ);
-    if (h > SEA_LEVEL + 1) return [bestX, bestZ];
-    bestX += 6;
-    bestZ += 4;
-  }
-  return [bestX, bestZ];
-}
-
-const [spawnX, spawnZ] = findSpawnColumn();
+const [spawnX, spawnZ] = world.terrain.spawnColumn();
 
 // A saved player (position, inventory, ...) for this world, if any.
 const savedPlayer = loadPlayer(SEED);
@@ -143,7 +171,7 @@ const startZ = savedPos ? savedPos[2] : spawnZ + 0.5;
 // menu is showing), instead of freezing the page for seconds at startup.
 const INITIAL_SYNC_RADIUS = 2;
 world.prepareArea(startX, startZ, INITIAL_SYNC_RADIUS);
-world.ensureChunksAround(startX, startZ, renderDistance);
+streamAround(startX, startZ);
 
 // Main-thread milliseconds per frame spent generating/meshing chunks. Larger
 // while a menu is open (nothing to keep smooth), smaller while playing.
@@ -161,7 +189,7 @@ ui.graphicsSelect.value = graphicsPreset;
 const player = new Player(camera, world, canvas);
 const inventory = new Inventory();
 const audio = new Audio();
-const sky = new Sky(scene, sunLight, hemiLight);
+const sky = new Sky(scene, sunLight, hemiLight, cascadeLights);
 const effects = new EffectsSystem(scene, world, audio);
 const icons = new IconCache(world.tileCanvases);
 const hud = new Hud({ icons, inventory });
@@ -171,6 +199,10 @@ held.resize(camera.aspect);
 const interaction = new Interaction({ scene, world, player, inventory, entities, audio, effects, held });
 const invScreen = new InventoryScreen({ icons, inventory, audio });
 const mobs = new MobManager({ scene, world, player, entities, audio, effects, sky });
+const falling = new FallingBlocks(scene, world);
+const decals = new BulletHoles(scene, world);
+const weapons = new WeaponSystem({ scene, world, player, effects, audio, mobs, held, decals });
+interaction.weapons = weapons;
 interaction.combat = mobs;
 
 // The creative starter hotbar (the classic building blocks).
@@ -267,6 +299,7 @@ interaction.onChange = markInventoryChanged;
 invScreen.onChange = markInventoryChanged;
 invScreen.onDrop = (stack) => interaction.throwStack(stack);
 world.onBlockPopped = (x, y, z, id) => interaction.blockPopped(x, y, z, id);
+falling.onBreak = (x, y, z, id) => interaction.blockPopped(x, y, z, id);
 
 entities.onPickup = (item) => {
   if (player.dead) return item.count;
@@ -283,13 +316,16 @@ player.onFlightToggle = (enabled) => audio.playFlightToggle(enabled);
 // ---------- Damage, death and respawn ----------
 const DEATH_MESSAGES = {
   fall: "Fell from a high place",
-  orb_fall: "Sent flying by your own Blast Orb",
   drown: "Drowned",
   void: "Fell out of the world",
-  orb: "Blown up by your own Blast Orb",
+  grenade: "Blown up by your own grenade",
+  bazooka: "Blown up by your own bazooka",
+  grenade_fall: "Sent flying by your own grenade",
+  bazooka_fall: "Sent flying by your own bazooka",
   zombie: "Killed by a zombie",
 };
 let lastBlastHitTime = -Infinity;
+let lastBlastSource = "grenade";
 let deathCause = null;
 
 player.onHurt = (amount, cause) => {
@@ -299,8 +335,8 @@ player.onHurt = (amount, cause) => {
 };
 
 player.onDeath = (cause) => {
-  // A fall right after being launched by an explosion was the orb's doing.
-  if (cause === "fall" && performance.now() - lastBlastHitTime < 6000) cause = "orb_fall";
+  // A fall right after being launched by an explosion was the explosive's doing.
+  if (cause === "fall" && performance.now() - lastBlastHitTime < 6000) cause = `${lastBlastSource}_fall`;
   deathCause = cause;
   audio.playDeath();
   if (invScreen.isOpen) invScreen.close();
@@ -352,7 +388,7 @@ function respawn() {
   player.yaw = 0;
   player.pitch = 0;
   player.syncCamera();
-  world.ensureChunksAround(player.position.x, player.position.z, renderDistance);
+  streamAround(player.position.x, player.position.z);
   deathCause = null;
   playerDirty = true;
   gameState = "paused";
@@ -361,29 +397,37 @@ function respawn() {
 }
 hud.respawnBtn.addEventListener("click", respawn);
 
-// Blast Orb explosions hurt (lethally up close) and shove the player away
-// from the blast center with an upward kick, falling off with distance.
-effects.onExplosion = (center, radius) => {
+// Explosions hurt (lethally up close) and shove the player away from the
+// blast center with an upward kick, falling off with distance and scaled
+// by the size of the blast (a bazooka rocket is 5 grenades wide).
+effects.onExplosion = (center, radius, source) => {
   mobs.explosion(center, radius);
+  const size = Math.sqrt(radius / GRENADE_RADIUS);
   const offset = player.position.clone();
   offset.y += 0.9; // body center
   offset.sub(center);
   const dist = offset.length();
   const hurtReach = radius * 1.8;
   if (dist < hurtReach && !player.dead) {
-    const dmg = Math.floor(30 * Math.pow(1 - dist / hurtReach, 1.3));
-    if (dmg > 0 && player.damage(dmg, "orb")) lastBlastHitTime = performance.now();
+    const dmg = Math.floor(30 * size * Math.pow(1 - dist / hurtReach, 1.3));
+    if (dmg > 0 && player.damage(dmg, source)) {
+      lastBlastHitTime = performance.now();
+      lastBlastSource = source;
+    }
   }
   const reach = radius * 2.2;
   if (dist >= reach || player.dead) return;
-  const strength = (1 - dist / reach) * 22;
+  const strength = Math.min(40, (1 - dist / reach) * 22 * size);
   if (dist < 1e-3) offset.set(0, 1, 0);
   offset.normalize();
   offset.y = Math.max(offset.y, 0) + 0.45;
   offset.normalize().multiplyScalar(strength);
-  offset.y = Math.min(offset.y, 13);
+  offset.y = Math.min(offset.y, 13 * Math.min(size, 1.6));
   player.applyImpulse(offset);
-  if (!player.creative) lastBlastHitTime = performance.now();
+  if (!player.creative) {
+    lastBlastHitTime = performance.now();
+    lastBlastSource = source;
+  }
 };
 
 // ---------- Game mode ----------
@@ -402,7 +446,7 @@ ui.modeSelect.addEventListener("change", () => setMode(ui.modeSelect.value));
 ui.pauseModeSelect.addEventListener("change", () => setMode(ui.pauseModeSelect.value));
 
 // ---------- Graphics ----------
-const allWorldMaterials = [world.materials.opaque, world.materials.cutout, world.materials.water, world.materials.cutoutDepth];
+const allWorldMaterials = [world.materials.opaque, world.materials.cutout, world.materials.water, world.materials.cutoutDepth, lod.material, grass.material];
 
 function setGraphics(name, { adoptRenderDistance = false } = {}) {
   graphicsPreset = normalizePreset(name);
@@ -413,8 +457,12 @@ function setGraphics(name, { adoptRenderDistance = false } = {}) {
     sky,
     atlas: world.atlas,
     materials: allWorldMaterials,
+    chunkMaterials: world.materials,
     onResize,
   });
+  lod.configure({ detailDistance: preset.detailDistance });
+  grass.configure({ level: preset.grass });
+  world.setMeshOptions({ fancyLeaves: preset.fancyLeaves });
   if (adoptRenderDistance) setRenderDistance(preset.renderDistance);
   ui.graphicsSelect.value = graphicsPreset;
   ui.graphicsHintEl.textContent = describePreset(graphicsPreset);
@@ -425,18 +473,23 @@ function setGraphics(name, { adoptRenderDistance = false } = {}) {
 function describePreset(name) {
   const p = PRESETS[name];
   const parts = [];
-  parts.push(p.shadows ? `${p.shadows}px sun shadows` : "no shadows");
+  if (p.cascades.length === 0) parts.push("no shadows");
+  else parts.push(`${p.cascades.length > 1 ? `${p.cascades.length}-cascade` : "basic"} ${p.shadowQuality === 3 ? "soft " : ""}sun shadows`);
+  if (p.normalMap) parts.push(p.pom ? "3D parallax textures" : "normal-mapped textures");
+  if (p.water !== "simple") parts.push(p.water === "ssr" ? "reflective, refractive water" : "refractive water");
+  if (p.grass) parts.push("3D grass");
   parts.push(p.post ? "HDR bloom & color grading" : "no post-processing");
   if (p.godRays) parts.push("light shafts");
   if (p.caustics) parts.push("water caustics");
-  return `${parts.join(", ")}. Suggested render distance: ${p.renderDistance}.`;
+  return `${parts.join(", ")}. Full detail to about ${p.detailDistance + 2} chunks, then simplified terrain. Suggested render distance: ${p.renderDistance}.`;
 }
 
 function setRenderDistance(value) {
   renderDistance = clampRenderDistance(value);
   ui.renderDistanceInput.value = String(renderDistance);
   ui.renderDistanceValueEl.textContent = String(renderDistance);
-  updateFogDistances();
+  updateViewDistance();
+  lod.configure({ renderDistance });
   settings.renderDistance = renderDistance;
   saveSettings(settings);
 }
@@ -533,6 +586,7 @@ const DIGIT_CODES = ["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6",
 function selectSlot(i) {
   inventory.selected = ((i % HOTBAR_SIZE) + HOTBAR_SIZE) % HOTBAR_SIZE;
   interaction.eating = 0;
+  weapons.cancel();
   markInventoryChanged();
 }
 
@@ -552,7 +606,6 @@ window.addEventListener("keydown", (e) => {
   if (e.repeat) return;
   if (e.code === "KeyE") openInventory("inventory");
   else if (e.code === "KeyQ") interaction.dropSelected(e.ctrlKey);
-  else if (e.code === "KeyF") effects.throwOrb(player.getEyePosition(), player.getForwardVector(), player.velocity);
 });
 
 canvas.addEventListener("wheel", (e) => {
@@ -582,6 +635,13 @@ const sunWorldPos = new THREE.Vector3();
 const lookDir = new THREE.Vector3();
 let eyeAdaptation = 1;
 let underwater = false;
+let waterSurfaceY = 0; // the water surface above the eye, while under water
+let dawnDusk = 0; // 1 around sunrise and sunset
+let eyeSkyLight = 1; // sky light at the eye (0-1): no light shafts in dark flooded caves
+const refractedSun = new THREE.Vector3(0, 1, 0);
+const underwaterRayColor = new THREE.Color();
+// Drifting particles in the water around the camera.
+const motes = new UnderwaterMotes(scene);
 let heldLight = { sky: 15, block: 0 };
 
 function updateEnvironment(dt) {
@@ -590,14 +650,32 @@ function updateEnvironment(dt) {
   sky.update(dt, eye, lookDir);
   worldUniforms.uTime.value += dt;
 
-  // Under water: murky blue fog and a tinted, wobbly screen.
-  const eyeBlock = world.getBlock(Math.floor(eye.x), Math.floor(eye.y), Math.floor(eye.z));
-  underwater = eyeBlock === BLOCK.WATER;
+  // Under water (below the drawn, waving surface): murky blue fog and a
+  // tinted, wobbly screen.
+  underwater = isUnderwater(world, eye.x, eye.y, eye.z, worldUniforms.uTime.value, worldUniforms.uWaveStrength.value);
   worldUniforms.uUnderwater.value = underwater ? 1 : 0;
   const eyeLight = world.lightAt(eye.x, eye.y, eye.z);
   heldLight = eyeLight;
   const wl = Math.max(0.15, (eyeLight.sky / 15) * sky.daylight + 0.1);
-  worldUniforms.uWaterFogColor.value.setRGB(0.02 * wl, 0.11 * wl, 0.16 * wl);
+  worldUniforms.uWaterFogColor.value.setRGB(0.03 * wl, 0.135 * wl, 0.15 * wl); // teal murk
+  eyeSkyLight = eyeLight.sky / 15;
+  if (underwater) {
+    // The surface above (for the light shafts), and sunlight bent into the water.
+    let y = Math.floor(eye.y);
+    while (y < 63 && world.getBlock(eye.x, y + 1, eye.z) === BLOCK.WATER) y++;
+    waterSurfaceY = surfaceHeight(y, eye.x, eye.z, worldUniforms.uTime.value, worldUniforms.uWaveStrength.value);
+    const L = worldUniforms.uLightDir.value;
+    const h = Math.hypot(L.x, L.z);
+    const hr = h / 1.33;
+    refractedSun.set(h > 1e-4 ? (L.x / h) * hr : 0, Math.sqrt(Math.max(0, 1 - hr * hr)), h > 1e-4 ? (L.z / h) * hr : 0);
+  }
+  motes.update(eye, worldUniforms.uTime.value, underwater, wl, drawingSize.y || window.innerHeight);
+
+  // Low mist over the water, thickest around sunrise and sunset.
+  const e = worldUniforms.uSunDir.value.y;
+  dawnDusk = Math.exp(-((e / 0.2) ** 2));
+  const mist = PRESETS[graphicsPreset].mist;
+  worldUniforms.uMist.value.set(mist * (0.003 + 0.022 * dawnDusk + 0.006 * worldUniforms.uNight.value), 2.5 + 3 * dawnDusk, 1, SEA_LEVEL + 0.9);
 
   // Eye adaptation: brighten gradually in dark places (caves, at night), less
   // so when a torch is nearby.
@@ -625,7 +703,13 @@ function renderFrame() {
         exposure,
         sunWorldPos,
         sunColor: worldUniforms.uSunGlowColor.value,
-        raysStrength: underwater ? 0 : 0.85 * sunUp,
+        // Sunbeams: stronger and wider in the low, hazy light of dawn and dusk.
+        raysStrength: underwater ? 0 : (0.85 + 0.7 * dawnDusk) * sunUp,
+        raysSpread: 8 - 4.5 * dawnDusk,
+        underwaterRays: underwater ? 1.6 * sky.daylight * eyeSkyLight : 0,
+        underwaterLight: refractedSun,
+        underwaterColor: underwaterRayColor.setRGB(0.55, 0.9, 0.95).multiply(worldUniforms.uLightColor.value),
+        surfaceY: waterSurfaceY,
         underwater,
         night: worldUniforms.uNight.value,
         bloomStrength: 0.11,
@@ -665,17 +749,48 @@ window.__voxelands = {
   interaction,
   invScreen,
   mobs,
+  falling,
+  weapons,
+  decals,
+  audio,
+  lod,
+  grass,
+  motes,
+  streamAround,
+  water: { isUnderwater, surfaceHeight },
   hud,
   held,
   uniforms: worldUniforms,
   spawn: { x: spawnX, z: spawnZ },
   setGraphics,
+  setRenderDistance,
   setMode,
   respawn,
   flushSave,
   // Renders one frame and returns simple statistics of the image (mean and
   // standard deviation of luminance, share of near-black pixels). Read back
   // synchronously right after rendering, while the drawing buffer is valid.
+  // Renders a frame and returns the average [r, g, b] (0-255) of a 5x5
+  // pixel box at each [x, y] (0-1, from the top left).
+  samplePixels(points) {
+    renderFrame();
+    const gl = renderer.getContext();
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    const px = new Uint8Array(4);
+    return points.map(([sx, sy]) => {
+      const sum = [0, 0, 0];
+      for (let dy = -2; dy <= 2; dy++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          const x = Math.min(w - 1, Math.max(0, Math.round(sx * w) + dx));
+          const y = Math.min(h - 1, Math.max(0, Math.round((1 - sy) * h) + dy));
+          gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+          for (let k = 0; k < 3; k++) sum[k] += px[k] / 25;
+        }
+      }
+      return sum.map(Math.round);
+    });
+  },
   captureStats() {
     renderFrame();
     const gl = renderer.getContext();
@@ -724,20 +839,24 @@ function animate() {
   const running = gameState === "playing" || gameState === "inventory" || gameState === "dead";
   if (running) {
     player.update(dt);
-    world.ensureChunksAround(player.position.x, player.position.z, renderDistance);
     if (player.stepEvent) audio.playFootstep(BLOCK_INFO[player.stepBlock]?.sound);
-    if (player.jumpEvent) audio.playJump();
     if (player.splashEvent) audio.playSplash();
     effects.listener.copy(player.getEyePosition());
     effects.update(dt);
     effects.shake.apply(camera);
     entities.update(dt, player);
     mobs.update(dt);
-    ui.setOrbCooldown(effects.cooldownFraction());
+    falling.update(dt);
+    // A drawn throw is dropped if the grenade leaves the hand (thrown away, swapped).
+    if (weapons.charging && itemInfo(inventory.selectedStack?.id)?.weapon?.kind !== "grenade") weapons.cancel();
+    weapons.update(dt);
   } else {
     player.syncCamera(); // keep the view behind the menus sensible
   }
+  streamAround(player.position.x, player.position.z);
   world.processQueues(gameState === "playing" ? STREAM_BUDGET_PLAYING_MS : STREAM_BUDGET_MENU_MS);
+  lod.update();
+  grass.update(player.position);
 
   interaction.updateTarget(gameState === "playing");
   if (gameState === "playing") interaction.update(dt);
@@ -752,6 +871,8 @@ function animate() {
   updateEnvironment(dt);
   hud.update(dt, player);
   hud.setAttackCharge(gameState === "playing" ? mobs.charge(interaction.tool) : 1);
+  hud.setThrowCharge(gameState === "playing" ? weapons.charge : 0);
+  held.setItem(inventory.selectedStack?.id ?? 0); // follows the selected slot (no-op when unchanged)
   held.update(dt, player, heldLight, camera, interaction.eating);
 
   ui.updateFps(frameTime); // real frame time, so slow frames aren't hidden by the clamp

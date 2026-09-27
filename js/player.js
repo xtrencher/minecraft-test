@@ -63,6 +63,7 @@ export class Player {
     this._voidTimer = 0;
     this._airborneMaxY = null;
     this._eyeOffset = 0; // smoothed sneak camera drop
+    this.recoil = 0; // visual upward camera kick from firing (radians), settles quickly
 
     this.stepEvent = false;
     this.jumpEvent = false;
@@ -182,6 +183,11 @@ export class Player {
     if (!this.flying) this.velocity.y = Math.max(this.velocity.y, 0) + impulse.y;
   }
 
+  // Kicks the view up a little (gun recoil); purely visual, it settles by itself.
+  kick(amount) {
+    this.recoil = Math.min(0.25, this.recoil + amount);
+  }
+
   // Deals damage in half-hearts. Returns true if it was applied (creative
   // players, the dead and the briefly invulnerable take none).
   damage(amount, cause) {
@@ -239,7 +245,7 @@ export class Player {
       drop = k * k * 1.15;
     }
     this.camera.rotation.order = "YXZ";
-    this.camera.rotation.set(this.pitch, this.yaw, roll);
+    this.camera.rotation.set(Math.min(Math.PI / 2, this.pitch + this.recoil), this.yaw, roll);
     this.camera.position.copy(this.getEyePosition());
     this.camera.position.y -= drop;
   }
@@ -276,6 +282,7 @@ export class Player {
     this.stepEvent = false;
     this._invulnerable = Math.max(0, this._invulnerable - dt);
     this.hurtTime += dt;
+    this.recoil *= Math.exp(-14 * dt);
 
     if (this.dead) {
       this._deathTime += dt;

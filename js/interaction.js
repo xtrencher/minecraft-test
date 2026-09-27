@@ -84,6 +84,7 @@ export class Interaction {
     this.onChange = null; // () => void: inventory contents changed
     // The mob system (raycast, attack, charge, swing, overlapsBlock), if any.
     this.combat = null;
+    this.weapons = null; // the weapon system (grenades, pistol, bazooka), if any
     this.entityHit = null; // { mob, distance } under the crosshair
   }
 
@@ -115,7 +116,10 @@ export class Interaction {
     } else if (button === 2) {
       this.rightDown = true;
       this._placeTimer = 0;
-      this._use();
+      // A weapon or grenade in hand is used instead of placing or opening.
+      const weapon = this._weapon();
+      if (weapon && this.weapons) this.weapons.press(weapon.kind);
+      else this._use();
     } else if (button === 1) {
       this._pickBlock();
     }
@@ -128,6 +132,7 @@ export class Interaction {
     } else if (button === 2) {
       this.rightDown = false;
       this.eating = 0;
+      if (this.weapons) this.weapons.release();
     }
   }
 
@@ -136,6 +141,13 @@ export class Interaction {
     this.rightDown = false;
     this.eating = 0;
     this._stopMining();
+    if (this.weapons) this.weapons.cancel();
+  }
+
+  // The selected item's weapon info ({ kind }), or null.
+  _weapon() {
+    const s = this.inventory.selectedStack;
+    return s ? itemInfo(s.id)?.weapon ?? null : null;
   }
 
   // Q: throw one of the held item (the whole stack with Ctrl).
@@ -371,7 +383,7 @@ export class Interaction {
   }
 
   _updateUse(dt) {
-    if (!this.rightDown) return;
+    if (!this.rightDown || this._weapon()) return; // weapons fire once per click
     const stack = this.inventory.selectedStack;
     const info = stack ? itemInfo(stack.id) : null;
     if (this.eating > 0) {
@@ -388,7 +400,6 @@ export class Interaction {
       if (this.eating >= EAT_TIME) {
         this.player.heal(info.food);
         this.inventory.consumeSelected(1);
-        this.audio.playBurp();
         this.eating = 0;
         this._changed();
       }

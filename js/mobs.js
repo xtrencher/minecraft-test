@@ -5,7 +5,7 @@
 // physics against the voxel world, melee combat both ways, damage from Blast
 // Orb explosions and daylight, death animations, drops and sounds.
 import * as THREE from "three";
-import { BLOCK, IS_SOLID } from "./blocks.js";
+import { BLOCK, IS_SOLID, IS_LEAVES } from "./blocks.js";
 import { ITEM, meleeDamage } from "./items.js";
 import { sweepAxis, rayAabb } from "./physics.js";
 import { createMobModel } from "./mob-models.js";
@@ -222,7 +222,7 @@ export class MobManager {
     let y = Math.random() < 0.5 ? top + 1 : 2 + Math.floor(Math.random() * Math.max(1, top - 3));
     for (let k = 0; k < 12 && y > 1; k++, y--) {
       const below = this.world.getBlock(x, y - 1, z);
-      if (!IS_SOLID[below] || below === BLOCK.LEAVES) continue;
+      if (!IS_SOLID[below] || IS_LEAVES[below]) continue;
       if (!this._freeAt(x, y, z, SPECIES.zombie.h)) continue;
       if (this._effectiveLight(x, y, z) > 4) return false;
       this.spawn("zombie", x + 0.5, y, z + 0.5);
@@ -588,20 +588,39 @@ export class MobManager {
     this._remove(i);
   }
 
-  // Blast Orb explosions hurt and fling mobs like they do the player.
+  // Explosions hurt and fling mobs like they do the player, scaled by size.
   explosion(center, radius) {
     const reach = radius * 1.8;
+    const size = Math.sqrt(radius / 7);
     for (const m of this.mobs) {
       if (m.dead) continue;
       const d = this._tmp.set(m.pos.x - center.x, m.pos.y + m.spec.h / 2 - center.y, m.pos.z - center.z);
       const dist = d.length();
       if (dist >= reach) continue;
-      const dmg = Math.floor(30 * Math.pow(1 - dist / reach, 1.3));
+      const f = 1 - dist / reach;
+      const dmg = Math.floor(30 * size * Math.pow(f, 1.3));
       const dir = { x: d.x / (dist || 1), z: d.z / (dist || 1) };
       m.invulnerable = 0;
-      this._hurt(m, dmg, dir, (1 - dist / reach) * 16);
-      m.vel.y = Math.max(m.vel.y, (1 - dist / reach) * 12);
+      this._hurt(m, dmg, dir, Math.min(30, f * 16 * size));
+      m.vel.y = Math.max(m.vel.y, Math.min(20, f * 12 * size));
     }
+  }
+
+  // A bullet (or other projectile) hits `mob` travelling along `dir`.
+  shoot(mob, damage, dir, knockback = 4) {
+    const len = Math.hypot(dir.x, dir.z) || 1;
+    mob.invulnerable = 0; // every shot counts
+    return this._hurt(mob, damage, { x: dir.x / len, z: dir.z / len }, knockback);
+  }
+
+  // The first living mob whose body is within `r` of point `p`, or null.
+  sphereHit(p, r) {
+    for (const m of this.mobs) {
+      if (m.dead) continue;
+      const hr = m.spec.r + r;
+      if (Math.abs(p.x - m.pos.x) < hr && Math.abs(p.z - m.pos.z) < hr && p.y > m.pos.y - r && p.y < m.pos.y + m.spec.h + r) return m;
+    }
+    return null;
   }
 
   // ---------- Player combat ----------

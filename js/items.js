@@ -31,6 +31,9 @@ export const ITEM = Object.freeze({
   STONE_SHOVEL: 283,
   IRON_SHOVEL: 284,
   DIAMOND_SHOVEL: 285,
+  GRENADE: 286,
+  PISTOL: 287,
+  BAZOOKA: 288,
 });
 
 // Tool materials: tier (what they can harvest), mining speed multiplier,
@@ -55,6 +58,10 @@ const ITEM_DEFS = {
   [ITEM.RAW_MEAT]: { name: "Raw Meat", icon: "raw_meat", food: 2 },
   [ITEM.COOKED_MEAT]: { name: "Cooked Meat", icon: "cooked_meat", food: 8 },
   [ITEM.FLUFF]: { name: "Fluff", icon: "fluff" },
+  // Weapons never run out: unlimited ammo, no reloading.
+  [ITEM.GRENADE]: { name: "Grenade", icon: "grenade", stack: 1, weapon: { kind: "grenade" } },
+  [ITEM.PISTOL]: { name: "Pistol", icon: "pistol", stack: 1, weapon: { kind: "pistol" } },
+  [ITEM.BAZOOKA]: { name: "Bazooka", icon: "bazooka", stack: 1, weapon: { kind: "bazooka" } },
 };
 
 const TOOL_KINDS = [
@@ -147,6 +154,9 @@ export function blockDrops(blockId, tool, rand = Math.random) {
       if (r < 0.1) return [[ITEM.STICK, 1]];
       return [];
     }
+    case BLOCK.BIRCH_LEAVES:
+    case BLOCK.PINE_LEAVES:
+      return rand() < 0.05 ? [[ITEM.STICK, 1]] : [];
     default:
       return [[blockId, 1]];
   }
@@ -159,7 +169,7 @@ export function meleeDamage(tool) {
 // Everything offered in the creative inventory, in display order.
 export const CREATIVE_ITEMS = [
   BLOCK.GRASS, BLOCK.DIRT, BLOCK.STONE, BLOCK.COBBLESTONE, BLOCK.SAND, BLOCK.GRAVEL, BLOCK.WOOD, BLOCK.PLANKS,
-  BLOCK.LEAVES, BLOCK.GLASS, BLOCK.BRICKS, BLOCK.WOOL, BLOCK.CRAFTING_TABLE, BLOCK.TORCH, BLOCK.LUMEN, BLOCK.BEDROCK,
+  BLOCK.LEAVES, BLOCK.OAK_BARK, BLOCK.BIRCH_LOG, BLOCK.BIRCH_LEAVES, BLOCK.PINE_LOG, BLOCK.PINE_LEAVES, BLOCK.GLASS, BLOCK.BRICKS, BLOCK.WOOL, BLOCK.CRAFTING_TABLE, BLOCK.TORCH, BLOCK.LUMEN, BLOCK.BEDROCK,
   BLOCK.COAL_ORE, BLOCK.IRON_ORE, BLOCK.GOLD_ORE, BLOCK.DIAMOND_ORE, BLOCK.TALL_GRASS, BLOCK.FLOWER_RED, BLOCK.FLOWER_YELLOW,
   ITEM.STICK, ITEM.COAL, ITEM.IRON_INGOT, ITEM.GOLD_INGOT, ITEM.DIAMOND, ITEM.FLUFF,
   ITEM.APPLE, ITEM.GOLDEN_APPLE, ITEM.RAW_MEAT, ITEM.COOKED_MEAT,
@@ -167,4 +177,5 @@ export const CREATIVE_ITEMS = [
   ITEM.WOOD_PICKAXE, ITEM.STONE_PICKAXE, ITEM.IRON_PICKAXE, ITEM.DIAMOND_PICKAXE,
   ITEM.WOOD_AXE, ITEM.STONE_AXE, ITEM.IRON_AXE, ITEM.DIAMOND_AXE,
   ITEM.WOOD_SHOVEL, ITEM.STONE_SHOVEL, ITEM.IRON_SHOVEL, ITEM.DIAMOND_SHOVEL,
+  ITEM.GRENADE, ITEM.PISTOL, ITEM.BAZOOKA,
 ];
