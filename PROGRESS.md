@@ -140,3 +140,25 @@ Also deliberately avoided a third bug before writing any code for it: animating 
 - I'd also want to test on a couple of real GPUs/browsers rather than only the sandbox's software renderer — SwiftShader caught real bugs, but it's not a substitute for confirming smoothness on real hardware at higher render distances.
 
 **Rough size:** ~2,000 lines of JavaScript across 11 modules (`main.js` ~275, `world.js` ~280, `blocks.js` ~245, `player.js` ~235, `chunk.js` ~155, `ui.js` ~120, `effects.js` ~125, `sky.js` ~95, `audio.js` ~90, `noise.js` ~90, `storage.js` ~50), plus a ~240-line `index.html` and a small standalone test harness under `/tools`.
+
+---
+
+# Round 2 — upgrade log
+
+## Phase 1: Bug fixes — DONE
+
+**1. Inverted W/S movement (fixed).** Root cause in `Player.update()` (`js/player.js`): the camera-space input vector (x = right, z = backward, because the camera looks down −Z) was rotated into world space with the wrong sign on both `moveZ` terms (`worldX = moveX·cos − moveZ·sin`, `worldZ = −moveX·sin − moveZ·cos`). That produced `(+sin yaw, +cos yaw)` for W, i.e. exactly the *negated* forward vector, while the strafe terms happened to be right (which is why A/D worked). Fixed to the proper rotation about +Y (`worldX = moveX·cos + moveZ·sin`, `worldZ = −moveX·sin + moveZ·cos`), which makes W produce `(−sin yaw, −cos yaw)`, the same forward vector `getForwardVector()` uses for aiming.
+
+**Test first, then fix:** I wrote the new movement check before touching `player.js` and confirmed it failed on the old code (`KeyW at yaw 0 moved in the wrong direction (forward=-1.00)`), then applied the fix and watched it pass. The check lifts the player above the build height in flight mode (nothing to collide with), holds each of W/S/A/D, and compares the measured displacement with the camera's forward/right vectors at two different headings (yaw 0 and 2.2), plus W+D for the 45° diagonal and a walking-on-the-ground check. It waits on *distance moved* rather than a fixed time, so it's robust to slow software rendering. To make this possible, `main.js` now exposes a small debug/test hook, `window.__voxelands` (world, player, camera, spawn, game state, render distance); no game code depends on it.
+
+**2. Default render distance is now 10 chunks** (was 4), still adjustable in the pause menu (slider range widened to 2–16), and the chosen value is now saved in `localStorage` (`voxelands_v1_settings`) so it sticks across reloads.
+
+Going from 4 to 10 chunks means ~6× more chunks (317 vs. ~50), and the old startup code generated *every* chunk in range synchronously before the first frame, while the per-frame loop re-scanned and re-sorted the whole queue every single frame. So the render-distance change came with streaming changes to keep it smooth:
+- Only a radius-2 area around spawn is generated synchronously (so the player can't fall through); the rest streams in while the start menu is showing. Page-ready time stays under ~1 s.
+- `World.processQueues(budgetMs)` is now **time-budgeted** (5 ms/frame while playing, 14 ms while a menu is open) instead of "N chunks per frame", so frame time stays bounded no matter how expensive a chunk is.
+- `ensureChunksAround()` only re-plans (queue re-prioritization, unloading) when the player crosses into a new chunk or the render distance changes, and it now drops queued chunks that fell out of range instead of generating them just to unload them.
+- Chunks touched by block edits go into a separate queue that is remeshed first, unbudgeted, so the player's own edits never wait behind background streaming.
+
+Measured in headless Chromium: chunk generation ≈ 0.1 ms and meshing ≈ 1.2 ms per chunk, so the full radius-10 world is ~1 s of main-thread work spread across frames.
+
+**Testing:** The smoke test was restructured into named checks (a failure in one no longer hides the others): page load, default render distance (slider *and* live game value), Play/pointer-lock, per-key movement directions, full streaming of the radius-10 area (≥300 chunks), slider change applied + persisted, walking, break/place/hotbar/Blast Orb/flight, HUD, edit persistence across reload. All 11 checks pass with zero console errors. The CDN redirect in the test now covers any file under the pinned `three@0.160.0` path (needed for three.js addons later), and `three@0.160.0` is now declared (exact version) in `tools/package.json` instead of being an undocumented manual install.

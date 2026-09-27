@@ -170,11 +170,14 @@ export class Player {
       moveZ /= len;
     }
 
+    // Rotate the camera-space input (x = right, z = backward, since the camera
+    // looks down -Z) by the yaw around +Y into world space. At yaw 0, W gives
+    // (0, -1) = forward and D gives (1, 0) = right; in general forward is
+    // (-sin yaw, -cos yaw), matching getForwardVector().
     const sinY = Math.sin(this.yaw);
     const cosY = Math.cos(this.yaw);
-    // Forward is -Z in camera space.
-    const worldX = moveX * cosY - moveZ * sinY;
-    const worldZ = -moveX * sinY - moveZ * cosY;
+    const worldX = moveX * cosY + moveZ * sinY;
+    const worldZ = -moveX * sinY + moveZ * cosY;
 
     const speed = this.flying ? FLY_SPEED : WALK_SPEED;
     this.velocity.x = worldX * speed;

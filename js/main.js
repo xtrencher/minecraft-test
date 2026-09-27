@@ -5,7 +5,7 @@ import { UI, isMobileDevice, createBlockOutline } from "./ui.js";
 import { BLOCK } from "./blocks.js";
 import { Audio } from "./audio.js";
 import { Sky } from "./sky.js";
-import { loadEdits, saveEdits } from "./storage.js";
+import { loadEdits, saveEdits, loadSettings, saveSettings } from "./storage.js";
 import { EffectsSystem } from "./effects.js";
 
 // ---------- Seed ----------
@@ -36,7 +36,19 @@ const scene = new THREE.Scene();
 const skyColor = new THREE.Color(0x8fc7f0);
 scene.background = skyColor;
 
-let renderDistance = 4;
+// ---------- Settings ----------
+const DEFAULT_RENDER_DISTANCE = 10;
+const MIN_RENDER_DISTANCE = 2;
+const MAX_RENDER_DISTANCE = 16;
+const settings = loadSettings();
+
+function clampRenderDistance(value) {
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n)) return DEFAULT_RENDER_DISTANCE;
+  return Math.max(MIN_RENDER_DISTANCE, Math.min(MAX_RENDER_DISTANCE, n));
+}
+
+let renderDistance = clampRenderDistance(settings.renderDistance ?? DEFAULT_RENDER_DISTANCE);
 scene.fog = new THREE.Fog(skyColor.getHex(), 20, renderDistance * 16 * 0.9);
 
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -90,19 +102,28 @@ function findSpawnColumn() {
 
 const [spawnX, spawnZ] = findSpawnColumn();
 
-// Synchronously generate the chunks around spawn so the player never falls
-// through unloaded terrain before streaming catches up.
-world.ensureChunksAround(spawnX, spawnZ, renderDistance);
-{
-  let guard = 0;
-  while (world.genQueue.length > 0 && guard < 4000) {
-    world.processQueues(8, 8);
-    guard++;
-  }
+// Synchronously generate just the chunks right around spawn so the player
+// never falls through unloaded terrain; everything else out to the full
+// render distance streams in over the next frames (while the start menu is
+// showing), instead of freezing the page for seconds at startup.
+const INITIAL_SYNC_RADIUS = 2;
+world.ensureChunksAround(spawnX, spawnZ, INITIAL_SYNC_RADIUS);
+while (world.genQueue.length > 0 || world.remeshQueue.size > 0) {
+  world.processQueues(Infinity);
 }
+world.ensureChunksAround(spawnX, spawnZ, renderDistance);
+
+// Main-thread milliseconds per frame spent generating/meshing chunks. Larger
+// while a menu is open (nothing to keep smooth), smaller while playing.
+const STREAM_BUDGET_PLAYING_MS = 5;
+const STREAM_BUDGET_MENU_MS = 14;
 
 // ---------- UI ----------
 const ui = new UI({ atlasCanvas: world.atlasTexture.image });
+ui.renderDistanceInput.min = String(MIN_RENDER_DISTANCE);
+ui.renderDistanceInput.max = String(MAX_RENDER_DISTANCE);
+ui.renderDistanceInput.value = String(renderDistance);
+ui.renderDistanceValueEl.textContent = String(renderDistance);
 ui.showStartMenu(SEED);
 
 // ---------- Player ----------
@@ -153,9 +174,11 @@ document.addEventListener("pointerlockchange", () => {
 });
 
 ui.renderDistanceInput.addEventListener("input", () => {
-  renderDistance = Number(ui.renderDistanceInput.value);
+  renderDistance = clampRenderDistance(ui.renderDistanceInput.value);
   ui.renderDistanceValueEl.textContent = String(renderDistance);
   scene.fog.far = renderDistance * 16 * 0.9;
+  settings.renderDistance = renderDistance;
+  saveSettings(settings);
 });
 
 ui.copyLinkBtn.addEventListener("click", () => {
@@ -237,6 +260,26 @@ canvas.addEventListener("click", () => {
   if (gameState !== "playing") requestLock();
 });
 
+// ---------- Debug / test hook ----------
+// Exposes live game objects so the headless smoke test (tools/smoke-test.mjs)
+// can verify behavior like movement direction, and for poking at the game
+// from the browser dev console. Not used by any game code.
+window.__voxelands = {
+  THREE,
+  world,
+  player,
+  camera,
+  scene,
+  renderer,
+  spawn: { x: spawnX, z: spawnZ },
+  get gameState() {
+    return gameState;
+  },
+  get renderDistance() {
+    return renderDistance;
+  },
+};
+
 // ---------- Main loop ----------
 const clock = new THREE.Clock();
 const MAX_DT = 0.05;
@@ -252,7 +295,7 @@ function animate() {
     if (player.jumpEvent) audio.playJump();
     effects.update(dt);
   }
-  world.processQueues(2, 3);
+  world.processQueues(gameState === "playing" ? STREAM_BUDGET_PLAYING_MS : STREAM_BUDGET_MENU_MS);
 
   if (pendingSave && performance.now() - lastSaveTime > 2000) flushSave();
   updateTargetBlock();

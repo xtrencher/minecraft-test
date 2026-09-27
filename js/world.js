@@ -27,7 +27,11 @@ export class World {
 
     this.genQueue = [];
     this.genQueued = new Set();
-    this.remeshQueue = new Set();
+    this.remeshQueue = new Set(); // boundary fix-ups after neighbors load (budgeted)
+    this.editRemeshQueue = new Set(); // chunks changed by block edits (remeshed next frame)
+    this._planCx = null;
+    this._planCz = null;
+    this._planR = null;
 
     this.onEdit = null; // callback(wx,wy,wz,id)
   }
@@ -78,7 +82,7 @@ export class World {
     }
 
     if (remesh) {
-      this.remeshQueue.add(chunk);
+      this.editRemeshQueue.add(chunk);
       // Also remesh neighbor chunks if the edit is on a chunk boundary.
       if (lx === 0) this._queueRemeshAt(cx - 1, cz);
       if (lx === CHUNK_SIZE - 1) this._queueRemeshAt(cx + 1, cz);
@@ -90,23 +94,46 @@ export class World {
 
   _queueRemeshAt(cx, cz) {
     const c = this.getChunk(cx, cz);
-    if (c) this.remeshQueue.add(c);
+    if (c) this.editRemeshQueue.add(c);
   }
 
+  // Plans chunk loading/unloading around the player. Cheap to call every
+  // frame: the (relatively expensive) re-planning only runs when the player
+  // crosses into a different chunk or the render distance changes.
   ensureChunksAround(px, pz, renderDistance) {
     const pcx = floorDiv(px, CHUNK_SIZE);
     const pcz = floorDiv(pz, CHUNK_SIZE);
-    const wanted = new Set();
+    if (pcx === this._planCx && pcz === this._planCz && renderDistance === this._planR) return;
+    this._planCx = pcx;
+    this._planCz = pcz;
+    this._planR = renderDistance;
+
+    const r2 = renderDistance * renderDistance;
+
+    // Re-prioritize already-queued chunks around the new center, dropping
+    // any that fell out of range so we never generate a chunk only to
+    // unload it again.
+    this.genQueue = this.genQueue.filter((entry) => {
+      const dx = entry.cx - pcx;
+      const dz = entry.cz - pcz;
+      entry.dist = dx * dx + dz * dz;
+      if (entry.dist > r2) {
+        this.genQueued.delete(this.key(entry.cx, entry.cz));
+        return false;
+      }
+      return true;
+    });
 
     for (let dx = -renderDistance; dx <= renderDistance; dx++) {
       for (let dz = -renderDistance; dz <= renderDistance; dz++) {
-        if (dx * dx + dz * dz > renderDistance * renderDistance) continue;
+        const dist = dx * dx + dz * dz;
+        if (dist > r2) continue;
         const cx = pcx + dx;
         const cz = pcz + dz;
-        wanted.add(this.key(cx, cz));
-        if (!this.chunks.has(this.key(cx, cz)) && !this.genQueued.has(this.key(cx, cz))) {
-          this.genQueue.push({ cx, cz, dist: dx * dx + dz * dz });
-          this.genQueued.add(this.key(cx, cz));
+        const key = this.key(cx, cz);
+        if (!this.chunks.has(key) && !this.genQueued.has(key)) {
+          this.genQueue.push({ cx, cz, dist });
+          this.genQueued.add(key);
         }
       }
     }
@@ -122,41 +149,58 @@ export class World {
         chunk.dispose();
         this.chunks.delete(key);
         this.remeshQueue.delete(chunk);
+        this.editRemeshQueue.delete(chunk);
       }
     }
   }
 
-  processQueues(maxGenPerFrame = 1, maxRemeshPerFrame = 2) {
-    let generated = 0;
-    while (generated < maxGenPerFrame && this.genQueue.length > 0) {
-      const { cx, cz } = this.genQueue.shift();
-      const key = this.key(cx, cz);
-      this.genQueued.delete(key);
-      if (this.chunks.has(key)) continue;
-      const chunk = new Chunk(cx, cz, this);
-      this.generateTerrain(chunk);
-      this.applyStoredEdits(chunk);
-      chunk.generated = true;
-      chunk.buildMesh(this.materials);
-      this.chunks.set(key, chunk);
-      this.scene.add(chunk.group);
+  // Generates/meshes queued chunks until `budgetMs` of main-thread time has
+  // been spent this frame (always at least one unit of work if any is
+  // pending). Chunks touched by block edits are remeshed first and without a
+  // budget, so the player sees their own edits immediately.
+  processQueues(budgetMs = 4) {
+    const start = performance.now();
 
-      // Neighboring chunks may now have newly-hidden/exposed boundary faces.
-      for (const [ncx, ncz] of [[cx - 1, cz], [cx + 1, cz], [cx, cz - 1], [cx, cz + 1]]) {
-        const n = this.getChunk(ncx, ncz);
-        if (n) this.remeshQueue.add(n);
-      }
-      generated++;
-    }
-
-    let remeshed = 0;
-    if (this.remeshQueue.size > 0) {
-      for (const chunk of this.remeshQueue) {
-        if (remeshed >= maxRemeshPerFrame) break;
+    if (this.editRemeshQueue.size > 0) {
+      for (const chunk of this.editRemeshQueue) {
         chunk.buildMesh(this.materials);
         this.remeshQueue.delete(chunk);
-        remeshed++;
       }
+      this.editRemeshQueue.clear();
+    }
+
+    let didWork = false;
+    while (!didWork || performance.now() - start < budgetMs) {
+      if (this.genQueue.length > 0) {
+        this._generateNext();
+      } else if (this.remeshQueue.size > 0) {
+        const chunk = this.remeshQueue.values().next().value;
+        this.remeshQueue.delete(chunk);
+        chunk.buildMesh(this.materials);
+      } else {
+        break;
+      }
+      didWork = true;
+    }
+  }
+
+  _generateNext() {
+    const { cx, cz } = this.genQueue.shift();
+    const key = this.key(cx, cz);
+    this.genQueued.delete(key);
+    if (this.chunks.has(key)) return;
+    const chunk = new Chunk(cx, cz, this);
+    this.generateTerrain(chunk);
+    this.applyStoredEdits(chunk);
+    chunk.generated = true;
+    chunk.buildMesh(this.materials);
+    this.chunks.set(key, chunk);
+    this.scene.add(chunk.group);
+
+    // Neighboring chunks may now have newly-hidden/exposed boundary faces.
+    for (const [ncx, ncz] of [[cx - 1, cz], [cx + 1, cz], [cx, cz - 1], [cx, cz + 1]]) {
+      const n = this.getChunk(ncx, ncz);
+      if (n) this.remeshQueue.add(n);
     }
   }
 
