@@ -97,44 +97,6 @@
     text-shadow: 0 0 2px #000;
   }
 
-  /* --- Blast Orb cooldown indicator --- */
-  #orb-indicator {
-    position: fixed;
-    bottom: 14px;
-    left: calc(50% + 262px);
-    width: 48px;
-    height: 48px;
-    border-radius: 50%;
-    border: 2px solid rgba(255,255,255,0.25);
-    background: conic-gradient(rgba(10,10,10,0.8) calc(var(--cd, 0) * 360deg), rgba(20,20,20,0.4) 0);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 10;
-    pointer-events: none;
-  }
-  #orb-indicator .orb-icon {
-    width: 22px;
-    height: 22px;
-    border-radius: 50%;
-    background: radial-gradient(circle at 35% 35%, #fff6d8, #ffb347 45%, #c9501a 100%);
-    box-shadow: 0 0 12px 3px rgba(255,150,60,0.75);
-    transition: filter 0.2s, box-shadow 0.2s;
-  }
-  #orb-indicator.cooling .orb-icon {
-    filter: grayscale(0.7) brightness(0.6);
-    box-shadow: none;
-  }
-  #orb-indicator .orb-key {
-    position: absolute;
-    top: -2px;
-    right: -2px;
-    font-size: 10px;
-    background: rgba(0,0,0,0.6);
-    border-radius: 3px;
-    padding: 0 3px;
-  }
-
   /* --- Overlays (start menu / pause menu / mobile block) --- */
   .overlay {
     position: fixed;
@@ -234,6 +196,20 @@
     z-index: 10;
   }
   #attack-charge div { height: 100%; width: 0; background: rgba(255,255,255,0.9); }
+  #throw-charge {
+    position: fixed;
+    top: calc(50% + 22px);
+    left: calc(50% - 30px);
+    width: 60px;
+    height: 5px;
+    border-radius: 3px;
+    background: rgba(0,0,0,0.45);
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 10;
+  }
+  #throw-charge div { height: 100%; width: 0; background: linear-gradient(90deg, #ffd35a, #ff7a2a); }
+  #throw-charge.full div { background: #ff4a2a; box-shadow: 0 0 6px #ff6a3a; }
   #mode-badge {
     position: fixed;
     top: 8px;
@@ -460,12 +436,12 @@
   <div id="hud" class="hidden">
     <div id="crosshair"></div>
     <div id="attack-charge" class="hidden"><div></div></div>
+    <div id="throw-charge" class="hidden"><div></div></div>
     <div id="fps-counter">FPS: --</div>
     <div id="mode-badge" class="hidden"></div>
     <div id="item-name"></div>
     <div id="status-bars"><div id="hearts"></div><div id="bubbles" class="hidden"></div></div>
     <div id="hotbar"></div>
-    <div id="orb-indicator" title="Blast Orb (F)"><div class="orb-icon"></div><span class="orb-key">F</span></div>
   </div>
 
   <div id="inventory-screen" class="hidden"></div>
@@ -485,7 +461,8 @@
         <b>Shift</b> sneak &nbsp; <b>Ctrl</b> or <b>double-tap W</b> sprint<br/>
         <b>Left Click</b> mine / attack (hold) &nbsp; <b>Right Click</b> place / use / eat<br/>
         <b>1-9 / Scroll</b> hotbar &nbsp; <b>E</b> inventory &amp; crafting &nbsp; <b>Q</b> drop item<br/>
-        <b>F</b> throw Blast Orb &nbsp; <b>Creative:</b> double-tap Space to fly, middle click picks a block<br/>
+        <b>Grenade:</b> hold Right Click to charge, release to throw &nbsp; <b>Pistol / Bazooka:</b> Right Click fires<br/>
+        <b>Creative:</b> double-tap Space to fly, middle click picks a block<br/>
         <b>Esc</b> pause menu
       </div>
       <div class="row">
@@ -535,7 +512,8 @@
         <b>Shift</b> sneak &nbsp; <b>Ctrl</b> or <b>double-tap W</b> sprint<br/>
         <b>Left Click</b> mine / attack (hold) &nbsp; <b>Right Click</b> place / use / eat<br/>
         <b>1-9 / Scroll</b> hotbar &nbsp; <b>E</b> inventory &amp; crafting &nbsp; <b>Q</b> drop item<br/>
-        <b>F</b> throw Blast Orb &nbsp; <b>Creative:</b> double-tap Space to fly, middle click picks a block
+        <b>Grenade:</b> hold Right Click to charge, release to throw &nbsp; <b>Pistol / Bazooka:</b> Right Click fires<br/>
+        <b>Creative:</b> double-tap Space to fly, middle click picks a block
       </div>
       <div class="menu-buttons">
         <button class="btn" id="resume-btn">Resume</button>

@@ -26,14 +26,12 @@ export class UI {
     this.playBtn = document.getElementById("play-btn");
     this.resumeBtn = document.getElementById("resume-btn");
     this.copyLinkBtn = document.getElementById("copy-link-btn");
-    this.orbIndicatorEl = document.getElementById("orb-indicator");
     this.graphicsSelect = document.getElementById("graphics-preset");
     this.graphicsHintEl = document.getElementById("graphics-hint");
     this.modeSelect = document.getElementById("mode-select");
     this.modeHintEl = document.getElementById("mode-hint");
     this.pauseModeSelect = document.getElementById("pause-mode-select");
     this.pauseModeHintEl = document.getElementById("pause-mode-hint");
-    this._orbCooldownShown = -1;
 
     this._fpsFrames = 0;
     this._fpsTimer = 0;
@@ -59,15 +57,6 @@ export class UI {
 
   showHud(show) {
     this.hudEl.classList.toggle("hidden", !show);
-  }
-
-  // fraction: 1 = just thrown, 0 = ready to throw again.
-  setOrbCooldown(fraction) {
-    const rounded = Math.round(fraction * 100) / 100;
-    if (rounded === this._orbCooldownShown) return; // skip redundant DOM writes
-    this._orbCooldownShown = rounded;
-    this.orbIndicatorEl.style.setProperty("--cd", String(rounded));
-    this.orbIndicatorEl.classList.toggle("cooling", rounded > 0);
   }
 
   showStartMenu(seed) {

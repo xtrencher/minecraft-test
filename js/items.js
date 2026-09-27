@@ -31,6 +31,9 @@ export const ITEM = Object.freeze({
   STONE_SHOVEL: 283,
   IRON_SHOVEL: 284,
   DIAMOND_SHOVEL: 285,
+  GRENADE: 286,
+  PISTOL: 287,
+  BAZOOKA: 288,
 });
 
 // Tool materials: tier (what they can harvest), mining speed multiplier,
@@ -55,6 +58,10 @@ const ITEM_DEFS = {
   [ITEM.RAW_MEAT]: { name: "Raw Meat", icon: "raw_meat", food: 2 },
   [ITEM.COOKED_MEAT]: { name: "Cooked Meat", icon: "cooked_meat", food: 8 },
   [ITEM.FLUFF]: { name: "Fluff", icon: "fluff" },
+  // Weapons never run out: unlimited ammo, no reloading.
+  [ITEM.GRENADE]: { name: "Grenade", icon: "grenade", stack: 1, weapon: { kind: "grenade" } },
+  [ITEM.PISTOL]: { name: "Pistol", icon: "pistol", stack: 1, weapon: { kind: "pistol" } },
+  [ITEM.BAZOOKA]: { name: "Bazooka", icon: "bazooka", stack: 1, weapon: { kind: "bazooka" } },
 };
 
 const TOOL_KINDS = [
@@ -167,4 +174,5 @@ export const CREATIVE_ITEMS = [
   ITEM.WOOD_PICKAXE, ITEM.STONE_PICKAXE, ITEM.IRON_PICKAXE, ITEM.DIAMOND_PICKAXE,
   ITEM.WOOD_AXE, ITEM.STONE_AXE, ITEM.IRON_AXE, ITEM.DIAMOND_AXE,
   ITEM.WOOD_SHOVEL, ITEM.STONE_SHOVEL, ITEM.IRON_SHOVEL, ITEM.DIAMOND_SHOVEL,
+  ITEM.GRENADE, ITEM.PISTOL, ITEM.BAZOOKA,
 ];

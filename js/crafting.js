@@ -31,6 +31,10 @@ export const RECIPES = [
   shapeless([BLOCK.SAND, BLOCK.SAND, BLOCK.SAND, BLOCK.SAND, ITEM.COAL], BLOCK.GLASS, 4),
   shapeless([BLOCK.COBBLESTONE, BLOCK.COBBLESTONE, BLOCK.COBBLESTONE, BLOCK.COBBLESTONE, ITEM.COAL], BLOCK.STONE, 4),
   shapeless([BLOCK.GRAVEL, BLOCK.GRAVEL, BLOCK.GRAVEL, BLOCK.GRAVEL, ITEM.COAL], BLOCK.BRICKS, 4),
+  // Weapons (they never run out of ammo, so each is crafted once).
+  shapeless([ITEM.IRON_INGOT, ITEM.COAL, ITEM.COAL], ITEM.GRENADE),
+  shaped(["III", "P.."], { I: ITEM.IRON_INGOT, P: BLOCK.PLANKS }, ITEM.PISTOL),
+  shaped(["III", "IGI", "III"], { I: ITEM.IRON_INGOT, G: ITEM.GRENADE }, ITEM.BAZOOKA),
 ];
 for (const [mat, m] of TOOL_MATERIALS) {
   RECIPES.push(shaped(["M", "M", "S"], { M: m, S: ITEM.STICK }, ITEM[`${mat}_SWORD`]));

@@ -455,7 +455,7 @@ try {
     assert(dz < 0 || Math.hypot(dx, dz) < 0.05, `walking W at yaw 0 moved dz=${dz.toFixed(2)} (expected negative)`);
   });
 
-  await check("creative: instant break, place from the hotbar, scroll, Blast Orb, flight toggle", async () => {
+  await check("creative: instant break, place from the hotbar, scroll, flight toggle; the Blast Orb and F key are gone", async () => {
     await page.evaluate(() => window.__voxelands.setMode("creative"));
     const site = await setupArena(page, 12, 12);
     const target = [site.x, site.y + 1, site.z - 2];
@@ -479,8 +479,11 @@ try {
     assert(placed === 3 && count === 64, `right click should place stone without using it up (block ${placed}, count ${count})`);
     await page.mouse.wheel(0, 200);
     await page.waitForFunction(() => window.__voxelands.inventory.selected === 3, null, { timeout: 5000 });
+    const before = await page.evaluate(() => window.__voxelands.effects.explosionCount);
     await page.keyboard.press("KeyF");
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(800);
+    const orb = await page.evaluate(() => ({ n: window.__voxelands.effects.explosionCount, ui: !!document.getElementById("orb-indicator"), fn: typeof window.__voxelands.effects.throwOrb }));
+    assert(orb.n === before && !orb.ui && orb.fn === "undefined", `the Blast Orb should be gone: ${JSON.stringify(orb)}`);
     // Double-tap space to toggle flight mode on, then off again. (Real key
     // presses from the test driver arrive a slow software-rendered frame
     // apart, too far apart for a double-tap, so both taps are dispatched
@@ -498,11 +501,11 @@ try {
     await page.waitForFunction(() => !window.__voxelands.player.flying, null, { timeout: 5000 });
   });
 
-  // --- Blast Orb (Phase 2) ---
-  const waitForExplosion = async (prevCount) => {
-    await page.waitForFunction((n) => window.__voxelands.effects.explosionCount > n, prevCount, { timeout: 30000, polling: 16 });
+  // --- Weapons (round 3) ---
+  const waitForExplosion = async (prevCount, timeout = 60000) => {
+    await page.waitForFunction((n) => window.__voxelands.effects.explosionCount > n, prevCount, { timeout, polling: 16 });
     return page.evaluate(() => {
-      const { effects, world, player } = window.__voxelands;
+      const { effects, player, uniforms } = window.__voxelands;
       return {
         ...effects.lastExplosion,
         trauma: effects.shake.trauma,
@@ -511,46 +514,103 @@ try {
         glow: effects.glow.particles.length,
         playerVy: player.velocity.y,
         count: effects.explosionCount,
+        time: uniforms.uTime.value,
       };
     });
   };
 
-  await check("Blast Orb flies much farther on a sensible arc", async () => {
-    await page.evaluate(() => {
-      const { player } = window.__voxelands;
-      player.flying = true;
-      player.velocity.set(0, 0, 0);
-      player.position.y = 70; // above the build height: nothing in the orb's way at first
-      player.yaw = 0;
-      player.pitch = 0.5;
-    });
-    await page.waitForFunction(() => window.__voxelands.effects.canThrow(), null, { timeout: 10000 });
-    const start = await page.evaluate(() => {
-      const e = window.__voxelands.player.getEyePosition();
-      return { x: e.x, y: e.y, z: e.z, count: window.__voxelands.effects.explosionCount };
-    });
-    await page.keyboard.press("KeyF");
-    // Sample the orb after ~1 s of (game) flight time.
-    const handle = await page.waitForFunction(
-      () => {
-        const p = window.__voxelands.effects.projectiles[0];
-        return p && p.age >= 1 ? { x: p.mesh.position.x, y: p.mesh.position.y, z: p.mesh.position.z, age: p.age } : null;
+  // A long floating stone runway (21 x 47) with open air above; the player
+  // stands at its +Z end looking down its length (-Z).
+  const runway = (offX, offZ, y = 45) =>
+    page.evaluate(
+      ([offX, offZ, y]) => {
+        const v = window.__voxelands;
+        const x0 = v.spawn.x + offX;
+        const z0 = v.spawn.z + offZ;
+        const e = [];
+        for (let dx = -10; dx <= 10; dx++) {
+          for (let dz = -40; dz <= 6; dz++) {
+            e.push(x0 + dx, y, z0 + dz, 3);
+            for (let dy = 1; dy <= 8; dy++) e.push(x0 + dx, y + dy, z0 + dz, 0);
+          }
+        }
+        v.world.setBlocks(e);
+        const p = v.player;
+        p.flying = false;
+        p.velocity.set(0, 0, 0);
+        p.knockback.set(0, 0, 0);
+        p.position.set(x0 + 0.5, y + 1, z0 + 4.5);
+        p.yaw = 0;
+        p.pitch = 0.05;
+        return { x: x0, y, z: z0 };
       },
-      null,
-      { timeout: 30000, polling: 16 }
+      [offX, offZ, y]
     );
-    const s1 = await handle.jsonValue();
-    const horizSpeed = Math.hypot(s1.x - start.x, s1.z - start.z) / s1.age;
-    console.log(`        horizontal speed over first ${s1.age.toFixed(2)} s: ${horizSpeed.toFixed(1)} blocks/s (old orb: ~15)`);
-    assert(horizSpeed > 22, `orb only covered ${horizSpeed.toFixed(1)} blocks/s horizontally`);
-    const boom = await waitForExplosion(start.count);
-    const range = Math.hypot(boom.x - start.x, boom.z - start.z);
-    console.log(`        landed ${range.toFixed(1)} blocks away, ${(start.y - boom.y).toFixed(1)} blocks below the throw point`);
-    assert(range > 40, `orb landed only ${range.toFixed(1)} blocks away`);
-    assert(boom.y < start.y, "orb should arc back down to the ground");
+
+  await check("animals spawn around the player at the start", async () => {
+    const s = await page.evaluate(() => {
+      const { mobs } = window.__voxelands;
+      return { passive: mobs.countOf(false), kinds: [...new Set(mobs.mobs.map((m) => m.kind))] };
+    });
+    console.log(`        ${s.passive} animals around the player: ${s.kinds.join(", ")}`);
+    assert(s.passive >= 3, `expected a few animals near spawn, found ${s.passive}`);
   });
 
-  await check("Blast Orb carves a 2-3x bigger crater, with particles and shake", async () => {
+  const giveWeapons = () =>
+    page.evaluate(() => {
+      const inv = window.__voxelands.inventory;
+      inv.slots[0] = { id: 286, count: 1 }; // grenade
+      inv.slots[1] = { id: 287, count: 1 }; // pistol
+      inv.slots[2] = { id: 288, count: 1 }; // bazooka
+    });
+
+  await check("grenades: hold to charge (bar shown), quick click lobs short, full charge throws far; they bounce, 5 s fuse", async () => {
+    await giveWeapons();
+    await page.keyboard.press("Digit1");
+    const throwOnce = async (full) => {
+      await page.evaluate(() => (window.__vys = []));
+      const prev = await page.evaluate(() => window.__voxelands.effects.explosionCount);
+      await page.mouse.down({ button: "right" });
+      let barShown = false;
+      if (full) {
+        await page.waitForFunction(() => window.__voxelands.weapons.charge > 0.3, null, { timeout: 30000, polling: 16 });
+        barShown = await page.$eval("#throw-charge", (el) => !el.classList.contains("hidden"));
+        await page.waitForFunction(() => window.__voxelands.weapons.charge >= 1, null, { timeout: 60000, polling: 16 });
+      }
+      await page.mouse.up({ button: "right" });
+      const t0 = await page.evaluate(() => window.__voxelands.uniforms.uTime.value);
+      await page.waitForFunction(
+        (n) => {
+          const v = window.__voxelands;
+          const g = v.weapons.grenades[0];
+          if (g) window.__vys.push(g.vel.y);
+          return v.effects.explosionCount > n;
+        },
+        prev,
+        { timeout: 120000, polling: 16 }
+      );
+      const r = await page.evaluate(() => {
+        const v = window.__voxelands;
+        const e = v.effects.lastExplosion;
+        const p = v.player.position;
+        let bounce = false;
+        for (let i = 1; i < window.__vys.length; i++) if (window.__vys[i - 1] < -1 && window.__vys[i] > 0.3) bounce = true;
+        return { dist: Math.hypot(e.x - p.x, e.z - p.z), bounce, t: v.uniforms.uTime.value, source: e.source, radius: e.radius };
+      });
+      return { ...r, fuse: r.t - t0, barShown };
+    };
+    await runway(40, 10);
+    const quick = await throwOnce(false);
+    await runway(40, 10);
+    const far = await throwOnce(true);
+    console.log(`        quick click: ${quick.dist.toFixed(1)} blocks; full charge: ${far.dist.toFixed(1)} blocks; fuse ${far.fuse.toFixed(2)} s; bounced: ${quick.bounce || far.bounce}`);
+    assert(far.barShown, "the throw charge bar should show while charging");
+    assert(quick.dist < 10 && far.dist > 18, "a full charge should throw much farther than a quick click");
+    assert(far.bounce || quick.bounce, "grenades should bounce off the ground");
+    assert(Math.abs(far.fuse - 5) < 0.4 && far.source === "grenade" && far.radius === 7, `grenade fuse/size wrong: ${JSON.stringify(far)}`);
+  });
+
+  await check("a grenade blast carves a ~7-block crater, with particles, shake, knockback and a local rebuild", async () => {
     await page.evaluate(() => {
       const { player, spawn } = window.__voxelands;
       player.flying = false;
@@ -558,12 +618,13 @@ try {
       player.yaw = 0;
       player.pitch = -1.5; // look straight down
     });
-    await page.waitForTimeout(1000); // land on the ground
-    await page.waitForFunction(() => window.__voxelands.effects.canThrow(), null, { timeout: 10000 });
+    await page.keyboard.press("Digit1");
+    await page.waitForTimeout(800); // land on the ground
     const prev = await page.evaluate(() => window.__voxelands.effects.explosionCount);
-    await page.keyboard.press("KeyF");
+    await page.mouse.down({ button: "right" });
+    await page.mouse.up({ button: "right" });
     const boom = await waitForExplosion(prev);
-    console.log(`        removed ${boom.removed} blocks (radius-3 max was 123), farthest ${boom.maxDist.toFixed(2)} from center, carve ${boom.carveMs.toFixed(1)} ms`);
+    console.log(`        removed ${boom.removed} blocks, farthest ${boom.maxDist.toFixed(2)} from center, carve ${boom.carveMs.toFixed(1)} ms`);
     console.log(`        particles: ${boom.debris} debris, ${boom.smoke} smoke, ${boom.glow} fire/sparks; shake trauma ${boom.trauma.toFixed(2)}; player vy ${boom.playerVy.toFixed(1)}`);
     assert(boom.removed > 300, `crater too small: ${boom.removed} blocks`);
     assert(boom.maxDist > 6 && boom.maxDist < 8.2, `crater reach ${boom.maxDist.toFixed(2)} outside the expected ~7 +/- 0.6`);
@@ -571,11 +632,155 @@ try {
     assert(boom.debris > 50 && boom.smoke > 30 && boom.glow > 60, "expected a big particle burst");
     assert(boom.trauma > 0.3, `camera shake trauma only ${boom.trauma}`);
     assert(boom.playerVy > 2, `blast under the player should knock them upward (vy=${boom.playerVy.toFixed(2)})`);
-    // The affected chunks are remeshed on the next frame, and only those.
     await page.waitForTimeout(300);
     const stats = await page.evaluate(() => window.__voxelands.world.stats);
     console.log(`        remeshed ${stats.lastEditRemeshCount} chunks in ${stats.lastEditRemeshMs.toFixed(1)} ms`);
     assert(stats.lastEditRemeshCount >= 1 && stats.lastEditRemeshCount <= 16, `remeshed ${stats.lastEditRemeshCount} chunks`);
+  });
+
+  await check("a grenade that hits a mob directly goes off at once", async () => {
+    const a = await runway(-40, 10);
+    await giveWeapons();
+    await page.keyboard.press("Digit1");
+    await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      v.mobs.enabled = false;
+      v.mobs.clear();
+      v.sky.setSunAngle(Math.PI * 1.5); // night: zombies don't burn
+      v.player.pitch = 0;
+      const zb = v.mobs.spawn("zombie", x + 0.5, y + 1, z - 2.5);
+      zb.ai.state = "idle";
+      zb.ai.timer = 999;
+      window.__zb = zb;
+    }, a);
+    const prev = await page.evaluate(() => window.__voxelands.effects.explosionCount);
+    await page.mouse.down({ button: "right" });
+    await page.waitForFunction(() => window.__voxelands.weapons.charge > 0.5, null, { timeout: 30000, polling: 16 });
+    await page.mouse.up({ button: "right" });
+    const t0 = await page.evaluate(() => window.__voxelands.uniforms.uTime.value);
+    const boom = await waitForExplosion(prev);
+    const dead = await page.evaluate(() => window.__zb.dead);
+    console.log(`        exploded ${(boom.time - t0).toFixed(2)} s after the throw; zombie dead: ${dead}`);
+    assert(boom.time - t0 < 2 && dead, "a direct hit should explode at once and kill the zombie");
+    await page.evaluate(() => {
+      window.__voxelands.mobs.clear();
+      window.__voxelands.sky.setSunAngle(Math.PI * 0.4);
+    });
+  });
+
+  await check("pistol: every click fires (no reload), bullets leave holes and hurt mobs with knockback", async () => {
+    const a = await runway(-40, -60);
+    await giveWeapons();
+    await page.keyboard.press("Digit2");
+    await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      v.world.setBlocks([x - 1, y + 1, z - 3, 3, x, y + 1, z - 3, 3, x + 1, y + 1, z - 3, 3, x, y + 2, z - 3, 3]); // a little wall
+      v.player.pitch = -0.2;
+    }, a);
+    await page.waitForTimeout(400);
+    const before = await page.evaluate(() => ({ shots: window.__voxelands.weapons.shots, holes: window.__voxelands.decals.count }));
+    for (let i = 0; i < 6; i++) {
+      await page.mouse.down({ button: "right" });
+      await page.mouse.up({ button: "right" });
+      await page.waitForTimeout(150);
+    }
+    const after = await page.evaluate(() => ({ shots: window.__voxelands.weapons.shots, holes: window.__voxelands.decals.count }));
+    console.log(`        6 clicks -> ${after.shots - before.shots} shots, ${after.holes - before.holes} bullet holes`);
+    assert(after.shots - before.shots === 6 && after.holes - before.holes === 6, "every click should fire and leave a hole in the wall");
+    // Breaking the wall removes its bullet holes.
+    await page.evaluate(({ x, y, z }) => window.__voxelands.world.setBlocks([x - 1, y + 1, z - 3, 0, x, y + 1, z - 3, 0, x + 1, y + 1, z - 3, 0, x, y + 2, z - 3, 0]), a);
+    const holesLeft = await page.evaluate(() => window.__voxelands.decals.count);
+    assert(holesLeft === before.holes, "bullet holes should vanish with their block");
+    // Shoot a zombie (at night, so it isn't also burning in daylight).
+    const r = await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      v.sky.setSunAngle(Math.PI * 1.5);
+      const zb = v.mobs.spawn("zombie", x + 0.5, y + 1, z - 4.5);
+      zb.ai.state = "idle";
+      zb.ai.timer = 999;
+      window.__zb = zb;
+      const eye = v.player.getEyePosition();
+      v.player.yaw = Math.atan2(-(zb.pos.x - eye.x), -(zb.pos.z - eye.z));
+      v.player.pitch = Math.atan2(zb.pos.y + 1.2 - eye.y, Math.hypot(zb.pos.x - eye.x, zb.pos.z - eye.z));
+      return { d0: zb.pos.z };
+    }, a);
+    await page.mouse.down({ button: "right" });
+    await page.mouse.up({ button: "right" });
+    await page.waitForTimeout(300);
+    const hit = await page.evaluate(() => ({ hp: window.__zb.health, z: window.__zb.pos.z, flash: window.__zb.hurtTime < 1 }));
+    console.log(`        zombie hit: health 20 -> ${hit.hp}, pushed from z=${r.d0.toFixed(2)} to ${hit.z.toFixed(2)}`);
+    assert(hit.hp === 15 && hit.flash, "a pistol shot should deal 5 damage");
+    assert(hit.z < r.d0 - 0.2, "a pistol shot should knock the zombie back");
+    await page.evaluate(() => {
+      window.__voxelands.mobs.clear();
+      window.__voxelands.sky.setSunAngle(Math.PI * 0.4);
+    });
+  });
+
+  await check("weapons are used on right-click instead of placing blocks", async () => {
+    const a = await runway(-40, 10);
+    await giveWeapons();
+    await page.keyboard.press("Digit2");
+    await aimAt(page, [a.x, a.y, a.z + 2]);
+    const target = await page.evaluate(() => window.__voxelands.interaction.target);
+    assert(target, "should be aiming at the floor");
+    await page.mouse.down({ button: "right" });
+    await page.mouse.up({ button: "right" });
+    await page.waitForTimeout(200);
+    const placed = await page.evaluate(({ x, y, z }) => window.__voxelands.world.getBlock(x, y + 1, z + 2), a);
+    assert(placed === 0, "right-click with a pistol must not place a block");
+  });
+
+  await check("bazooka: a fast, nearly flat rocket with a smoke trail and a blast 5x a grenade's", async () => {
+    const a = await runway(-110, 0);
+    await giveWeapons();
+    await page.keyboard.press("Digit3");
+    await page.evaluate(() => {
+      const v = window.__voxelands;
+      v.player.pitch = -0.045;
+      v.world.stats.spreadRemeshFrames = 0;
+    });
+    await page.waitForTimeout(300);
+    const prev = await page.evaluate(() => window.__voxelands.effects.explosionCount);
+    const smoke0 = await page.evaluate(() => window.__voxelands.effects.smoke.particles.length);
+    await page.mouse.down({ button: "right" });
+    await page.mouse.up({ button: "right" });
+    const fly = await page
+      .waitForFunction(
+        () => {
+          const r = window.__voxelands.weapons.rockets[0];
+          return r && r.age > 0.15 ? { age: r.age, speed: r.vel.length(), vy: r.vel.y, smoke: window.__voxelands.effects.smoke.particles.length } : null;
+        },
+        null,
+        { timeout: 20000, polling: 16 }
+      )
+      .then((h) => h.jsonValue());
+    const boom = await waitForExplosion(prev);
+    const r = await page.evaluate(() => ({ falling: window.__voxelands.falling.active }));
+    await page.waitForFunction(() => window.__voxelands.world.editRemeshQueue.size === 0, null, { timeout: 60000 });
+    console.log(`        rocket: ${fly.speed.toFixed(0)} blocks/s, vertical ${fly.vy.toFixed(2)}; blast radius ${boom.radius}: removed ${boom.removed}, reach ${boom.maxDist.toFixed(1)}, carve ${boom.carveMs.toFixed(0)} ms, ${r.falling} falling blocks`);
+    assert(fly.speed > 60 && Math.abs(fly.vy) < 5 && fly.smoke > smoke0, "the rocket should fly fast and nearly straight, trailing smoke");
+    assert(boom.source === "bazooka" && boom.radius === 35 && boom.maxDist > 28 && boom.maxDist < 38, `bazooka blast should be ~35 blocks: ${JSON.stringify(boom)}`);
+    assert(r.falling <= 64, "falling blocks must stay capped");
+  });
+
+  await check("explosions shake the camera less the farther away they are", async () => {
+    const r = await page.evaluate(() => {
+      const v = window.__voxelands;
+      const { effects, THREE, player } = v;
+      const eye = player.getEyePosition();
+      effects.listener.copy(eye);
+      const out = [];
+      for (const d of [6, 40, 90, 200]) {
+        const at = eye.clone().add(new THREE.Vector3(d, 30, 0)); // up in the air: no crater
+        effects.explode(at, { radius: 7 });
+        out.push(effects.lastExplosion.shake);
+      }
+      effects.shake.trauma = 0;
+      return out;
+    });
+    console.log(`        grenade shake at 6/40/90/200 blocks: ${r.map((x) => x.toFixed(2)).join(", ")}`);
+    assert(r[0] > r[1] && r[1] > r[2] && r[3] === 0, "shake should fall off with distance to nothing");
   });
 
   await check("underwater blasts flood the crater instead of leaving dry pockets", async () => {
@@ -603,7 +808,7 @@ try {
           for (let x = spot.x - R; x <= spot.x + R; x++) before.set(`${x},${y},${z}`, world.getBlock(x, y, z));
         }
       }
-      effects._explode(new THREE.Vector3(spot.x + 0.5, floor + 0.5, spot.z + 0.5));
+      effects.explode(new THREE.Vector3(spot.x + 0.5, floor + 0.5, spot.z + 0.5), { radius: 7 });
       // Any air cell at or below sea level near the blast that touches water is a dry pocket.
       const pockets = [];
       const n = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
@@ -675,7 +880,7 @@ try {
       world.setBlocks(e);
       falling.update(0.016);
       const before = falling.settledInstantly;
-      effects._explode(new THREE.Vector3(x0 + 0.5, y + 8, z0 + 0.5));
+      effects.explode(new THREE.Vector3(x0 + 0.5, y + 8, z0 + 0.5), { radius: 7 });
       const t0 = performance.now();
       falling.update(0.016);
       window.__sandArea = { x0, z0, y };
@@ -736,15 +941,6 @@ try {
       const v = window.__voxelands;
       return { slots: v.inventory.serialize(), selected: v.inventory.selected, health: v.player.health, state: v.gameState };
     });
-
-  await check("animals spawn around the player at the start", async () => {
-    const s = await page.evaluate(() => {
-      const { mobs } = window.__voxelands;
-      return { passive: mobs.countOf(false), kinds: [...new Set(mobs.mobs.map((m) => m.kind))] };
-    });
-    console.log(`        ${s.passive} animals around the player: ${s.kinds.join(", ")}`);
-    assert(s.passive >= 3, `expected a few animals near spawn, found ${s.passive}`);
-  });
 
   await check("survival: mining takes time by hand, drops the block, and it gets picked up", async () => {
     await page.evaluate(() => {
@@ -909,18 +1105,43 @@ try {
     void site;
   });
 
-  await check("survival: your own Blast Orb at your feet is deadly", async () => {
+  await check("survival: your own grenade at your feet is deadly", async () => {
     await setupArena(page, 20, -20);
+    await giveWeapons();
+    await page.keyboard.press("Digit1");
     await page.evaluate(() => {
-      const { player } = window.__voxelands;
-      player.pitch = -1.5;
+      window.__voxelands.player.pitch = -1.5;
     });
-    await page.waitForFunction(() => window.__voxelands.effects.canThrow(), null, { timeout: 20000 });
-    await page.keyboard.press("KeyF");
-    await page.waitForFunction(() => window.__voxelands.gameState === "dead", null, { timeout: 30000, polling: 30 });
+    await page.mouse.down({ button: "right" });
+    await page.mouse.up({ button: "right" });
+    // The 5 s fuse is game time: at the software renderer's few frames per
+    // second (each clamped to 50 ms of game time) that can take a minute or more.
+    await page.waitForFunction(() => window.__voxelands.gameState === "dead", null, { timeout: 240000, polling: 30 });
     const cause = await page.$eval("#death-cause", (el) => el.textContent);
     console.log(`        death cause: "${cause}"`);
-    assert(cause === "Blown up by your own Blast Orb", `unexpected cause "${cause}"`);
+    assert(cause === "Blown up by your own grenade", `unexpected cause "${cause}"`);
+    await page.waitForFunction(() => !document.getElementById("respawn-btn").disabled, null, { timeout: 10000 });
+    await page.click("#respawn-btn", { timeout: 20000 });
+    await page.waitForFunction(() => window.__voxelands.gameState === "playing", null, { timeout: 10000 });
+  });
+
+  await check("survival: a bazooka fired point blank kills you", async () => {
+    const a = await runway(-110, 90);
+    await giveWeapons();
+    await page.keyboard.press("Digit3");
+    await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      v.player.health = 20;
+      v.world.setBlocks([x, y + 1, z + 3, 3, x, y + 2, z + 3, 3]); // a wall right in front
+      v.player.pitch = 0;
+    }, a);
+    await page.waitForTimeout(300);
+    await page.mouse.down({ button: "right" });
+    await page.mouse.up({ button: "right" });
+    await page.waitForFunction(() => window.__voxelands.gameState === "dead", null, { timeout: 60000, polling: 30 });
+    const cause = await page.$eval("#death-cause", (el) => el.textContent);
+    console.log(`        death cause: "${cause}"`);
+    assert(cause === "Blown up by your own bazooka", `unexpected cause "${cause}"`);
     await page.waitForFunction(() => !document.getElementById("respawn-btn").disabled, null, { timeout: 10000 });
     await page.click("#respawn-btn", { timeout: 20000 });
     await page.waitForFunction(() => window.__voxelands.gameState === "playing", null, { timeout: 10000 });
@@ -1017,10 +1238,13 @@ try {
         v.player.yaw = Math.atan2(-dx, -dz);
         v.player.pitch = Math.atan2(dy, Math.hypot(dx, dz));
         v.player.health = 20;
+        // Hold off its attacks for a moment: a zombie hit knocks the player
+        // into the air, and a hit while falling is a critical hit.
+        z.attackCooldown = Math.max(z.attackCooldown, 4);
       });
-    // A fully charged first hit.
+    // A fully charged first hit, standing on the ground.
     await aimAtZombie();
-    await page.waitForFunction(() => window.__voxelands.interaction.entityHit && window.__voxelands.mobs.charge(window.__voxelands.interaction.tool) >= 1, null, { timeout: 20000, polling: 30 });
+    await page.waitForFunction(() => window.__voxelands.player.onGround && window.__voxelands.interaction.entityHit && window.__voxelands.mobs.charge(window.__voxelands.interaction.tool) >= 1, null, { timeout: 20000, polling: 30 });
     const before = await page.evaluate(() => {
       const z = window.__zombie;
       const p = window.__voxelands.player.position;
@@ -1163,7 +1387,7 @@ try {
     await page.waitForFunction(() => window.__voxelands.gameState === "playing", null, { timeout: 10000 });
   });
 
-  await check("mob caps, despawning, daylight burning, Blast Orb damage, creative immunity", async () => {
+  await check("mob caps, despawning, daylight burning, explosion damage, creative immunity", async () => {
     const a = await mobArena(-60, 60);
     const s = await page.evaluate(({ x, y, z }) => {
       const v = window.__voxelands;

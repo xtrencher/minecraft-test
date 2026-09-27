@@ -22,6 +22,9 @@ const RAMPS = {
   cooked: [0x3a1d0c, 0x5e3316, 0x87501f, 0xae7336, 0xcf9a5c].map(hex),
   cloth: [0xa8a193, 0xc5bfb1, 0xdcd7cb, 0xefece4, 0xffffff].map(hex),
   leaf: [0x1f5a17, 0x2f7d22, 0x46a034, 0x6cc24c, 0x9be07a].map(hex),
+  olive: [0x2a3316, 0x3d4a20, 0x55662e, 0x71843f, 0x93a65a].map(hex),
+  gunmetal: [0x1b1d21, 0x2b2e34, 0x40444c, 0x5b6069, 0x7d838c].map(hex),
+  grip: [0x24160e, 0x3a2416, 0x543420, 0x6f4730, 0x8a5c3f].map(hex),
 };
 
 class Canvas {
@@ -162,7 +165,55 @@ function paintIngot(ramp) {
   return c.render([ramp]);
 }
 
+// Weapons, drawn pointing to the upper right like the tools.
+function paintGrenade() {
+  const c = new Canvas();
+  const BODY = 0;
+  const METAL = 1;
+  c.disc(BODY, 15, 19, 8.5, 9.5, (x, y) => (x + y < 30 ? 0.4 : -0.2));
+  // Segment grooves.
+  for (const gy of [15, 19, 23]) c.line(BODY, 8, gy, 22, gy, 0.8, () => -1.2);
+  for (const gx of [12, 18]) c.line(BODY, gx, 11, gx, 27, 0.8, () => -1.2);
+  // Fuse head, lever and ring pin.
+  c.poly(METAL, [[12, 8], [18, 8], [19, 11], [11, 11]], () => 0.5);
+  c.line(METAL, 18, 9, 24, 17, 2, () => 0.2);
+  c.disc(METAL, 9, 7, 3.2, 3.2, () => 0.6);
+  c.disc(BODY, 9, 7, 1.6, 1.6, () => -2); // hole of the ring
+  return c.render([RAMPS.olive, RAMPS.iron]);
+}
+
+function paintPistol() {
+  const c = new Canvas();
+  const METAL = 0;
+  const GRIP = 1;
+  c.poly(METAL, [[4, 10], [28, 10], [28, 16], [4, 16]], (x, y) => (y < 12 ? 0.5 : -0.1)); // slide + barrel
+  c.poly(METAL, [[24, 16], [28, 16], [28, 17.5], [24, 17.5]], () => -0.3); // barrel under the slide
+  c.poly(GRIP, [[5, 16], [12, 16], [11, 28], [4, 28], [3, 25]], (x, y) => (x < 7 ? 0.4 : -0.1)); // grip
+  c.line(METAL, 12, 17, 16, 21, 1.2, () => -0.2); // trigger guard
+  c.line(METAL, 16, 21, 18, 17, 1.2, () => -0.2);
+  c.line(METAL, 13.5, 17, 14, 19.5, 1, () => 0.4); // trigger
+  for (const sx of [6, 8, 10]) c.line(METAL, sx, 10.5, sx, 15.5, 0.6, () => -1.5); // slide serrations
+  c.disc(METAL, 26.5, 9.5, 1, 1, () => 0.8); // front sight
+  return c.render([RAMPS.gunmetal, RAMPS.grip]);
+}
+
+function paintBazooka() {
+  const c = new Canvas();
+  const TUBE = 0;
+  const METAL = 1;
+  c.line(TUBE, 3, 25, 27, 7, 6.2, across(3, 25, 27, 7, 0.5)); // tube
+  c.poly(METAL, [[24, 4], [30, 9], [27, 13], [21, 8]], () => 0.3); // muzzle ring
+  c.poly(METAL, [[1, 22], [6, 27], [4, 31], [-1, 26]], () => -0.1); // rear flare
+  c.poly(METAL, [[13, 13], [17, 10], [19, 12.5], [15, 15.5]], () => 0.6); // sight
+  c.line(METAL, 12, 22, 14, 27, 2, () => -0.1); // grip
+  c.line(METAL, 18, 17.5, 20, 22, 2, () => -0.1); // front grip
+  return c.render([RAMPS.olive, RAMPS.gunmetal]);
+}
+
 const PAINTERS = {
+  grenade: paintGrenade,
+  pistol: paintPistol,
+  bazooka: paintBazooka,
   stick: () => {
     const c = new Canvas();
     c.line(0, 7, 26, 25, 8, 2.6);

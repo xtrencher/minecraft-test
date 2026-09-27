@@ -10,6 +10,8 @@
 // Everything routes through a master gain and a dynamics compressor, so loud
 // layered sounds (explosions) can peak hard without clipping.
 
+import { explosionSound } from "./falloff.js";
+
 const NOISE_SECONDS = 2.5;
 
 // Block material sounds: layers of filtered noise.
@@ -283,6 +285,34 @@ export class Audio {
     this._hit({ type: "bandpass", f: 700, fEnd: 1600, q: 1.4, d: 0.2, v: 0.16, attack: 0.03 });
   }
 
+  // Pistol shot: a sharp crack, a punchy body, a low thump and a short tail.
+  playGunshot() {
+    this._hit({ type: "highpass", f: 2600, q: 0.7, d: 0.03, v: 0.55, attack: 0.001 });
+    this._hit({ type: "bandpass", f: 950, q: 1, d: 0.08, v: 0.6, attack: 0.001 });
+    this._hit({ type: "lowpass", f: 200, q: 1, d: 0.12, v: 0.55, attack: 0.002 });
+    this._hit({ type: "lowpass", f: 1400, fEnd: 300, q: 0.7, d: 0.35, v: 0.12, attack: 0.01 }, 0.02);
+  }
+
+  // A bullet hitting a block `distance` blocks away: a small sharp tick.
+  playRicochet(distance = 0) {
+    this._hit({ type: "bandpass", f: 2900, q: 7, d: 0.05, v: 0.14 / (1 + distance / 10), jitter: 0.3 }, Math.min(distance / 343, 0.5));
+  }
+
+  // Bazooka launch: a heavy thump and a rising rush of burning propellant.
+  playRocketLaunch() {
+    this._hit({ type: "lowpass", f: 160, q: 1, d: 0.25, v: 0.7, attack: 0.002 });
+    this._hit({ type: "bandpass", f: 400, fEnd: 1500, q: 1.1, d: 0.5, v: 0.4, attack: 0.01 });
+    this._hit({ type: "highpass", f: 3000, q: 0.7, d: 0.4, v: 0.14, attack: 0.02 });
+  }
+
+  // A grenade bouncing: a small metallic clink and a thud (strength 0-1).
+  playGrenadeBounce(strength = 1, distance = 0) {
+    const v = strength / (1 + distance / 8);
+    if (v < 0.02) return;
+    this._hit({ type: "bandpass", f: 2400, q: 6, d: 0.035, v: 0.18 * v, jitter: 0.2 });
+    this._hit({ type: "lowpass", f: 420, q: 1, d: 0.06, v: 0.22 * v });
+  }
+
   // Mob voices: `event` is "idle", "hurt", "death" or "attack"; quieter
   // with distance (blocks), silent beyond 40.
   playMob(kind, event, distance = 0) {
@@ -310,15 +340,23 @@ export class Audio {
 
   // Layered explosion: a sub-bass thump, a distorted low-passed noise body
   // with a falling cutoff, a sharp crack on top, a long rumble tail, and a
-  // patter of falling debris. `distance` (blocks) attenuates the volume and
-  // delays the sound slightly, like sound travelling through air.
-  playExplosion(distance = 0) {
+  // patter of falling debris. Distance (blocks) makes it quieter, more
+  // muffled (a low-pass filter, like sound travelling through air) and a
+  // little delayed; `size` (1 = grenade, 5 = bazooka) makes it bigger.
+  playExplosion(distance = 0, size = 1) {
     const ctx = this.ctx;
     if (!ctx) return;
-    const t0 = ctx.currentTime + Math.min(distance / 343, 0.3);
+    const p = explosionSound(distance, size);
+    if (p.gain < 0.004) return;
+    const t0 = ctx.currentTime + p.delay;
+    const long = Math.sqrt(size); // bigger blasts ring out longer
+    const muffle = ctx.createBiquadFilter();
+    muffle.type = "lowpass";
+    muffle.frequency.value = p.cutoff;
+    muffle.Q.value = 0.5;
     const out = ctx.createGain();
-    out.gain.value = 1.3 / (1 + distance / 22);
-    out.connect(this.master);
+    out.gain.value = p.gain;
+    muffle.connect(out).connect(this.master);
 
     const env = (gainNode, attackEnd, peak, decayEnd) => {
       gainNode.gain.setValueAtTime(0.0001, t0);
@@ -326,29 +364,29 @@ export class Audio {
       gainNode.gain.exponentialRampToValueAtTime(0.0001, decayEnd);
     };
 
-    // Sub-bass thump.
+    // Sub-bass thump (deeper for bigger blasts).
     const sub = ctx.createOscillator();
     sub.type = "sine";
-    sub.frequency.setValueAtTime(95, t0);
-    sub.frequency.exponentialRampToValueAtTime(28, t0 + 0.9);
+    sub.frequency.setValueAtTime(95 / Math.sqrt(long), t0);
+    sub.frequency.exponentialRampToValueAtTime(26, t0 + 0.9 * long);
     const subGain = ctx.createGain();
-    env(subGain, t0 + 0.012, 1.1, t0 + 1.4);
-    sub.connect(subGain).connect(out);
+    env(subGain, t0 + 0.012, 1.1, t0 + 1.4 * long);
+    sub.connect(subGain).connect(muffle);
     sub.start(t0);
-    sub.stop(t0 + 1.5);
+    sub.stop(t0 + 1.5 * long);
 
     // Distorted body with a falling low-pass cutoff.
-    const body = this._noise(t0, 2.0);
+    const body = this._noise(t0, Math.min(2.4, 2.0 * long));
     const bodyFilter = ctx.createBiquadFilter();
     bodyFilter.type = "lowpass";
     bodyFilter.Q.value = 0.8;
     bodyFilter.frequency.setValueAtTime(3200, t0);
-    bodyFilter.frequency.exponentialRampToValueAtTime(160, t0 + 1.4);
+    bodyFilter.frequency.exponentialRampToValueAtTime(140, t0 + 1.4 * long);
     const shaper = ctx.createWaveShaper();
     shaper.curve = this._shaperCurve;
     const bodyGain = ctx.createGain();
-    env(bodyGain, t0 + 0.008, 1.5, t0 + 1.9);
-    body.connect(bodyFilter).connect(shaper).connect(bodyGain).connect(out);
+    env(bodyGain, t0 + 0.008, 1.5, t0 + Math.min(2.4, 1.9 * long));
+    body.connect(bodyFilter).connect(shaper).connect(bodyGain).connect(muffle);
 
     // Sharp crack transient.
     const crack = this._noise(t0, 0.12);
@@ -357,22 +395,24 @@ export class Audio {
     crackFilter.frequency.value = 1800;
     const crackGain = ctx.createGain();
     env(crackGain, t0 + 0.003, 0.9, t0 + 0.1);
-    crack.connect(crackFilter).connect(crackGain).connect(out);
+    crack.connect(crackFilter).connect(crackGain).connect(muffle);
 
-    // Long low rumble tail.
-    const rumble = this._noise(t0, 2.4);
+    // Long low rumble tail (several seconds for the bazooka).
+    const rumbleLen = Math.min(NOISE_SECONDS - 0.1, 2.4 * long);
+    const rumble = this._noise(t0, rumbleLen);
     const rumbleFilter = ctx.createBiquadFilter();
     rumbleFilter.type = "lowpass";
     rumbleFilter.frequency.value = 140;
     const rumbleGain = ctx.createGain();
     rumbleGain.gain.setValueAtTime(0.0001, t0);
-    rumbleGain.gain.exponentialRampToValueAtTime(0.9, t0 + 0.15);
-    rumbleGain.gain.exponentialRampToValueAtTime(0.0001, t0 + 2.4);
-    rumble.connect(rumbleFilter).connect(rumbleGain).connect(out);
+    rumbleGain.gain.exponentialRampToValueAtTime(0.9 * Math.min(long, 1.6), t0 + 0.15);
+    rumbleGain.gain.exponentialRampToValueAtTime(0.0001, t0 + rumbleLen);
+    rumble.connect(rumbleFilter).connect(rumbleGain).connect(muffle);
 
     // Debris patter: a handful of tiny ticks as chunks rain back down.
-    for (let i = 0; i < 9; i++) {
-      const when = t0 + 0.35 + Math.random() * 1.3;
+    const ticks = Math.round(9 * long);
+    for (let i = 0; i < ticks; i++) {
+      const when = t0 + 0.35 + Math.random() * 1.3 * long;
       const tick = this._noise(when, 0.05);
       const tickFilter = ctx.createBiquadFilter();
       tickFilter.type = "bandpass";
@@ -380,7 +420,7 @@ export class Audio {
       const tickGain = ctx.createGain();
       tickGain.gain.setValueAtTime(0.05 + Math.random() * 0.12, when);
       tickGain.gain.exponentialRampToValueAtTime(0.0001, when + 0.05);
-      tick.connect(tickFilter).connect(tickGain).connect(out);
+      tick.connect(tickFilter).connect(tickGain).connect(muffle);
     }
   }
 }

@@ -11,6 +11,7 @@ import { PostFX } from "./postfx.js";
 import { PRESETS, applyPreset, normalizePreset } from "./graphics.js";
 import { worldUniforms } from "./shaders.js";
 import { Inventory, HOTBAR_SIZE, makeStack } from "./inventory.js";
+import { itemInfo } from "./items.js";
 import { IconCache } from "./slot-view.js";
 import { Hud } from "./hud.js";
 import { InventoryScreen } from "./inventory-ui.js";
@@ -20,6 +21,9 @@ import { Interaction } from "./interaction.js";
 import { MobManager } from "./mobs.js";
 import { isUnderwater, surfaceHeight } from "./water.js";
 import { FallingBlocks } from "./falling.js";
+import { WeaponSystem } from "./weapons.js";
+import { BulletHoles } from "./decals.js";
+import { GRENADE_RADIUS } from "./effects.js";
 
 // ---------- Seed ----------
 function parseSeedFromURL() {
@@ -174,6 +178,9 @@ const interaction = new Interaction({ scene, world, player, inventory, entities,
 const invScreen = new InventoryScreen({ icons, inventory, audio });
 const mobs = new MobManager({ scene, world, player, entities, audio, effects, sky });
 const falling = new FallingBlocks(scene, world);
+const decals = new BulletHoles(scene, world);
+const weapons = new WeaponSystem({ scene, world, player, effects, audio, mobs, held, decals });
+interaction.weapons = weapons;
 interaction.combat = mobs;
 
 // The creative starter hotbar (the classic building blocks).
@@ -287,13 +294,16 @@ player.onFlightToggle = (enabled) => audio.playFlightToggle(enabled);
 // ---------- Damage, death and respawn ----------
 const DEATH_MESSAGES = {
   fall: "Fell from a high place",
-  orb_fall: "Sent flying by your own Blast Orb",
   drown: "Drowned",
   void: "Fell out of the world",
-  orb: "Blown up by your own Blast Orb",
+  grenade: "Blown up by your own grenade",
+  bazooka: "Blown up by your own bazooka",
+  grenade_fall: "Sent flying by your own grenade",
+  bazooka_fall: "Sent flying by your own bazooka",
   zombie: "Killed by a zombie",
 };
 let lastBlastHitTime = -Infinity;
+let lastBlastSource = "grenade";
 let deathCause = null;
 
 player.onHurt = (amount, cause) => {
@@ -303,8 +313,8 @@ player.onHurt = (amount, cause) => {
 };
 
 player.onDeath = (cause) => {
-  // A fall right after being launched by an explosion was the orb's doing.
-  if (cause === "fall" && performance.now() - lastBlastHitTime < 6000) cause = "orb_fall";
+  // A fall right after being launched by an explosion was the explosive's doing.
+  if (cause === "fall" && performance.now() - lastBlastHitTime < 6000) cause = `${lastBlastSource}_fall`;
   deathCause = cause;
   audio.playDeath();
   if (invScreen.isOpen) invScreen.close();
@@ -365,29 +375,37 @@ function respawn() {
 }
 hud.respawnBtn.addEventListener("click", respawn);
 
-// Blast Orb explosions hurt (lethally up close) and shove the player away
-// from the blast center with an upward kick, falling off with distance.
-effects.onExplosion = (center, radius) => {
+// Explosions hurt (lethally up close) and shove the player away from the
+// blast center with an upward kick, falling off with distance and scaled
+// by the size of the blast (a bazooka rocket is 5 grenades wide).
+effects.onExplosion = (center, radius, source) => {
   mobs.explosion(center, radius);
+  const size = Math.sqrt(radius / GRENADE_RADIUS);
   const offset = player.position.clone();
   offset.y += 0.9; // body center
   offset.sub(center);
   const dist = offset.length();
   const hurtReach = radius * 1.8;
   if (dist < hurtReach && !player.dead) {
-    const dmg = Math.floor(30 * Math.pow(1 - dist / hurtReach, 1.3));
-    if (dmg > 0 && player.damage(dmg, "orb")) lastBlastHitTime = performance.now();
+    const dmg = Math.floor(30 * size * Math.pow(1 - dist / hurtReach, 1.3));
+    if (dmg > 0 && player.damage(dmg, source)) {
+      lastBlastHitTime = performance.now();
+      lastBlastSource = source;
+    }
   }
   const reach = radius * 2.2;
   if (dist >= reach || player.dead) return;
-  const strength = (1 - dist / reach) * 22;
+  const strength = Math.min(40, (1 - dist / reach) * 22 * size);
   if (dist < 1e-3) offset.set(0, 1, 0);
   offset.normalize();
   offset.y = Math.max(offset.y, 0) + 0.45;
   offset.normalize().multiplyScalar(strength);
-  offset.y = Math.min(offset.y, 13);
+  offset.y = Math.min(offset.y, 13 * Math.min(size, 1.6));
   player.applyImpulse(offset);
-  if (!player.creative) lastBlastHitTime = performance.now();
+  if (!player.creative) {
+    lastBlastHitTime = performance.now();
+    lastBlastSource = source;
+  }
 };
 
 // ---------- Game mode ----------
@@ -537,6 +555,7 @@ const DIGIT_CODES = ["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6",
 function selectSlot(i) {
   inventory.selected = ((i % HOTBAR_SIZE) + HOTBAR_SIZE) % HOTBAR_SIZE;
   interaction.eating = 0;
+  weapons.cancel();
   markInventoryChanged();
 }
 
@@ -556,7 +575,6 @@ window.addEventListener("keydown", (e) => {
   if (e.repeat) return;
   if (e.code === "KeyE") openInventory("inventory");
   else if (e.code === "KeyQ") interaction.dropSelected(e.ctrlKey);
-  else if (e.code === "KeyF") effects.throwOrb(player.getEyePosition(), player.getForwardVector(), player.velocity);
 });
 
 canvas.addEventListener("wheel", (e) => {
@@ -670,6 +688,8 @@ window.__voxelands = {
   invScreen,
   mobs,
   falling,
+  weapons,
+  decals,
   audio,
   water: { isUnderwater, surfaceHeight },
   hud,
@@ -740,7 +760,9 @@ function animate() {
     entities.update(dt, player);
     mobs.update(dt);
     falling.update(dt);
-    ui.setOrbCooldown(effects.cooldownFraction());
+    // A drawn throw is dropped if the grenade leaves the hand (thrown away, swapped).
+    if (weapons.charging && itemInfo(inventory.selectedStack?.id)?.weapon?.kind !== "grenade") weapons.cancel();
+    weapons.update(dt);
   } else {
     player.syncCamera(); // keep the view behind the menus sensible
   }
@@ -759,6 +781,8 @@ function animate() {
   updateEnvironment(dt);
   hud.update(dt, player);
   hud.setAttackCharge(gameState === "playing" ? mobs.charge(interaction.tool) : 1);
+  hud.setThrowCharge(gameState === "playing" ? weapons.charge : 0);
+  held.setItem(inventory.selectedStack?.id ?? 0); // follows the selected slot (no-op when unchanged)
   held.update(dt, player, heldLight, camera, interaction.eating);
 
   ui.updateFps(frameTime); // real frame time, so slow frames aren't hidden by the clamp

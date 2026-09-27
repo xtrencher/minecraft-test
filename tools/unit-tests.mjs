@@ -615,5 +615,33 @@ console.log("\nCollision (physics.js)");
   });
 }
 
+console.log("\nExplosion falloff (falloff.js)");
+{
+  const { shakeFalloff, explosionSound } = await import("../js/falloff.js");
+  await test("camera shake fades smoothly with distance, to nothing far away, and reaches farther for bigger blasts", () => {
+    let prev = Infinity;
+    for (let d = 0; d <= 300; d += 5) {
+      const s = shakeFalloff(d, 7);
+      assert.ok(s <= prev + 1e-12 && s >= 0 && s <= 1, `not monotonic at ${d}`);
+      prev = s;
+    }
+    assert.equal(shakeFalloff(0, 7), 1);
+    assert.equal(shakeFalloff(200, 7), 0);
+    assert.ok(shakeFalloff(80, 35) > shakeFalloff(80, 7), "a bazooka shakes from farther away");
+  });
+
+  await test("explosions sound quieter, more muffled and later with distance; bigger blasts are louder", () => {
+    let prev = explosionSound(0, 1);
+    for (let d = 10; d <= 400; d += 10) {
+      const s = explosionSound(d, 1);
+      assert.ok(s.gain < prev.gain && s.cutoff <= prev.cutoff && s.delay > prev.delay, `not smooth at ${d}`);
+      prev = s;
+    }
+    assert.ok(explosionSound(400, 1).cutoff < 500, "far explosions are muffled to a rumble");
+    assert.ok(explosionSound(0, 1).cutoff > 15000, "close explosions are crisp");
+    assert.ok(explosionSound(60, 5).gain > explosionSound(60, 1).gain, "the bazooka is louder");
+  });
+}
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 process.exit(failed > 0 ? 1 : 0);

@@ -364,3 +364,55 @@ The codebase grew from ~2,000 lines of JavaScript in 11 modules to ~10,800 lines
 - **Sounds:** every sound effect and mob voice plays without errors, and the jump and burp sounds are gone.
 
 **40 smoke checks and 24 unit tests pass with zero console errors.**
+
+## Phase 2: Weapons, part 1 — DONE
+
+**Blast Orb → Grenade.** The Blast Orb, its separate HUD indicator and the F key are gone. The **Grenade** is now a normal item (stack of 1 in creative, craftable from 1 iron ingot + 2 coal). With it selected, holding right-click charges the throw, and a small bar under the crosshair fills (red glow when full). A quick click lobs it about 6 blocks; a full charge (1.5 s) throws it about 25. It's a physical object: gravity, sub-stepped collision with blocks, bounces with energy loss (restitution 0.38) plus friction, and it rolls to a stop. It explodes after a 5 s fuse (it blinks red), or at once when it hits a mob directly. The blast size is unchanged (radius 7).
+
+**Pistol** (new `js/weapons.js`, crafted from 3 iron ingots + 1 plank). Right-click fires a hitscan shot with slight spread. It hits the first solid block (bullets pass through grass, flowers and torches) or the first mob hitbox, whichever is nearer.
+- **On blocks:** sparks, dust in the block's colour, a ricochet sound, and a bullet hole decal (`js/decals.js`, pooled, 96 at most). A hole disappears when its block is broken or blown up.
+- **On mobs:** 5 damage and knockback, with a hit flash and blood puffs.
+- **Every shot:** a muzzle flash (an additive sprite plus a short point light), a recoil kick on the camera and the gun model, and a noise-based gunshot sound.
+
+**Bazooka** (crafted from 8 iron ingots around a grenade). Right-click fires a rocket from the tube (or from the eye when the tube is inside a wall) toward the crosshair point.
+- **Flight:** 75 blocks/s, nearly flat (gravity -2.5), with a glowing exhaust (a sprite plus a moving light) and a smoke trail. It lives up to 12 s or until it leaves the loaded terrain.
+- **Collision:** each step casts a ray against blocks and mob hitboxes, so it can't tunnel through thin walls or small mobs.
+- **Blast:** radius 35 (5× the grenade), with a much bigger fireball, more debris, a heavy shake, a longer and deeper boom, and strong knockback. You can kill yourself with it: "Blown up by your own bazooka" (a fall right after your own blast reads "Sent flying by your own bazooka"; grenades work the same way).
+
+**Controls.** With a grenade, pistol or bazooka selected, right-click uses the weapon instead of placing a block. There's no ammo and no reloading. Every click fires, with only a tiny minimum interval (70 ms pistol, 200 ms bazooka, 120 ms between grenade throws).
+
+**Hitboxes and damage.** Mobs have ray and sphere hit tests (`mobs.raycast`, `mobs.sphereHit`), used by bullets, rockets and grenades. Explosions damage and fling mobs and the player by distance, scaled with the blast size. Damage and knockback are capped so a bazooka throws a mob far but not into orbit.
+
+**Explosion falloff (all explosives, new pure `js/falloff.js`).**
+- **Camera shake:** falls smoothly with distance (smoothstep to zero at `6 × radius + 20` blocks), so a grenade 40 blocks away is a light rumble and one 90 blocks away is felt only through sound.
+- **Sound:** gain drops with distance, a low-pass filter closes (18 kHz up close, down to about 220 Hz far away) so distant blasts are muffled, and the sound is delayed by distance / 343 m/s (capped at 1.2 s). Bigger blasts are louder, deeper and longer.
+
+**Performance of big blasts.** A bazooka blast can remove tens of thousands of blocks, so:
+- **Carving:** reads chunk arrays directly, column by column, and applies everything with one batched `setBlocks` (one light update, one change notification).
+- **Rebuilds:** chunks are no longer all rebuilt in the same frame. The 8 nearest rebuild at once, then more only while the frame's 10 ms edit budget lasts; the rest continue over the next frames, nearest first.
+- **Loose blocks:** falling sand is capped at 64 animated blocks; any more settle instantly in one batch (Phase 1).
+- **Measured in the sandbox's software renderer:** a surface bazooka blast removed 21,270 blocks with 68 ms of carving. A worst-case underground blast removed about 67,000 blocks in about 170 ms total (carving plus light), with the chunk rebuilds spread over several frames. That's a hitch, but no longer a freeze.
+
+**Other fixes.**
+- The held item now follows the selected slot every frame (it could get out of sync when the slot changed without a key press).
+- A pending equip animation no longer restarts every frame.
+- Gun models were resized and posed so they sit in the lower right like the other tools (the bazooka's rear used to clip the near plane as a black block).
+
+**Testing.** New and rewritten smoke checks, all using real mouse input:
+- **Grenade throw:** holding the button shows the charge bar; a quick click lands about 6 blocks away and a full charge about 25; grenades bounce; the fuse is 5.05 s.
+- **Grenade blast:** the crater is still about 7 blocks (radius 6.7, 523 blocks).
+- **Direct hit:** a grenade thrown straight at a zombie explodes 0.4 s after the throw and kills it.
+- **Pistol:** 6 clicks give 6 shots and 6 bullet holes, with no reload. A zombie hit takes exactly 5 damage and is pushed back, and the holes disappear with their blocks.
+- **Right-click with a weapon:** places no block.
+- **Bazooka:** the rocket flies at 75 blocks/s with little drop and a smoke trail; the blast radius is 35 (21,270 blocks removed, reach 34.9); falling blocks stay within the cap.
+- **Shake:** a grenade shakes the camera 0.56 at 6 blocks, 0.11 at 40, and 0 at 90 and 200.
+- **Deaths:** your own grenade at your feet, and a point-blank bazooka shot, both kill you in survival with the right death message.
+- **Removed:** the old Blast Orb checks. The creative check now also asserts that F does nothing and the orb UI is gone.
+
+New unit tests check that shake and loudness fall monotonically with distance, that distant blasts are muffled and delayed, and that bigger blasts are louder.
+
+While running these, the full suite exposed two test-order problems, which I fixed:
+1. The "animals spawn at the start" check ran after weapon checks that clear mobs, so it now runs before them.
+2. The sword check could be hit by the zombie between aiming and swinging. A hit knocks the player into the air, which turned the swing into a critical hit, so the check now holds off the zombie's attack and waits until the player is on the ground.
+
+**46 smoke checks and 26 unit tests pass with zero console errors.**

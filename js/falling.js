@@ -1,6 +1,6 @@
 // Loose blocks (sand, gravel) fall when nothing solid is underneath them.
 //
-// Every edit batch reports its changed cells (World.onBlocksChanged); a
+// Every edit batch reports its changed cells (World.changeListeners); a
 // loose block whose support is gone detaches together with the whole loose
 // column resting on it, so a column falls as one and lands stacked. Falling
 // blocks are entities with gravity that turn back into blocks where they
@@ -27,7 +27,7 @@ export class FallingBlocks {
     this._pending = []; // flat [x, y, z, ...] cells to check
     this.settledInstantly = 0; // loose blocks moved without animation (stats / tests)
     this.onBreak = null; // (x, y, z, id): a falling block broke (landed in a torch's cell)
-    world.onBlocksChanged = (changed) => this._notify(changed);
+    world.changeListeners.push((changed) => this._notify(changed));
   }
 
   get active() {

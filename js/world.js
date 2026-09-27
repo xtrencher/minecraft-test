@@ -45,6 +45,9 @@ export function selectionBox(id) {
   return SELECTION[SHAPE_OF[id]] || SELECTION[SHAPE.CUBE];
 }
 
+const EDIT_REMESH_AT_ONCE = 8; // chunks rebuilt immediately after an edit
+const EDIT_REMESH_BUDGET_MS = 10; // extra per-frame time for rebuilding after huge edits
+
 export class World {
   constructor(scene, seed) {
     this.scene = scene;
@@ -78,7 +81,7 @@ export class World {
 
     this.onEdit = null; // () => void, after any recorded edit
     this.onBlockPopped = null; // (x, y, z, id) when a torch/plant loses its support
-    this.onBlocksChanged = null; // (flat [x, y, z, ...]) after every edit batch
+    this.changeListeners = []; // fns called with (flat [x, y, z, ...]) after every edit batch
   }
 
   key(cx, cz) {
@@ -162,7 +165,7 @@ export class World {
       if (c.meshed) this.editRemeshQueue.add(c);
     }
     if (recordEdit && this.onEdit) this.onEdit();
-    if (this.onBlocksChanged) this.onBlocksChanged(changed);
+    for (const fn of this.changeListeners) fn(changed);
     return changed.length / 3;
   }
 
@@ -271,10 +274,22 @@ export class World {
   processQueues(budgetMs = 4) {
     const start = performance.now();
     if (this.editRemeshQueue.size > 0) {
-      for (const chunk of this.editRemeshQueue) this._buildMesh(chunk);
-      this.stats.lastEditRemeshCount = this.editRemeshQueue.size;
+      // Everyday edits (a few chunks) rebuild at once. A huge blast touches
+      // dozens of chunks: those are spread over several frames, nearest
+      // first, within a time budget.
+      let list = [...this.editRemeshQueue];
+      if (list.length > EDIT_REMESH_AT_ONCE) list.sort((a, b) => this._dist2(a) - this._dist2(b));
+      let n = 0;
+      for (const chunk of list) {
+        if (n >= EDIT_REMESH_AT_ONCE && performance.now() - start > EDIT_REMESH_BUDGET_MS) break;
+        if (this.chunks.get(numKey(chunk.cx, chunk.cz)) === chunk) this._buildMesh(chunk);
+        this.editRemeshQueue.delete(chunk);
+        n++;
+      }
+      list = null;
+      this.stats.lastEditRemeshCount = n;
       this.stats.lastEditRemeshMs = performance.now() - start;
-      this.editRemeshQueue.clear();
+      if (this.editRemeshQueue.size > 0) this.stats.spreadRemeshFrames = (this.stats.spreadRemeshFrames || 0) + 1;
     }
 
     let didWork = false;
@@ -380,7 +395,8 @@ export class World {
   // Voxel traversal ray cast (Amanatides & Woo). Returns
   // { block: [x,y,z], place: [x,y,z], normal: [x,y,z], id, distance } for
   // the first selectable block (non-cube blocks use their selection box), or null.
-  raycast(origin, direction, maxDistance = 6) {
+  // solidOnly: pass through non-solid blocks (plants, torches), e.g. for bullets.
+  raycast(origin, direction, maxDistance = 6, { solidOnly = false } = {}) {
     const dir = direction.clone().normalize();
     let x = Math.floor(origin.x);
     let y = Math.floor(origin.y);
@@ -398,7 +414,7 @@ export class World {
     let t = 0;
     while (t <= maxDistance) {
       const id = this.getBlock(x, y, z);
-      if (IS_SELECTABLE[id]) {
+      if (IS_SELECTABLE[id] && (!solidOnly || IS_SOLID[id])) {
         const hitT = SHAPE_OF[id] === SHAPE.CUBE ? t : rayBox(origin, dir, x, y, z, selectionBox(id));
         if (hitT !== null && hitT <= maxDistance) {
           const n = normal || [0, 0, 0];
