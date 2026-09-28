@@ -28,6 +28,9 @@ import { GRENADE_RADIUS, explosionScale } from "./effects.js";
 import { LodSystem } from "./lod.js";
 import { GrassField } from "./grass.js";
 import { UnderwaterMotes } from "./motes.js";
+import { createMobModel } from "./mob-models.js";
+import { DAY_LENGTH } from "./sky.js";
+import { BIOME_NAMES } from "./biomes.js";
 
 // ---------- Seed ----------
 function parseSeedFromURL() {
@@ -81,6 +84,13 @@ let graphicsPreset = normalizePreset(settings.graphics);
 // Per-weapon explosion-size multipliers (pause menu sliders), persisted.
 settings.explosionScale = { grenade: 1, bazooka: 1, airstrike: 1, ...settings.explosionScale };
 Object.assign(explosionScale, settings.explosionScale);
+
+// More settings-menu options (applied once their systems exist, below).
+const savedFov = Math.max(60, Math.min(110, Number(settings.fov) || 75));
+const savedSensitivity = Math.max(0.2, Math.min(3, Number(settings.sensitivity) || 1));
+const savedDifficulty = ["peaceful", "easy", "normal", "hard"].includes(settings.difficulty) ? settings.difficulty : "normal";
+const savedMobSpawning = settings.mobSpawning !== false;
+settings.volumes = { master: 0.9, sfx: 1, mobs: 1, explosions: 1, ...settings.volumes };
 
 // Built-in three.js materials (debris, particles) use this fog; the world's
 // own shaders use the shared uniforms in shaders.js (same distances).
@@ -140,6 +150,7 @@ const world = new World(scene, SEED);
 world.loadEdits(loadEdits(SEED));
 postfx.setWaterMaterial(world.materials.water);
 world.meshOptions.fancyLeaves = PRESETS[graphicsPreset].fancyLeaves; // before the first chunks are meshed
+world.meshOptions.hideGroundPlants = PRESETS[graphicsPreset].hideGroundPlants;
 // Decides which chunks are meshed and shown, and draws the land beyond them.
 const lod = new LodSystem(scene, world, SEED);
 lod.configure({ renderDistance, detailDistance: PRESETS[graphicsPreset].detailDistance });
@@ -216,6 +227,80 @@ held.resize(camera.aspect);
 const interaction = new Interaction({ scene, world, player, inventory, entities, audio, effects, held });
 const invScreen = new InventoryScreen({ icons, inventory, audio });
 const mobs = new MobManager({ scene, world, player, entities, audio, effects, sky });
+// The visible body in third-person camera modes (F5); hidden in first person.
+const playerModel = createMobModel("player");
+playerModel.root.visible = false;
+scene.add(playerModel.root);
+
+// ---------- Settings menu: FOV, sensitivity, time, difficulty, mob spawning, volume ----------
+player.baseFov = savedFov;
+player.fov = savedFov;
+player.mouseSensitivity = savedSensitivity;
+mobs.difficulty = savedDifficulty;
+mobs.enabled = savedMobSpawning;
+audio.setVolumes(settings.volumes);
+
+ui.fovInput.value = String(savedFov);
+ui.fovValueEl.textContent = String(savedFov);
+ui.fovInput.addEventListener("input", () => {
+  const v = Math.max(60, Math.min(110, Number(ui.fovInput.value) || 75));
+  player.baseFov = v;
+  ui.fovValueEl.textContent = String(v);
+  settings.fov = v;
+  saveSettings(settings);
+});
+
+ui.sensitivityInput.value = String(savedSensitivity);
+ui.sensitivityValueEl.textContent = `${savedSensitivity.toFixed(2)}x`;
+ui.sensitivityInput.addEventListener("input", () => {
+  const v = Math.max(0.2, Math.min(3, Number(ui.sensitivityInput.value) || 1));
+  player.mouseSensitivity = v;
+  ui.sensitivityValueEl.textContent = `${v.toFixed(2)}x`;
+  settings.sensitivity = v;
+  saveSettings(settings);
+});
+
+ui.difficultySelect.value = savedDifficulty;
+ui.difficultySelect.addEventListener("change", () => {
+  mobs.difficulty = ui.difficultySelect.value;
+  settings.difficulty = mobs.difficulty;
+  saveSettings(settings);
+});
+
+ui.mobSpawnToggle.checked = savedMobSpawning;
+ui.mobSpawnToggle.addEventListener("change", () => {
+  mobs.enabled = ui.mobSpawnToggle.checked;
+  settings.mobSpawning = mobs.enabled;
+  saveSettings(settings);
+});
+
+for (const key of ["master", "sfx", "mobs", "explosions"]) {
+  const v = settings.volumes[key];
+  ui.volumeInputs[key].value = String(v);
+  ui.volumeValueEls[key].textContent = `${Math.round(v * 100)}%`;
+  ui.volumeInputs[key].addEventListener("input", () => {
+    const nv = Math.max(0, Math.min(1.5, Number(ui.volumeInputs[key].value) || 0));
+    settings.volumes[key] = nv;
+    ui.volumeValueEls[key].textContent = `${Math.round(nv * 100)}%`;
+    audio.setVolumes({ [key]: nv });
+    saveSettings(settings);
+  });
+}
+
+ui.timeInput.addEventListener("input", () => {
+  sky.time = Number(ui.timeInput.value) * DAY_LENGTH;
+  ui.timeValueEl.textContent = formatTimeOfDay(sky.time);
+});
+ui.timeLockInput.addEventListener("change", () => {
+  sky.locked = ui.timeLockInput.checked;
+});
+
+function formatTimeOfDay(time) {
+  const totalMinutes = Math.floor((time / DAY_LENGTH) * 24 * 60);
+  const h = Math.floor(totalMinutes / 60) % 24;
+  const m = totalMinutes % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
 const falling = new FallingBlocks(scene, world);
 const waterSim = new WaterSim(world);
 const decals = new BulletHoles(scene, world);
@@ -493,7 +578,7 @@ function setGraphics(name, { adoptRenderDistance = false } = {}) {
   });
   lod.configure({ detailDistance: preset.detailDistance });
   grass.configure({ level: preset.grass });
-  world.setMeshOptions({ fancyLeaves: preset.fancyLeaves });
+  world.setMeshOptions({ fancyLeaves: preset.fancyLeaves, hideGroundPlants: preset.hideGroundPlants });
   if (adoptRenderDistance) setRenderDistance(preset.renderDistance);
   ui.graphicsSelect.value = graphicsPreset;
   ui.graphicsHintEl.textContent = describePreset(graphicsPreset);
@@ -539,6 +624,8 @@ ui.graphicsSelect.addEventListener("change", () => {
 // inventory/crafting screen is open (the world keeps running). "dead": the
 // death screen.
 let gameState = "start";
+let hudVisible = true; // F1
+let debugVisible = false; // F3
 
 function requestLock() {
   const result = canvas.requestPointerLock();
@@ -555,6 +642,9 @@ function showPause() {
   interaction.release();
   ui.showHud(false);
   ui.showPauseMenu(SEED, renderDistance);
+  ui.timeInput.value = String(sky.time / DAY_LENGTH);
+  ui.timeValueEl.textContent = formatTimeOfDay(sky.time);
+  ui.timeLockInput.checked = sky.locked;
 }
 
 ui.playBtn.addEventListener("click", () => {
@@ -578,7 +668,8 @@ document.addEventListener("pointerlockchange", () => {
     player.enabled = true;
     ui.hideStartMenu();
     ui.hidePauseMenu();
-    ui.showHud(true);
+    ui.showHud(hudVisible);
+    ui.setDebugVisible(debugVisible);
   } else if (gameState === "playing" || gameState === "paused") {
     showPause();
   }
@@ -638,6 +729,18 @@ window.addEventListener("keydown", (e) => {
   if (e.repeat) return;
   if (e.code === "KeyE") openInventory("inventory");
   else if (e.code === "KeyQ") interaction.dropSelected(e.ctrlKey);
+  else if (e.code === "F5") {
+    e.preventDefault();
+    player.cycleViewMode();
+  } else if (e.code === "F1") {
+    e.preventDefault();
+    hudVisible = !hudVisible;
+    ui.showHud(hudVisible);
+  } else if (e.code === "F3") {
+    e.preventDefault();
+    debugVisible = !debugVisible;
+    ui.setDebugVisible(debugVisible);
+  }
 });
 
 canvas.addEventListener("wheel", (e) => {
@@ -670,8 +773,14 @@ let underwater = false;
 let waterSurfaceY = 0; // the water surface above the eye, while under water
 let dawnDusk = 0; // 1 around sunrise and sunset
 let eyeSkyLight = 1; // sky light at the eye (0-1): no light shafts in dark flooded caves
+let nearLava = 0; // 0-1: heat-shimmer/tint strength near lava (see updateEnvironment)
+let nearestLava = null; // [x,y,z] of the closest lava block found by the last scan, or null
+let lavaCheckTimer = 0;
+let emberTimer = 0;
 const refractedSun = new THREE.Vector3(0, 1, 0);
 const underwaterRayColor = new THREE.Color();
+const emberColor = new THREE.Color();
+const emberColorTip = new THREE.Color();
 // Drifting particles in the water around the camera.
 const motes = new UnderwaterMotes(scene);
 let heldLight = { sky: 15, block: 0 };
@@ -703,6 +812,56 @@ function updateEnvironment(dt) {
   }
   motes.update(eye, worldUniforms.uTime.value, underwater, wl, drawingSize.y || window.innerHeight);
 
+  // Heat shimmer strength: 1 right next to lava, fading out over a few
+  // blocks; also remembers the nearest lava block for ember particles. The
+  // scan itself (a small block cube) is too costly to redo every frame, so
+  // it's throttled; nearLava/nearestLava just hold their last value between
+  // scans; a fraction of a second's staleness is imperceptible.
+  lavaCheckTimer -= dt;
+  if (lavaCheckTimer <= 0) {
+    lavaCheckTimer = 0.2;
+    nearLava = 0;
+    nearestLava = null;
+    let nearestLavaD = Infinity;
+    const LAVA_CHECK_R = 3;
+    const ex = Math.floor(eye.x);
+    const ey = Math.floor(eye.y);
+    const ez = Math.floor(eye.z);
+    for (let dz = -LAVA_CHECK_R; dz <= LAVA_CHECK_R; dz++) {
+      for (let dy = -LAVA_CHECK_R; dy <= LAVA_CHECK_R; dy++) {
+        for (let dx = -LAVA_CHECK_R; dx <= LAVA_CHECK_R; dx++) {
+          if (world.getBlock(ex + dx, ey + dy, ez + dz) !== BLOCK.LAVA) continue;
+          const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          nearLava = Math.max(nearLava, 1 - d / LAVA_CHECK_R);
+          if (d < nearestLavaD) {
+            nearestLavaD = d;
+            nearestLava = [ex + dx, ey + dy, ez + dz];
+          }
+        }
+      }
+    }
+  }
+  // Embers drifting up off nearby lava.
+  emberTimer -= dt;
+  if (nearestLava && emberTimer <= 0) {
+    emberTimer = 0.12 + Math.random() * 0.1;
+    effects.glow.spawn({
+      x: nearestLava[0] + 0.5 + (Math.random() - 0.5) * 0.8,
+      y: nearestLava[1] + 1 + Math.random() * 0.3,
+      z: nearestLava[2] + 0.5 + (Math.random() - 0.5) * 0.8,
+      vx: (Math.random() - 0.5) * 0.3,
+      vy: 0.5 + Math.random() * 0.6,
+      vz: (Math.random() - 0.5) * 0.3,
+      life: 0.8 + Math.random() * 0.7,
+      size0: 0.05 + Math.random() * 0.04,
+      size1: 0.01,
+      color0: emberColor.setRGB(1, 0.55, 0.15),
+      color1: emberColorTip.setRGB(0.6, 0.15, 0.05),
+      gravity: -0.15,
+      drag: 0.6,
+    });
+  }
+
   // Low mist over the water, thickest around sunrise and sunset.
   const e = worldUniforms.uSunDir.value.y;
   dawnDusk = Math.exp(-((e / 0.2) ** 2));
@@ -723,7 +882,7 @@ function renderFrame() {
   const preset = PRESETS[graphicsPreset];
   sky.material.uniforms.uWriteSkyMask.value = preset.post ? 1 : 0;
   // The item in hand is drawn on top of the world (fresh depth buffer).
-  const showHeld = gameState === "playing" || gameState === "inventory";
+  const showHeld = (gameState === "playing" || gameState === "inventory") && player.viewMode === "first";
   const overlay = showHeld ? { scene: held.scene, camera: held.camera } : null;
   if (preset.post) {
     sunWorldPos.copy(camera.position).addScaledVector(worldUniforms.uSunDir.value, 400);
@@ -743,6 +902,7 @@ function renderFrame() {
         underwaterColor: underwaterRayColor.setRGB(0.55, 0.9, 0.95).multiply(worldUniforms.uLightColor.value),
         surfaceY: waterSurfaceY,
         underwater,
+        nearLava,
         night: worldUniforms.uNight.value,
         bloomStrength: 0.11,
         time: worldUniforms.uTime.value,
@@ -760,6 +920,40 @@ function renderFrame() {
       renderer.autoClear = true;
     }
   }
+}
+
+// Positions/animates the visible third-person body (hidden in first person).
+function updatePlayerModel() {
+  const show = player.viewMode !== "first" && gameState !== "start";
+  playerModel.root.visible = show;
+  if (!show) return;
+  playerModel.root.position.set(player.position.x, player.position.y, player.position.z);
+  const moving = player.onGround && !player.flying && (Math.abs(player.velocity.x) > 0.15 || Math.abs(player.velocity.z) > 0.15);
+  playerModel.animate({
+    walkPhase: player.walkPhase,
+    walk: moving ? 1 : 0,
+    headYaw: 0,
+    headPitch: player.pitch,
+    time: worldUniforms.uTime.value,
+  });
+  playerModel.root.rotation.y = player.yaw;
+}
+
+// F3 debug overlay: position, chunk, biome, light and frame stats.
+function updateDebugOverlay() {
+  const p = player.position;
+  const cx = Math.floor(p.x) >> 4;
+  const cz = Math.floor(p.z) >> 4;
+  const light = world.lightAt(p.x, p.y + 1.62, p.z);
+  const biome = world.terrain?.biomeAt ? BIOME_NAMES[world.terrain.biomeAt(Math.floor(p.x), Math.floor(p.z))] || "?" : "?";
+  ui.updateDebug(
+    `XYZ: ${p.x.toFixed(2)} / ${p.y.toFixed(2)} / ${p.z.toFixed(2)}\n` +
+      `Chunk: ${cx}, ${cz}  Facing: ${(((-player.yaw * 180) / Math.PI) % 360).toFixed(0)}°\n` +
+      `Biome: ${biome}\n` +
+      `Light: sky ${light.sky} block ${light.block}\n` +
+      `Time: ${formatTimeOfDay(sky.time)}  Mobs: ${mobs.count}\n` +
+      `Graphics: ${graphicsPreset}  Render dist: ${renderDistance}`
+  );
 }
 
 // ---------- Debug / test hook ----------
@@ -903,6 +1097,8 @@ function animate() {
     flushSave();
   }
   updateEnvironment(dt);
+  updatePlayerModel();
+  if (debugVisible) updateDebugOverlay();
   hud.update(dt, player);
   hud.setAttackCharge(gameState === "playing" ? mobs.charge(interaction.tool) : 1);
   hud.setThrowCharge(gameState === "playing" ? weapons.charge : 0);

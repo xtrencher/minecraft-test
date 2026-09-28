@@ -718,10 +718,16 @@ The codebase grew from ~10,800 lines of JavaScript in 34 modules to ~15,200 line
 - Validated via tools/check-mob-models.mjs (all 13 species build cleanly), tools/check-mobs.mjs (arrow gravity+damage, spider climbing, new animals, flyers), and 4 new permanent checks in tools/smoke-test.mjs
 - BUG fix found during validation: skeleton arrows aimed using feet-to-feet height delta while launching from the archer's eye height, so a level shot at a same-height target already cleared the player's hitbox before gravity-compensation pushed it even higher, sailing clean over the player's head; fixed to aim at the player's torso center from the archer's actual launch height
 
-## 5. Player and settings
-- [ ] F5 camera modes (1st/3rd behind/3rd front) with visible player model
-- [ ] F1 hide HUD, F3 debug overlay
-- [ ] Time-of-day slider + lock
-- [ ] Full settings menu (graphics toggles, render distance, FOV, sensitivity, volume per category, explosion sizes, mob spawning toggle, difficulty, time of day), persisted in localStorage
+## 5. Player and settings — DONE
+- [x] F5 camera modes (1st/3rd behind/3rd front) with visible player model
+- [x] F1 hide HUD, F3 debug overlay
+- [x] Time-of-day slider + lock
+- [x] Full settings menu (graphics toggles, render distance, FOV, sensitivity, volume per category, explosion sizes, mob spawning toggle, difficulty, time of day), persisted in localStorage
+- Third person (js/player.js `syncCamera`): the camera orbits behind or in front of the eye along the view direction, pulled in by a `world.raycast` so it never clips through terrain; front mode looks back at the player (a selfie angle) instead of turning the world. js/mob-models.js adds a plain humanoid "player" rig (the villager's box structure, reskinned) shown only outside first person; the held item and first-person view bob are hidden in both third-person modes.
+- F1/F3/F5 are new cases in js/main.js's existing keydown handler. The F3 overlay (position, chunk, biome, sky/block light, time of day, graphics preset, mob count) is a new `#debug-overlay` div plumbed through ui.js.
+- Settings added to the pause menu: FOV and mouse sensitivity sliders (player.baseFov/mouseSensitivity), a time-of-day slider with a lock checkbox (`sky.locked` freezes the day/night cycle), a difficulty select (peaceful/easy/normal/hard — scales hostile damage via `MobManager.difficulty`/`DIFFICULTY_DAMAGE` and peaceful stops hostile spawns outright), a mob-spawning checkbox (`mobs.enabled`, existing flag now exposed), and four volume sliders (master/effects/mobs/explosions) routed through new gain buses in js/audio.js so every sound category can be balanced independently.
+- Tested via tools/unit-tests.mjs (unaffected), tools/check-mob-models.mjs (new "player" rig builds cleanly), and a full tools/smoke-test.mjs run (62/62 checks, no console errors) before starting Part B.
 
 (tick items as completed; commit after each numbered group)
+
+R4 PART A COMPLETE

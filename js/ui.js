@@ -34,6 +34,28 @@ export class UI {
     this.pauseModeHintEl = document.getElementById("pause-mode-hint");
     this.scopeOverlayEl = document.getElementById("scope-overlay");
     this.crosshairEl = document.getElementById("crosshair");
+    this.debugEl = document.getElementById("debug-overlay");
+    this.fovInput = document.getElementById("fov-slider");
+    this.fovValueEl = document.getElementById("fov-value");
+    this.sensitivityInput = document.getElementById("sensitivity-slider");
+    this.sensitivityValueEl = document.getElementById("sensitivity-value");
+    this.timeInput = document.getElementById("time-slider");
+    this.timeValueEl = document.getElementById("time-value");
+    this.timeLockInput = document.getElementById("time-lock");
+    this.difficultySelect = document.getElementById("difficulty-select");
+    this.mobSpawnToggle = document.getElementById("mob-spawn-toggle");
+    this.volumeInputs = {
+      master: document.getElementById("volume-master"),
+      sfx: document.getElementById("volume-sfx"),
+      mobs: document.getElementById("volume-mobs"),
+      explosions: document.getElementById("volume-explosions"),
+    };
+    this.volumeValueEls = {
+      master: document.getElementById("volume-master-value"),
+      sfx: document.getElementById("volume-sfx-value"),
+      mobs: document.getElementById("volume-mobs-value"),
+      explosions: document.getElementById("volume-explosions-value"),
+    };
     this.explosionInputs = {
       grenade: document.getElementById("explosion-grenade"),
       bazooka: document.getElementById("explosion-bazooka"),
@@ -69,6 +91,14 @@ export class UI {
 
   showHud(show) {
     this.hudEl.classList.toggle("hidden", !show);
+  }
+
+  setDebugVisible(show) {
+    this.debugEl.classList.toggle("hidden", !show);
+  }
+
+  updateDebug(text) {
+    this.debugEl.textContent = text;
   }
 
   // A sniper scope overlay while zoomed: masks the screen to a circle and

@@ -103,6 +103,19 @@ export class Audio {
     this.master = null;
     this._noiseBuffer = null;
     this._shaperCurve = null;
+    // Per-category multipliers (0-1.5), applied to their bus's gain; "master"
+    // scales the whole output. Settable before or after the context starts.
+    this.volumes = { master: 0.9, sfx: 1, mobs: 1, explosions: 1 };
+  }
+
+  // Applies { master, sfx, mobs, explosions } (any subset) immediately.
+  setVolumes(volumes) {
+    Object.assign(this.volumes, volumes);
+    if (!this.ctx) return;
+    this.master.gain.value = this.volumes.master;
+    this.busSfx.gain.value = this.volumes.sfx;
+    this.busMobs.gain.value = this.volumes.mobs;
+    this.busExplosions.gain.value = this.volumes.explosions;
   }
 
   ensureStarted() {
@@ -118,8 +131,18 @@ export class Audio {
       compressor.release.value = 0.25;
       compressor.connect(this.ctx.destination);
       this.master = this.ctx.createGain();
-      this.master.gain.value = 0.9;
+      this.master.gain.value = this.volumes.master;
       this.master.connect(compressor);
+      // Category buses (settings menu volume sliders), all feeding the master.
+      this.busSfx = this.ctx.createGain();
+      this.busSfx.gain.value = this.volumes.sfx;
+      this.busSfx.connect(this.master);
+      this.busMobs = this.ctx.createGain();
+      this.busMobs.gain.value = this.volumes.mobs;
+      this.busMobs.connect(this.master);
+      this.busExplosions = this.ctx.createGain();
+      this.busExplosions.gain.value = this.volumes.explosions;
+      this.busExplosions.connect(this.master);
       this._noiseBuffer = this._makeNoiseBuffer();
       this._shaperCurve = this._makeShaperCurve(2.5);
     }
@@ -160,7 +183,7 @@ export class Audio {
   // One filtered noise hit (or `n` staggered grains of it) into `dest`.
   _hit({ type = "lowpass", f = 1000, q = 1, d = 0.1, v = 0.3, n = 1, spread = 0.03, jitter = 0.15, attack = 0.004, fEnd = null }, when = 0, dest = null) {
     if (!this.ctx) return;
-    const out = dest || this.master;
+    const out = dest || this.busSfx;
     for (let i = 0; i < n; i++) {
       const t = this.ctx.currentTime + when + i * spread * (0.7 + Math.random() * 0.6);
       const src = this._noise(t, d + attack);
@@ -188,7 +211,7 @@ export class Audio {
     bus.gain.exponentialRampToValueAtTime(v * gainScale, t + Math.min(0.06, d * 0.3));
     bus.gain.setValueAtTime(v * gainScale, t + d * 0.55);
     bus.gain.exponentialRampToValueAtTime(0.0001, t + d);
-    bus.connect(this.master);
+    bus.connect(this.busMobs);
 
     const osc = ctx.createOscillator();
     osc.type = "sawtooth";
@@ -403,7 +426,7 @@ export class Audio {
     muffle.Q.value = 0.5;
     const out = ctx.createGain();
     out.gain.value = p.gain;
-    muffle.connect(out).connect(this.master);
+    muffle.connect(out).connect(this.busExplosions);
 
     const env = (gainNode, attackEnd, peak, decayEnd) => {
       gainNode.gain.setValueAtTime(0.0001, t0);

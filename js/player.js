@@ -76,10 +76,15 @@ export class Player {
     this._lastSpaceTime = -10;
     this._lastWTime = -10;
     this._footstepDistance = 0;
-    this.fov = BASE_FOV;
+    this.baseFov = BASE_FOV; // settings: FOV slider
+    this.fov = this.baseFov;
     this.zoomFov = null; // set by a scoped weapon to override the normal FOV
     this.zoomSensMul = 1; // mouse-look multiplier while zoomed (sniper scope)
     this.mouseSensitivity = 1; // user setting multiplier
+
+    this.viewMode = "first"; // "first" | "third-back" | "third-front" (F5)
+    this._camPos = new THREE.Vector3();
+    this._camDir = new THREE.Vector3();
 
     this.enabled = false;
     this.onFlightToggle = null;
@@ -236,8 +241,16 @@ export class Player {
     return new THREE.Vector3(-Math.sin(this.yaw) * Math.cos(this.pitch), Math.sin(this.pitch), -Math.cos(this.yaw) * Math.cos(this.pitch));
   }
 
+  // Cycles first person -> third person (behind) -> third person (front,
+  // facing the player) -> first person (F5).
+  cycleViewMode() {
+    this.viewMode = this.viewMode === "first" ? "third-back" : this.viewMode === "third-back" ? "third-front" : "first";
+  }
+
   // Points the camera from the player's eyes along the current yaw/pitch,
-  // with a brief roll when hurt and a fall to the side when dead.
+  // with a brief roll when hurt and a fall to the side when dead. In third
+  // person the camera instead orbits behind/in front of the player, pulled
+  // in by a raycast so it never clips through terrain.
   syncCamera() {
     let roll = 0;
     let drop = 0;
@@ -247,10 +260,30 @@ export class Player {
       roll = k * k * 1.2;
       drop = k * k * 1.15;
     }
+    const eye = this.getEyePosition();
     this.camera.rotation.order = "YXZ";
-    this.camera.rotation.set(Math.min(Math.PI / 2, this.pitch + this.recoil), this.yaw, roll);
-    this.camera.position.copy(this.getEyePosition());
+    if (this.viewMode === "first") {
+      this.camera.rotation.set(Math.min(Math.PI / 2, this.pitch + this.recoil), this.yaw, roll);
+      this.camera.position.copy(eye);
+      this.camera.position.y -= drop;
+      return;
+    }
+    const back = this.viewMode === "third-back";
+    const wantDist = back ? 4.4 : 2.6;
+    this._camDir.copy(this.getForwardVector()).multiplyScalar(back ? -1 : 1);
+    let dist = wantDist;
+    if (this.world.raycast) {
+      const hit = this.world.raycast(eye, this._camDir, wantDist, { solidOnly: true });
+      if (hit) dist = Math.max(0.35, hit.distance - 0.3);
+    }
+    this._camPos.copy(eye).addScaledVector(this._camDir, dist);
+    this.camera.position.copy(this._camPos);
     this.camera.position.y -= drop;
+    if (back) {
+      this.camera.rotation.set(Math.min(Math.PI / 2, this.pitch + this.recoil), this.yaw, roll);
+    } else {
+      this.camera.lookAt(eye);
+    }
   }
 
   // Maximum movement along one axis before the player's box would overlap a
@@ -402,7 +435,7 @@ export class Player {
     // Camera: sneaking lowers the eyes; sprinting widens the field of view.
     const eyeTarget = this.sneaking ? SNEAK_EYE_DROP : 0;
     this._eyeOffset += (eyeTarget - this._eyeOffset) * Math.min(1, dt * 12);
-    const fovTarget = this.zoomFov != null ? this.zoomFov : BASE_FOV + (this.sprinting ? 9 : 0) + (this.flying && this.sprinting ? 6 : 0);
+    const fovTarget = this.zoomFov != null ? this.zoomFov : this.baseFov + (this.sprinting ? 9 : 0) + (this.flying && this.sprinting ? 6 : 0);
     this.fov += (fovTarget - this.fov) * Math.min(1, dt * 8);
     if (Math.abs(this.camera.fov - this.fov) > 0.01) {
       this.camera.fov = this.fov;

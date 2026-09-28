@@ -729,9 +729,9 @@ const BUTTERFLY = {
     { name: "wingL", size: [5, 3, 1], pivot: [0, 0.5, 0], from: [-5, -1.5, -0.5] },
     { name: "wingR", size: [5, 3, 1], pivot: [0, 0.5, 0], from: [0, -1.5, -0.5] },
   ],
-  paint(s) {
+  paint(s, variant = 0) {
     const hues = [hex(0xf7b733), hex(0xe94f9b), hex(0x4cc9f0), hex(0xf72585)];
-    const hue = hues[Math.floor(hash(1, 1, s.seed) * hues.length)];
+    const hue = hues[variant % hues.length];
     s.part("body", () => hex(0x2a2018));
     for (const wing of ["wingL", "wingR"]) {
       s.part(wing, (f, x, y, w, h) => {
@@ -785,12 +785,18 @@ const FISH = {
     { name: "tail", size: [1, 4, 4], pivot: [0, 0, -5], from: [-0.5, -2, -4], parent: "body" },
     { name: "finTop", size: [1, 2, 4], pivot: [0, 2, 0], from: [-0.5, 0, -2], parent: "body", rigid: true },
   ],
-  paint(s) {
-    const hues = [hex(0xe8863a), hex(0x4cc9f0), hex(0xc9184a), hex(0xffd166)];
-    const hue = hues[Math.floor(hash(2, 5, s.seed) * hues.length)];
-    s.part("body", (f, x, y, w, h) => (f === "bottom" ? shade(hue, 0.7) : grain(hue, x, y, 181, 0.14)));
+  paint(s, variant = 0) {
+    const hues = [hex(0xe8863a), hex(0x4cc9f0), hex(0xc9184a), hex(0xffd166), hex(0x4a9e4c), hex(0x8a5cd6)];
+    const hue = hues[variant % hues.length];
+    const belly = mix(hue, [255, 255, 255], 0.5);
+    s.part("body", (f, x, y, w, h) => {
+      if (f === "bottom") return grain(belly, x, y, 182, 0.1); // pale countershaded belly
+      let c = f === "top" ? shade(hue, 0.82) : grain(hue, x, y, 181, 0.14);
+      if ((f === "left" || f === "right") && y % 4 === 1) c = shade(c, 0.78); // faint bars
+      return c;
+    });
     s.part("tail", () => shade(hue, 0.85));
-    s.part("finTop", () => shade(hue, 0.9));
+    s.part("finTop", () => shade(hue, 0.95));
   },
   animate(p, st) {
     const wig = Math.sin(st.time * 7) * 0.35;
@@ -852,6 +858,59 @@ const VILLAGER = {
   },
 };
 
+// The visible body used in third-person camera modes (F5): a plain
+// Minecraft-style humanoid, same rig shape as the villager minus the robe/nose.
+const PLAYER = {
+  parts: [
+    { name: "legL", size: [4, 12, 4], pivot: [-2, 12, 0], from: [-2, -12, -2] },
+    { name: "legR", size: [4, 12, 4], pivot: [2, 12, 0], from: [-2, -12, -2] },
+    { name: "body", size: [8, 12, 4], pivot: [0, 12, 0], from: [-4, 0, -2] },
+    { name: "head", size: [8, 8, 8], pivot: [0, 24, 0], from: [-4, 0, -4], parent: "body" },
+    { name: "armL", size: [3, 11, 3], pivot: [-5.5, 23, 0], from: [-1.5, -10, -1.5], parent: "body" },
+    { name: "armR", size: [3, 11, 3], pivot: [5.5, 23, 0], from: [-1.5, -10, -1.5], parent: "body" },
+  ],
+  paint(s) {
+    const skin = hex(0xd9a877);
+    const hair = hex(0x4a3324);
+    const shirt = hex(0x3a7bd5);
+    const shirtDark = hex(0x2c5ea8);
+    const pants = hex(0x33384a);
+    const shoe = hex(0x1c1c1c);
+    s.part("head", (f, x, y, w, h) => {
+      if (f === "top") return grain(hair, x, y, 201, 0.12);
+      let c = grain(skin, x, y, 202, 0.06);
+      if (f === "front") {
+        if (y <= 1) c = grain(hair, x, y, 203, 0.1); // fringe
+        if (y >= 2 && y < 4 && (x === 1 || x === w - 2)) c = [30, 24, 20]; // eyes
+        if (y === 5) c = shade(c, 0.85); // mouth shadow line
+      }
+      if ((f === "left" || f === "right") && y <= 1) c = grain(hair, x, y, 204, 0.1);
+      return c;
+    });
+    s.part("body", (f, x, y, w, h) => {
+      if (f === "bottom") return grain(skin, x, y, 205, 0.06);
+      let c = grain(shirt, x, y, 206, 0.08);
+      if ((x + y) % 6 === 0) c = grain(shirtDark, x, y, 207, 0.08);
+      return c;
+    });
+    for (const arm of ["armL", "armR"]) {
+      s.part(arm, (f, x, y, w, h) => (y >= h - 2 || f === "bottom" ? grain(skin, x, y, 208, 0.06) : grain(shirt, x, y, 209, 0.08)));
+    }
+    for (const leg of ["legL", "legR"]) {
+      s.part(leg, (f, x, y, w, h) => (y >= h - 2 ? grain(shoe, x, y, 210, 0.1) : grain(pants, x, y, 211, 0.08)));
+    }
+  },
+  animate(p, st) {
+    const swing = Math.sin(st.walkPhase) * 0.55 * st.walk;
+    p.legL.rotation.x = swing;
+    p.legR.rotation.x = -swing;
+    p.armL.rotation.x = -swing * 0.75;
+    p.armR.rotation.x = swing * 0.75;
+    p.head.rotation.y = st.headYaw;
+    p.head.rotation.x = -st.headPitch;
+  },
+};
+
 export const MODELS = {
   fluffalo: FLUFFALO,
   hoplet: HOPLET,
@@ -866,6 +925,7 @@ export const MODELS = {
   butterfly: BUTTERFLY,
   parrot: PARROT,
   fish: FISH,
+  player: PLAYER,
 };
 
 // Shared per species: skin texture, material and part geometries.
@@ -895,11 +955,12 @@ function mergeGeometries(list) {
   return out;
 }
 
-function buildSpecies(kind) {
-  if (built.has(kind)) return built.get(kind);
+function buildSpecies(kind, variant = 0) {
+  const key = variant ? `${kind}:${variant}` : kind;
+  if (built.has(key)) return built.get(key);
   const def = MODELS[kind];
   const skin = new Skin(def.parts);
-  def.paint(skin);
+  def.paint(skin, variant);
   const texture = skin.texture();
   const material = createEntityMaterial("map", texture);
   // Rigid parts are baked into their parent's geometry.
@@ -917,14 +978,15 @@ function buildSpecies(kind) {
   const geometries = {};
   for (const [name, list] of Object.entries(pieces)) geometries[name] = list.length === 1 ? list[0] : mergeGeometries(list);
   const entry = { def, skin, texture, material, geometries };
-  built.set(kind, entry);
+  built.set(key, entry);
   return entry;
 }
 
 // Creates a model instance: { root, tilt, parts, meshes, animate(state) }.
-// `root` is positioned/rotated by the mob; `tilt` is used for death.
-export function createMobModel(kind) {
-  const { def, material, geometries } = buildSpecies(kind);
+// `root` is positioned/rotated by the mob; `tilt` is used for death. `variant`
+// picks a color variant for species with more than one look (fish, butterflies).
+export function createMobModel(kind, variant = 0) {
+  const { def, material, geometries } = buildSpecies(kind, variant);
   const root = new THREE.Group();
   const tilt = new THREE.Group();
   root.add(tilt);

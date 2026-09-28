@@ -155,6 +155,7 @@ export class Sky {
     this._center = new THREE.Vector3();
     this.horizonColor = new THREE.Color();
     this.exposure = 1;
+    this.locked = false; // pauses the day/night cycle at the current time
   }
 
   // Cycle time (seconds) at which the sun is at `angle` (0 = sunrise, PI = sunset).
@@ -178,7 +179,7 @@ export class Sky {
   }
 
   update(dt, center, forward) {
-    this.time = (this.time + dt) % DAY_LENGTH;
+    if (!this.locked) this.time = (this.time + dt) % DAY_LENGTH;
     const phase = this.time / DAY_LENGTH;
     const angle = phase < DAY_SHARE ? (phase / DAY_SHARE) * Math.PI : Math.PI + ((phase - DAY_SHARE) / (1 - DAY_SHARE)) * Math.PI;
     this.sunAngle = angle;

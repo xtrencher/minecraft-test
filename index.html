@@ -57,6 +57,22 @@
     pointer-events: none;
   }
 
+  /* --- Debug overlay (F3) --- */
+  #debug-overlay {
+    position: fixed;
+    top: 40px;
+    left: 8px;
+    font-size: 12px;
+    line-height: 1.5;
+    font-family: "Courier New", monospace;
+    background: rgba(0,0,0,0.5);
+    padding: 6px 10px;
+    border-radius: 4px;
+    z-index: 10;
+    pointer-events: none;
+    white-space: pre;
+  }
+
   /* --- Hotbar --- */
   #hotbar {
     position: fixed;
@@ -483,6 +499,7 @@
     <div id="attack-charge" class="hidden"><div></div></div>
     <div id="throw-charge" class="hidden"><div></div></div>
     <div id="fps-counter">FPS: --</div>
+    <div id="debug-overlay" class="hidden"></div>
     <div id="mode-badge" class="hidden"></div>
     <div id="item-name"></div>
     <div id="status-bars"><div id="hearts"></div><div id="bubbles" class="hidden"></div></div>
@@ -510,6 +527,7 @@
         <b>Machine Gun:</b> hold Right Click for auto fire &nbsp; <b>Sniper:</b> Right Click scopes, Left Click fires<br/>
         <b>Airstrike:</b> aim the laser, Right Click to call it in<br/>
         <b>Creative:</b> double-tap Space to fly, middle click picks a block<br/>
+        <b>F5</b> camera view &nbsp; <b>F1</b> hide HUD &nbsp; <b>F3</b> debug info<br/>
         <b>Esc</b> pause menu
       </div>
       <div class="row">
@@ -546,6 +564,56 @@
       </div>
       <div id="graphics-hint" class="hint"></div>
       <div class="row">
+        <label for="fov-slider">Field of view</label>
+        <input type="range" id="fov-slider" min="60" max="110" step="1" value="75" />
+        <span id="fov-value">75</span>
+      </div>
+      <div class="row">
+        <label for="sensitivity-slider">Mouse sensitivity</label>
+        <input type="range" id="sensitivity-slider" min="0.2" max="3" step="0.05" value="1" />
+        <span id="sensitivity-value">1.00x</span>
+      </div>
+      <div class="row">
+        <label for="time-slider">Time of day</label>
+        <input type="range" id="time-slider" min="0" max="1" step="0.001" value="0.25" />
+        <span id="time-value">--</span>
+      </div>
+      <div class="row">
+        <label for="time-lock"><input type="checkbox" id="time-lock" /> Lock time of day</label>
+      </div>
+      <div class="row">
+        <label for="difficulty-select">Difficulty</label>
+        <select id="difficulty-select">
+          <option value="peaceful">Peaceful (no hostiles)</option>
+          <option value="easy">Easy</option>
+          <option value="normal" selected>Normal</option>
+          <option value="hard">Hard</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="mob-spawn-toggle"><input type="checkbox" id="mob-spawn-toggle" checked /> Mob spawning</label>
+      </div>
+      <div class="row">
+        <label for="volume-master">Master volume</label>
+        <input type="range" id="volume-master" min="0" max="1.5" step="0.05" value="0.9" />
+        <span id="volume-master-value">90%</span>
+      </div>
+      <div class="row">
+        <label for="volume-sfx">Effects volume</label>
+        <input type="range" id="volume-sfx" min="0" max="1.5" step="0.05" value="1" />
+        <span id="volume-sfx-value">100%</span>
+      </div>
+      <div class="row">
+        <label for="volume-mobs">Mob volume</label>
+        <input type="range" id="volume-mobs" min="0" max="1.5" step="0.05" value="1" />
+        <span id="volume-mobs-value">100%</span>
+      </div>
+      <div class="row">
+        <label for="volume-explosions">Explosion volume</label>
+        <input type="range" id="volume-explosions" min="0" max="1.5" step="0.05" value="1" />
+        <span id="volume-explosions-value">100%</span>
+      </div>
+      <div class="row">
         <label>Grenade blast size</label>
         <input type="range" id="explosion-grenade" min="0.4" max="2" step="0.05" value="1" />
         <span id="explosion-grenade-value">1.0x</span>
@@ -577,7 +645,8 @@
         <b>Grenade:</b> hold Right Click to charge, release to throw &nbsp; <b>Pistol / Bazooka:</b> Right Click fires<br/>
         <b>Machine Gun:</b> hold Right Click for auto fire &nbsp; <b>Sniper:</b> Right Click scopes, Left Click fires<br/>
         <b>Airstrike:</b> aim the laser, Right Click to call it in<br/>
-        <b>Creative:</b> double-tap Space to fly, middle click picks a block
+        <b>Creative:</b> double-tap Space to fly, middle click picks a block<br/>
+        <b>F5</b> camera view &nbsp; <b>F1</b> hide HUD &nbsp; <b>F3</b> debug info
       </div>
       <div class="menu-buttons">
         <button class="btn" id="resume-btn">Resume</button>

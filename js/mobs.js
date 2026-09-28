@@ -31,6 +31,12 @@ const ARROW_GRAVITY = -16;
 const ARROW_DAMAGE = 3;
 const ARROW_LIFE = 5;
 
+// Settings menu: difficulty scales hostile mob damage; peaceful spawns none.
+export const DIFFICULTY_DAMAGE = { peaceful: 0, easy: 0.6, normal: 1, hard: 1.6 };
+
+// Species with more than one skin color (see mob-models.js createMobModel).
+const VARIANT_COUNT = { fish: 6, butterfly: 4 };
+
 function colorGeometry(geo, colorHex) {
   const c = new THREE.Color().setHex(colorHex, THREE.SRGBColorSpace);
   const n = geo.getAttribute("position").count;
@@ -165,7 +171,8 @@ export class MobManager {
     this._nextId = 1;
     this._spawnTimer = 0;
     this._seeded = false;
-    this.enabled = true;
+    this.enabled = true; // settings: mob spawning toggle (existing mobs stay)
+    this.difficulty = "normal"; // "peaceful" | "easy" | "normal" | "hard": scales mob damage; peaceful spawns no hostiles
     this.lastAttackTime = -10; // game time of the player's last swing
     this.time = 0;
     this.kills = 0;
@@ -191,7 +198,7 @@ export class MobManager {
   spawn(kind, x, y, z) {
     const spec = SPECIES[kind];
     if (!spec) return null;
-    const model = createMobModel(kind);
+    const model = createMobModel(kind, VARIANT_COUNT[kind] ? Math.floor(Math.random() * VARIANT_COUNT[kind]) : 0);
     const m = {
       id: this._nextId++,
       kind,
@@ -305,6 +312,7 @@ export class MobManager {
   // caves. Spawn well out (up to sniper range) so there are real targets at
   // a distance, not just underfoot.
   _trySpawnHostile() {
+    if (this.difficulty === "peaceful") return false;
     const p = this.player.position;
     const a = Math.random() * Math.PI * 2;
     const d = 28 + Math.random() * 90;
@@ -591,7 +599,7 @@ export class MobManager {
   _attackPlayer(m, nx, nz) {
     m.attackCooldown = 1.0;
     m.attack = 0;
-    const applied = this.player.damage(m.spec.damage, m.kind);
+    const applied = this.player.damage(Math.round(m.spec.damage * DIFFICULTY_DAMAGE[this.difficulty]), m.kind);
     if (applied) {
       this.player.applyImpulse(this._tmp.set(nx * 6, 4, nz * 6));
       if (this.onPlayerHurt) this.onPlayerHurt(m);
@@ -658,7 +666,7 @@ export class MobManager {
       const blockHit = w.raycast(a.pos, dir, len, { solidOnly: true });
       const playerT = this._arrowHitsPlayer(a.pos, dir, blockHit ? blockHit.distance : len);
       if (playerT !== null) {
-        this.player.damage(ARROW_DAMAGE, "skeleton");
+        this.player.damage(Math.round(ARROW_DAMAGE * DIFFICULTY_DAMAGE[this.difficulty]), "skeleton");
         this.player.applyImpulse(this._tmp.set(dir.x * 4, 2, dir.z * 4));
         this.group.remove(a.mesh);
         this.arrows.splice(i, 1);
