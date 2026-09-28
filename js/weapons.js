@@ -5,9 +5,10 @@
 // reloading: every click fires, with only a tiny minimum interval.
 import * as THREE from "three";
 import { BLOCK, IS_SOLID } from "./blocks.js";
+import { itemInfo } from "./items.js";
 import { grenadeGeometry, rocketGeometry } from "./models.js";
 import { createEntityMaterial, bindEntityLight } from "./shaders.js";
-import { GRENADE_RADIUS, BAZOOKA_RADIUS } from "./effects.js";
+import { GRENADE_RADIUS, BAZOOKA_RADIUS, AIRSTRIKE_METEOR_RADIUS } from "./effects.js";
 import { LAYER_FX } from "./layers.js";
 
 export const THROW_CHARGE_TIME = 1.5; // seconds to a full-strength throw
@@ -23,6 +24,27 @@ export const ROCKET_SPEED = 75;
 const ROCKET_GRAVITY = -2.5;
 const ROCKET_LIFE = 12;
 const MIN_INTERVAL = { grenade: 0.12, pistol: 0.07, bazooka: 0.2 };
+
+// Machine gun: automatic while held, tracers, spread and recoil that climb
+// the longer the trigger is held, and settle again once it's released.
+export const MACHINEGUN_DAMAGE = 3;
+const MACHINEGUN_RANGE = 140;
+const MACHINEGUN_RATE = 12; // shots per second
+
+// Sniper rifle: a toggled scope (zoomed FOV + overlay), a single very
+// long-range, high-damage hitscan shot per left click.
+export const SNIPER_DAMAGE = 22;
+const SNIPER_RANGE = 400;
+const SNIPER_ZOOM_FOV = 15;
+
+// Airstrike designator: aim a laser at a spot and fire; after a delay a rain
+// of meteors falls on the target and on random spots around it.
+export const AIRSTRIKE_DELAY = 5;
+const AIRSTRIKE_COOLDOWN = 8;
+const AIRSTRIKE_METEOR_COUNT = 7;
+const AIRSTRIKE_SPREAD_MIN = 15;
+const AIRSTRIKE_SPREAD_MAX = 25;
+const AIRSTRIKE_AIM_RANGE = 500;
 
 function glowTexture() {
   const size = 64;
@@ -43,7 +65,7 @@ function glowTexture() {
 }
 
 export class WeaponSystem {
-  constructor({ scene, world, player, effects, audio, mobs, held, decals }) {
+  constructor({ scene, world, player, effects, audio, mobs, held, decals, inventory }) {
     this.scene = scene;
     this.world = world;
     this.player = player;
@@ -52,15 +74,23 @@ export class WeaponSystem {
     this.mobs = mobs;
     this.held = held;
     this.decals = decals;
+    this.inventory = inventory;
     this.grenades = [];
     this.rockets = [];
+    this.meteors = [];
+    this.airstrikes = []; // pending { pos, timer }
     this.charging = false;
     this.chargeTime = 0;
     this._cooldown = 0;
-    this.shots = 0; // pistol shots fired (stats / tests)
+    this._mgFiring = false;
+    this._mgTimer = 0;
+    this._mgHeat = 0; // 0-1: climbs while firing, drives spread and recoil
+    this.scoped = false;
+    this.shots = 0; // pistol/machine-gun/sniper shots fired (stats / tests)
     this.material = createEntityMaterial("color");
     this._grenadeGeo = grenadeGeometry();
     this._rocketGeo = rocketGeometry();
+    this._meteorGeo = new THREE.SphereGeometry(0.35, 8, 6);
     this._exhaustMat = new THREE.SpriteMaterial({
       map: glowTexture(),
       blending: THREE.AdditiveBlending,
@@ -79,6 +109,32 @@ export class WeaponSystem {
       tmp: new THREE.Color(),
     };
     this._v = new THREE.Vector3();
+
+    // A small pool of fading tracer lines, reused round-robin (machine gun, sniper).
+    this._tracers = [];
+    for (let i = 0; i < 14; i++) {
+      const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+      const mat = new THREE.LineBasicMaterial({ color: 0xfff2c0, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, fog: false });
+      const line = new THREE.Line(geo, mat);
+      line.frustumCulled = false;
+      line.visible = false;
+      line.layers.set(LAYER_FX);
+      scene.add(line);
+      this._tracers.push({ line, age: 999 });
+    }
+    this._tracerNext = 0;
+
+    // The airstrike designator's laser sight, shown while it's the selected item.
+    const laserGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+    this._laser = new THREE.Line(laserGeo, new THREE.LineBasicMaterial({ color: 0xff2a2a, transparent: true, opacity: 0.85, depthWrite: false, blending: THREE.AdditiveBlending, fog: false }));
+    this._laser.frustumCulled = false;
+    this._laser.visible = false;
+    this._laser.layers.set(LAYER_FX);
+    scene.add(this._laser);
+    this._laserDot = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), new THREE.MeshBasicMaterial({ color: 0xff3030, fog: false }));
+    this._laserDot.visible = false;
+    this._laserDot.layers.set(LAYER_FX);
+    scene.add(this._laserDot);
   }
 
   // 0-1 while a throw is being drawn back.
@@ -96,14 +152,31 @@ export class WeaponSystem {
       this.chargeTime = 0;
       return;
     }
+    if (kind === "machinegun") {
+      this._mgFiring = true;
+      return;
+    }
+    if (kind === "sniper") {
+      this.scoped = !this.scoped;
+      this._applyScope();
+      return;
+    }
+    if (kind === "airstrike") {
+      if (this._cooldown > 0) return;
+      this._cooldown = AIRSTRIKE_COOLDOWN;
+      this.fireAirstrike();
+      return;
+    }
     if (this._cooldown > 0) return;
     this._cooldown = MIN_INTERVAL[kind] || 0.1;
     if (kind === "pistol") this.firePistol();
     else if (kind === "bazooka") this.fireBazooka();
   }
 
-  // Right button released: a drawn grenade is thrown.
+  // Right button released: a drawn grenade is thrown; the machine gun stops
+  // its automatic fire.
   release() {
+    this._mgFiring = false;
     if (!this.charging) return;
     const power = this.charge;
     this.charging = false;
@@ -112,10 +185,186 @@ export class WeaponSystem {
     this.throwGrenade(power);
   }
 
-  // Switching items, opening a screen or dying drops a drawn throw.
+  // Un-scopes the sniper (or clears its FOV/sensitivity override, if it was
+  // already off, harmlessly).
+  _applyScope() {
+    this.player.zoomFov = this.scoped ? SNIPER_ZOOM_FOV : null;
+    this.player.zoomSensMul = this.scoped ? 0.28 : 1;
+  }
+
+  // Switching items, opening a screen or dying drops a drawn throw, stops
+  // the machine gun and un-scopes the sniper.
   cancel() {
     this.charging = false;
     this.chargeTime = 0;
+    this._mgFiring = false;
+    if (this.scoped) {
+      this.scoped = false;
+      this._applyScope();
+    }
+  }
+
+  // The sniper fires on left click (right click toggles its scope instead).
+  fireSniper() {
+    const p = this.player;
+    const eye = p.getEyePosition();
+    const dir = p.getForwardVector();
+    this.shots++;
+    const blockHit = this.world.raycast(eye, dir, SNIPER_RANGE, { solidOnly: true });
+    const mobHit = this.mobs.raycast(eye, dir, blockHit ? blockHit.distance : SNIPER_RANGE);
+    const muzzle = this._handPoint(0.9, 0.26, 0.14);
+    this.effects.muzzleFlash(muzzle, 1.8);
+    this.held.fire(1.6);
+    p.kick(0.07);
+    this.audio.playSniperShot ? this.audio.playSniperShot() : this.audio.playGunshot();
+    const isMob = !!mobHit && (!blockHit || mobHit.distance < blockHit.distance);
+    const dist = isMob ? mobHit.distance : blockHit ? blockHit.distance : SNIPER_RANGE;
+    const endPoint = eye.clone().addScaledVector(dir, dist);
+    this._spawnTracer(muzzle, endPoint);
+    if (isMob) {
+      this.mobs.shoot(mobHit.mob, SNIPER_DAMAGE, dir, 6);
+      this._burst(endPoint, dir.clone().negate(), this._c.blood, 12, 4.5);
+      return { type: "mob", mob: mobHit.mob, point: endPoint };
+    }
+    if (blockHit) {
+      if (this._isRealBlock(endPoint)) {
+        const n = blockHit.normal;
+        const normal = new THREE.Vector3(n[0], n[1], n[2]);
+        this.decals.add(endPoint, blockHit.block, n);
+        this._burst(endPoint, normal, this._c.spark, 6, 2.2);
+      }
+      this.audio.playRicochet(Math.min(blockHit.distance, 300));
+      return { type: "block", block: blockHit.block, point: endPoint, distance: blockHit.distance };
+    }
+    return { type: "miss" };
+  }
+
+  // A single machine-gun shot (called repeatedly from update() while held).
+  fireMachineGun() {
+    const p = this.player;
+    const eye = p.getEyePosition();
+    const dir = p.getForwardVector();
+    // Spread and camera recoil both grow the longer the trigger is held.
+    const spread = 0.006 + this._mgHeat * 0.03;
+    dir.x += (Math.random() - 0.5) * spread;
+    dir.y += (Math.random() - 0.5) * spread;
+    dir.z += (Math.random() - 0.5) * spread;
+    dir.normalize();
+    this.shots++;
+    const blockHit = this.world.raycast(eye, dir, MACHINEGUN_RANGE, { solidOnly: true });
+    const mobHit = this.mobs.raycast(eye, dir, blockHit ? blockHit.distance : MACHINEGUN_RANGE);
+    const muzzle = this._handPoint(0.7, 0.3, 0.16);
+    this.effects.muzzleFlash(muzzle, 0.85);
+    this.held.fire(0.55);
+    p.kick(0.016 + this._mgHeat * 0.022);
+    this.audio.playMachineGun ? this.audio.playMachineGun() : this.audio.playGunshot();
+    const isMob = !!mobHit && (!blockHit || mobHit.distance < blockHit.distance);
+    const dist = isMob ? mobHit.distance : blockHit ? blockHit.distance : MACHINEGUN_RANGE;
+    const endPoint = eye.clone().addScaledVector(dir, dist);
+    this._spawnTracer(muzzle, endPoint);
+    if (isMob) {
+      this.mobs.shoot(mobHit.mob, MACHINEGUN_DAMAGE, dir, 2);
+      this._burst(endPoint, dir.clone().negate(), this._c.blood, 5, 2.5);
+      return;
+    }
+    if (blockHit && this._isRealBlock(endPoint)) {
+      const n = blockHit.normal;
+      const normal = new THREE.Vector3(n[0], n[1], n[2]);
+      this.decals.add(endPoint, blockHit.block, n);
+      for (let i = 0; i < 4; i++) {
+        const v = normal.clone().multiplyScalar(2 + Math.random() * 3).add(new THREE.Vector3((Math.random() - 0.5) * 4, Math.random() * 2, (Math.random() - 0.5) * 4));
+        this.effects.glow.spawn({ x: endPoint.x, y: endPoint.y, z: endPoint.z, vx: v.x, vy: v.y, vz: v.z, life: 0.12 + Math.random() * 0.2, size0: 0.05, size1: 0.02, color0: this._c.spark, gravity: 0.6, drag: 2 });
+      }
+    }
+    if (blockHit) this.audio.playRicochet(blockHit.distance);
+  }
+
+  // Locks the airstrike target where the laser currently points; the meteor
+  // rain lands there (and around it) after AIRSTRIKE_DELAY seconds.
+  fireAirstrike() {
+    const target = this._aimPoint(AIRSTRIKE_AIM_RANGE);
+    this.airstrikes.push({ pos: target.clone(), timer: AIRSTRIKE_DELAY });
+    this.audio.playLockOn ? this.audio.playLockOn() : this.audio.playThrow();
+  }
+
+  _spawnMeteorRain(center) {
+    for (let i = 0; i < AIRSTRIKE_METEOR_COUNT; i++) {
+      const centered = i === 0;
+      const ang = Math.random() * Math.PI * 2;
+      const dist = centered ? 0 : AIRSTRIKE_SPREAD_MIN + Math.random() * (AIRSTRIKE_SPREAD_MAX - AIRSTRIKE_SPREAD_MIN);
+      const tx = center.x + Math.cos(ang) * dist;
+      const tz = center.z + Math.sin(ang) * dist;
+      const groundY = this.world.heightAt(Math.floor(tx), Math.floor(tz));
+      const startY = Math.max(center.y, groundY) + 34 + Math.random() * 14;
+      const start = new THREE.Vector3(tx, startY, tz);
+      const target = new THREE.Vector3(tx, groundY, tz);
+      const dir = target.clone().sub(start).normalize();
+      const speed = 42 + Math.random() * 12;
+      const mesh = new THREE.Mesh(this._meteorGeo, this.material);
+      mesh.castShadow = true;
+      const m = { pos: start.clone(), vel: dir.multiplyScalar(speed), mesh, age: 0, light: { sky: 15, block: 0 } };
+      bindEntityLight(mesh, () => m.light);
+      mesh.position.copy(start);
+      this.scene.add(mesh);
+      this.meteors.push(m);
+    }
+    this.effects.glow.spawn({ x: center.x, y: center.y + 1, z: center.z, life: 0.4, size0: 2, size1: 0.5, color0: this._c.blink, alpha: 0.8 });
+  }
+
+  _updateMeteor(m, dt) {
+    m.age += dt;
+    m.vel.y -= 24 * dt;
+    const step = m.vel.clone().multiplyScalar(dt);
+    const len = step.length() || 0.0001;
+    const dir = step.clone().divideScalar(len);
+    const blockHit = this.world.raycast(m.pos, dir, len, { solidOnly: true });
+    if (blockHit) {
+      m.pos.addScaledVector(dir, Math.max(0, blockHit.distance - 0.05));
+      return true;
+    }
+    m.pos.add(step);
+    if (this.mobs.sphereHit(m.pos, 0.35)) return true;
+    m.mesh.position.copy(m.pos);
+    m.mesh.rotation.x += dt * 6;
+    m.mesh.rotation.z += dt * 4;
+    m.light = this.world.lightAt(m.pos.x, m.pos.y, m.pos.z);
+    this.effects.glow.spawn({ x: m.pos.x, y: m.pos.y, z: m.pos.z, vx: (Math.random() - 0.5) * 0.5, vy: 0.2, vz: (Math.random() - 0.5) * 0.5, life: 0.3 + Math.random() * 0.2, size0: 0.4, size1: 0.1, color0: this._c.exhaust, alpha: 0.85 });
+    this.effects.smoke.spawn({ x: m.pos.x, y: m.pos.y, z: m.pos.z, vx: 0, vy: 0.3, vz: 0, life: 1.2, size0: 0.3, size1: 1.2, color0: this._c.smoke, color1: this._c.smokeEnd, alpha: 0.3, drag: 1 });
+    if (m.pos.y < -20 || m.age > 8) return true;
+    return false;
+  }
+
+  // A block hit is "real" (a loaded chunk) vs. an approximate heightfield
+  // guess for unloaded/distant terrain, which shouldn't get decals or sparks.
+  _isRealBlock(point) {
+    return !!this.world.getChunk(Math.floor(point.x) >> 4, Math.floor(point.z) >> 4);
+  }
+
+  _spawnTracer(a, b) {
+    const t = this._tracers[this._tracerNext];
+    this._tracerNext = (this._tracerNext + 1) % this._tracers.length;
+    const pos = t.line.geometry.attributes.position;
+    pos.setXYZ(0, a.x, a.y, a.z);
+    pos.setXYZ(1, b.x, b.y, b.z);
+    pos.needsUpdate = true;
+    t.line.geometry.computeBoundingSphere();
+    t.age = 0;
+    t.line.visible = true;
+    t.line.material.opacity = 0.9;
+  }
+
+  _updateLaser(active) {
+    this._laser.visible = active;
+    this._laserDot.visible = active;
+    if (!active) return;
+    const origin = this._handPoint(0.5, 0.24, 0.15);
+    const target = this._aimPoint(AIRSTRIKE_AIM_RANGE);
+    const pos = this._laser.geometry.attributes.position;
+    pos.setXYZ(0, origin.x, origin.y, origin.z);
+    pos.setXYZ(1, target.x, target.y, target.z);
+    pos.needsUpdate = true;
+    this._laser.geometry.computeBoundingSphere();
+    this._laserDot.position.copy(target);
   }
 
   // Where a shot or throw leaves the hand, in world space (just right of
@@ -349,8 +598,9 @@ export class WeaponSystem {
     r.mesh.rotateY(Math.PI);
     r.exhaust.scale.setScalar(0.6 + Math.random() * 0.3);
     r.light = this.world.lightAt(r.pos.x, r.pos.y, r.pos.z);
-    const loaded = this.world.getChunk(Math.floor(r.pos.x) >> 4, Math.floor(r.pos.z) >> 4);
-    if (!loaded || r.age > ROCKET_LIFE || r.pos.y < -20 || r.pos.y > 200) return false;
+    // Keeps flying over distant/unloaded terrain (its raycast above already
+    // hit-tests the height map out there) rather than vanishing unexploded.
+    if (r.age > ROCKET_LIFE || r.pos.y < -20 || r.pos.y > 300) return false;
     return null;
   }
 
@@ -385,6 +635,59 @@ export class WeaponSystem {
       light.intensity = 30;
     } else {
       light.intensity = 0;
+    }
+
+    // Stop mid-effect automatically if the active item changed under us
+    // (e.g. picked in the inventory screen rather than the hotbar keys).
+    const activeKind = itemInfo(this.inventory?.selectedStack?.id)?.weapon?.kind;
+    if (this._mgFiring && activeKind !== "machinegun") this._mgFiring = false;
+    if (this.scoped && activeKind !== "sniper") {
+      this.scoped = false;
+      this._applyScope();
+    }
+
+    // Machine gun: automatic fire while held, with climbing spread/recoil
+    // that settle again once the trigger is released.
+    if (this._mgFiring) {
+      this._mgTimer -= dt;
+      this._mgHeat = Math.min(1, this._mgHeat + dt * 1.5);
+      let guard = 0;
+      while (this._mgTimer <= 0 && guard++ < 4) {
+        this._mgTimer += 1 / MACHINEGUN_RATE;
+        this.fireMachineGun();
+      }
+    } else {
+      this._mgTimer = 0;
+      this._mgHeat = Math.max(0, this._mgHeat - dt * 2.5);
+    }
+
+    // Pending airstrikes: after the delay, rain meteors on the target.
+    for (let i = this.airstrikes.length - 1; i >= 0; i--) {
+      const a = this.airstrikes[i];
+      a.timer -= dt;
+      if (a.timer <= 0) {
+        this._spawnMeteorRain(a.pos);
+        this.airstrikes.splice(i, 1);
+      }
+    }
+    for (let i = this.meteors.length - 1; i >= 0; i--) {
+      const m = this.meteors[i];
+      if (this._updateMeteor(m, dt)) {
+        this.scene.remove(m.mesh);
+        this.meteors.splice(i, 1);
+        this.effects.explode(m.pos.clone(), { radius: AIRSTRIKE_METEOR_RADIUS, source: "airstrike" });
+      }
+    }
+
+    // The laser sight tracks the aim point while the designator is held.
+    this._updateLaser(activeKind === "airstrike");
+
+    // Tracer lines fade quickly.
+    for (const t of this._tracers) {
+      if (t.age > 0.14) continue;
+      t.age += dt;
+      t.line.material.opacity = Math.max(0, 0.9 * (1 - t.age / 0.12));
+      if (t.age > 0.12) t.line.visible = false;
     }
   }
 

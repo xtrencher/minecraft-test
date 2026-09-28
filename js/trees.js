@@ -19,6 +19,7 @@
 import { hash2, mulberry32 } from "./noise.js";
 import { BLOCK } from "./blocks.js";
 import { CHUNK_SIZE, WORLD_HEIGHT, SEA_LEVEL } from "./constants.js";
+import { BIOME } from "./biomes.js";
 
 export const TREE = Object.freeze({ OAK: 1, BIRCH: 2, PINE: 3, OLD_OAK: 4 });
 export const TREE_NAMES = { 1: "oak", 2: "birch", 3: "pine", 4: "old oak" };
@@ -29,6 +30,23 @@ const PLACE_SALT = 0x2c1b3c6d;
 const KIND_SALT = 0x297a2d39;
 const MAX_DENSITY = 0.026;
 const SPACING = { 1: 2, 2: 2, 3: 2, 4: 5 };
+
+// Biomes with no trees at all.
+const NO_TREE_BIOMES = new Set([BIOME.DESERT, BIOME.BADLANDS, BIOME.SNOWY_PLAINS, BIOME.MOUNTAINS, BIOME.BEACH, BIOME.OCEAN, BIOME.WARM_OCEAN, BIOME.DEEP_OCEAN, BIOME.RIVER]);
+// Density multiplier per biome (<=1, since MAX_DENSITY is the global cap):
+// open savanna and plains are sparse, swamps sparser still, jungles and dark
+// forests are the densest.
+const BIOME_DENSITY = {
+  [BIOME.JUNGLE]: 1,
+  [BIOME.DARK_FOREST]: 0.95,
+  [BIOME.FOREST]: 0.7,
+  [BIOME.BIRCH_FOREST]: 0.7,
+  [BIOME.TAIGA]: 0.65,
+  [BIOME.SNOWY_TAIGA]: 0.5,
+  [BIOME.SWAMP]: 0.32,
+  [BIOME.PLAINS]: 0.4,
+  [BIOME.SAVANNA]: 0.14,
+};
 const LOG = { 1: BLOCK.WOOD, 2: BLOCK.BIRCH_LOG, 3: BLOCK.PINE_LOG, 4: BLOCK.WOOD };
 const LEAF = { 1: BLOCK.LEAVES, 2: BLOCK.BIRCH_LEAVES, 3: BLOCK.PINE_LEAVES, 4: BLOCK.LEAVES };
 // Branches and roots show bark all round (no sawn-off rings).
@@ -51,11 +69,13 @@ export class TreeGrower {
     this._shapes = new Map(); // "x,z" -> flat [dx, dy, dz, id, ...] (cache)
   }
 
-  // Trees per column here: sparse in meadows, dense in forests.
+  // Trees per column here: open areas with none, sparse single trees, and
+  // dense forests, following a low-frequency noise field.
   _density(wx, wz) {
     const forest = this.noise.perlin2(wx * 0.011 + 17.3, wz * 0.011 - 9.1);
-    const t = Math.min(1, Math.max(0, (forest + 0.05) / 0.5));
-    return { density: 0.0035 + (MAX_DENSITY - 0.0035) * t * t * (3 - 2 * t), forest };
+    const t = Math.min(1, Math.max(0, (forest + 0.12) / 0.62));
+    const density = t <= 0 ? 0 : 0.0006 + (MAX_DENSITY - 0.0006) * t * t * (3 - 2 * t);
+    return { density, forest };
   }
 
   // A column that may hold a tree (before spacing and ground checks):
@@ -63,16 +83,19 @@ export class TreeGrower {
   _candidate(wx, wz) {
     const r = hash2((this.seed ^ PLACE_SALT) >>> 0, wx, wz);
     if (r >= MAX_DENSITY) return null;
-    const { density, forest } = this._density(wx, wz);
-    if (r >= density) return null;
     const h = this.terrain.heightAt(wx, wz);
     if (h <= SEA_LEVEL + 1 || h >= WORLD_HEIGHT - 16) return null;
+    const biome = this.terrain.biomeAt(wx, wz);
+    if (NO_TREE_BIOMES.has(biome)) return null;
+    const { density, forest } = this._density(wx, wz);
+    const scaled = density * (BIOME_DENSITY[biome] ?? 1);
+    if (scaled <= 0 || r >= scaled) return null;
     const k = hash2((this.seed ^ KIND_SALT) >>> 0, wx, wz);
     let species = TREE.OAK;
-    const pines = this.noise.perlin2(wx * 0.014 - 61.7, wz * 0.014 + 13.9);
-    if ((h >= 32 && k < 0.8) || (pines > 0.25 && k < 0.85)) species = TREE.PINE;
-    else if (this.noise.perlin2(wx * 0.018 + 40.7, wz * 0.018 - 25.3) > 0.2 && k < 0.85) species = TREE.BIRCH;
-    else if (forest > 0.28 && k < 0.12) species = TREE.OLD_OAK;
+    if (biome === BIOME.TAIGA || biome === BIOME.SNOWY_TAIGA) species = TREE.PINE;
+    else if (biome === BIOME.BIRCH_FOREST) species = TREE.BIRCH;
+    else if (biome === BIOME.DARK_FOREST && k < 0.22) species = TREE.OLD_OAK;
+    else if ((biome === BIOME.FOREST || biome === BIOME.PLAINS) && forest > 0.28 && k < 0.12) species = TREE.OLD_OAK;
     return { r, species, h };
   }
 

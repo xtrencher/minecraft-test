@@ -152,6 +152,8 @@ const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
 export const MUZZLE = {
   pistol: new THREE.Vector3(0, 0.045, -0.36),
   bazooka: new THREE.Vector3(0, 0, -0.78),
+  machinegun: new THREE.Vector3(0, 0.06, -0.58),
+  sniper: new THREE.Vector3(0, 0.05, -0.85),
 };
 
 function pistolGeometry() {
@@ -192,6 +194,38 @@ function bazookaGeometry() {
   ]);
 }
 
+function machineGunGeometry() {
+  const olive = 0x4d5c2a;
+  const steel = 0x2b2e34;
+  const dark = 0x1b1c20;
+  const grip = 0x3c2a1c;
+  return mergeColored([
+    { geometry: box(0.075, 0.09, 0.62), color: steel, matrix: at(0, 0.06, -0.16) }, // receiver + barrel
+    { geometry: new THREE.CylinderGeometry(0.025, 0.03, 0.18, 8), color: dark, matrix: at(0, 0.07, -0.55, Math.PI / 2) }, // barrel tip
+    { geometry: box(0.09, 0.16, 0.22), color: olive, matrix: at(0, -0.06, -0.06) }, // magazine
+    { geometry: box(0.08, 0.24, 0.1), color: grip, matrix: at(0, -0.17, 0.08, 0.3) }, // pistol grip
+    { geometry: box(0.06, 0.08, 0.42), color: grip, matrix: at(0, 0.04, 0.38) }, // stock
+    { geometry: box(0.02, 0.06, 0.02), color: steel, matrix: at(0, 0.12, -0.5) }, // front sight
+    { geometry: box(0.04, 0.02, 0.02), color: steel, matrix: at(0, 0.12, 0.05) }, // rear sight
+  ]);
+}
+
+function sniperGeometry() {
+  const steel = 0x2b2e34;
+  const dark = 0x1b1c20;
+  const grip = 0x3c2a1c;
+  const glass = 0x1a2a24;
+  const lens = 0x4fd6db;
+  return mergeColored([
+    { geometry: new THREE.CylinderGeometry(0.028, 0.032, 0.75, 10), color: steel, matrix: at(0, 0.02, -0.32, Math.PI / 2) }, // long barrel
+    { geometry: box(0.08, 0.08, 0.34), color: dark, matrix: at(0, 0, 0.08) }, // receiver
+    { geometry: new THREE.CylinderGeometry(0.035, 0.035, 0.34, 10), color: glass, matrix: at(0, 0.11, -0.05, Math.PI / 2) }, // scope tube
+    { geometry: new THREE.CylinderGeometry(0.038, 0.038, 0.015, 10), color: lens, matrix: at(0, 0.11, -0.21, Math.PI / 2) }, // objective lens
+    { geometry: box(0.07, 0.22, 0.09), color: grip, matrix: at(0, -0.14, 0.16, 0.25) }, // grip
+    { geometry: box(0.06, 0.09, 0.4), color: grip, matrix: at(0, 0.01, 0.42) }, // stock
+  ]);
+}
+
 // A thrown grenade (about 0.3 blocks tall), centered at the origin.
 export function grenadeGeometry() {
   return mergeColored([
@@ -224,8 +258,12 @@ export function itemModel(id) {
     const b = BLOCK_INFO[info.block];
     if (b.shape === SHAPE.CUBE) model = { geometry: blockCubeGeometry(info.block), kind: "array", cube: true };
     else model = { geometry: spriteGeometry(paintTile(TILE_NAMES[b.faces.side])), kind: "color", cube: false };
-  } else if (info?.weapon && (info.weapon.kind === "pistol" || info.weapon.kind === "bazooka")) {
-    const geometry = info.weapon.kind === "pistol" ? pistolGeometry() : bazookaGeometry();
+  } else if (info?.weapon && ["pistol", "bazooka", "machinegun", "sniper"].includes(info.weapon.kind)) {
+    const geometry =
+      info.weapon.kind === "pistol" ? pistolGeometry()
+      : info.weapon.kind === "bazooka" ? bazookaGeometry()
+      : info.weapon.kind === "machinegun" ? machineGunGeometry()
+      : sniperGeometry();
     model = { geometry, kind: "color", cube: false, gun: info.weapon.kind };
   } else if (info) {
     model = { geometry: spriteGeometry(itemIconPixels(id)), kind: "color", cube: false };

@@ -155,6 +155,20 @@ export class Sky {
     this._center = new THREE.Vector3();
     this.horizonColor = new THREE.Color();
     this.exposure = 1;
+    this.locked = false;
+    // Wind: a slowly veering direction and a strength that rises and falls
+    // over minutes (drives leaves, plants and water waves via uWind).
+    this.windTime = 0;
+    this.windOverride = null; // { angle, strength } to pin it (tests, screenshots)
+  }
+
+  // Current wind: { angle (radians, direction it blows toward), strength }.
+  get wind() {
+    if (this.windOverride) return this.windOverride;
+    const t = this.windTime;
+    const angle = 0.7 + Math.sin(t * 0.011) * 0.9 + Math.sin(t * 0.027 + 1.3) * 0.35;
+    const strength = 0.62 + Math.sin(t * 0.019 + 0.4) * 0.28 + Math.sin(t * 0.053) * 0.12;
+    return { angle, strength };
   }
 
   // Cycle time (seconds) at which the sun is at `angle` (0 = sunrise, PI = sunset).
@@ -168,6 +182,23 @@ export class Sky {
     this.time = this._timeForAngle(angle);
   }
 
+  // The sun's angle along its path for the current cycle time.
+  _angleForTime(time) {
+    const phase = (((time % DAY_LENGTH) + DAY_LENGTH) % DAY_LENGTH) / DAY_LENGTH;
+    return phase < DAY_SHARE ? (phase / DAY_SHARE) * Math.PI : Math.PI + ((phase - DAY_SHARE) / (1 - DAY_SHARE)) * Math.PI;
+  }
+
+  // Clock time, 0-24 (sunrise at 6:00, sunset at 18:00).
+  get hours() {
+    const a = this._angleForTime(this.time);
+    return (6 + (a / Math.PI) * 12) % 24;
+  }
+
+  setHours(h) {
+    const t = ((((Number(h) || 0) - 6) % 24) + 24) % 24;
+    this.setSunAngle((t / 12) * Math.PI);
+  }
+
   get isNight() {
     return worldUniforms.uSunDir.value.y < -0.05;
   }
@@ -178,9 +209,13 @@ export class Sky {
   }
 
   update(dt, center, forward) {
-    this.time = (this.time + dt) % DAY_LENGTH;
-    const phase = this.time / DAY_LENGTH;
-    const angle = phase < DAY_SHARE ? (phase / DAY_SHARE) * Math.PI : Math.PI + ((phase - DAY_SHARE) / (1 - DAY_SHARE)) * Math.PI;
+    this.windTime += dt;
+    const wind = this.wind;
+    const uw = worldUniforms.uWind.value;
+    uw.set(Math.cos(wind.angle), Math.sin(wind.angle), wind.strength, uw.w + dt * 0.1 * wind.strength);
+    // A locked clock (settings menu) keeps the sun where it is.
+    if (!this.locked) this.time = (this.time + dt) % DAY_LENGTH;
+    const angle = this._angleForTime(this.time);
     this.sunAngle = angle;
 
     const u = worldUniforms;

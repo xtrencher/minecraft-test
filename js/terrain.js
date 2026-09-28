@@ -6,10 +6,31 @@ import { Noise, hash2, mulberry32 } from "./noise.js";
 import { TreeGrower } from "./trees.js";
 import { BLOCK } from "./blocks.js";
 import { CHUNK_SIZE, WORLD_HEIGHT, SEA_LEVEL } from "./constants.js";
+import { BIOME, BiomeSource, isSnowy, isOceanBiome } from "./biomes.js";
+import { VillageGrower } from "./village.js";
 
 const BASE_HEIGHT = 26;
 const AMPLITUDE = 14;
 const PLANT_SALT = 0x5bd1e995;
+const SWAMP_SALT = 0x7a2f19c3;
+const DESERT_SALT = 0x1e5f9b4a;
+const REEF_SALT = 0x3c8de061;
+
+// Large-scale shape of the world: big continents (vs. big oceans), broad
+// mountain ranges (a masked, ridged field so ranges are localized rather
+// than everywhere), and winding rivers (a thin band where a low-frequency
+// noise field crosses near zero).
+const CONTINENT_FREQ = 1 / 1100;
+const CONTINENT_AMP = 30;
+const MOUNTAIN_MASK_FREQ = 1 / 450;
+const MOUNTAIN_MASK_LO = 0.12;
+const MOUNTAIN_MASK_HI = 0.47;
+const MOUNTAIN_RIDGE_FREQ = 1 / 130;
+const MOUNTAIN_AMP = 50;
+const RIVER_FREQ = 1 / 240;
+const RIVER_WIDTH = 0.05;
+const SNOW_LINE = 58; // mountain peaks above this height are snow-capped
+const BARE_ROCK_LINE = 44; // mountain slopes above this are exposed stone
 
 // Caves: tunnels where two independent 3D noise fields are both near zero
 // (their intersection forms long winding "spaghetti" worms), plus rare large
@@ -43,12 +64,47 @@ export class TerrainGenerator {
     this.seed = seed >>> 0;
     this.noise = new Noise(this.seed);
     this.caveNoise = new Noise((this.seed ^ 0x6a09e667) >>> 0);
+    this.biomes = new BiomeSource(this.seed);
     this.trees = new TreeGrower(this);
+    this.villages = new VillageGrower(this);
+  }
+
+  // Height plus the two other large-scale fields the biome map needs
+  // (mountainT: 0-1 how mountainous; river: whether this column is in a
+  // river channel), computed together so callers that need both (chunk
+  // generation) don't pay for the noise twice.
+  _terrainInfo(wx, wz) {
+    const n = this.noise;
+    const continent = n.fbm2(wx, wz, 3, 0.5, 2, CONTINENT_FREQ);
+    const detail = n.fbm2(wx, wz, 4, 0.5, 2, 1 / 80);
+    const mask = n.fbm2(wx + 500, wz - 500, 2, 0.5, 2, MOUNTAIN_MASK_FREQ);
+    const mountainT = Math.max(0, Math.min(1, (mask - MOUNTAIN_MASK_LO) / (MOUNTAIN_MASK_HI - MOUNTAIN_MASK_LO)));
+    let ridged = 0;
+    if (mountainT > 0) {
+      const r = n.fbm2(wx + 1000, wz + 1000, 3, 0.5, 2, MOUNTAIN_RIDGE_FREQ);
+      ridged = Math.pow(1 - Math.abs(r), 1.6);
+    }
+    let height = BASE_HEIGHT + continent * CONTINENT_AMP + detail * AMPLITUDE + ridged * mountainT * MOUNTAIN_AMP;
+    const riverN = n.fbm2(wx - 2000, wz + 2000, 2, 0.5, 2, RIVER_FREQ);
+    const riverBand = 1 - Math.abs(riverN);
+    let river = false;
+    if (riverBand > 1 - RIVER_WIDTH && continent > -0.1 && mountainT < 0.35) {
+      river = true;
+      const k = Math.min(1, (riverBand - (1 - RIVER_WIDTH)) / RIVER_WIDTH);
+      height = height * (1 - k) + (SEA_LEVEL - 3) * k;
+    }
+    return { height: Math.floor(height), mountainT, river };
   }
 
   heightAt(wx, wz) {
-    const n = this.noise.fbm2(wx, wz, 4, 0.5, 2, 1 / 80);
-    return Math.floor(BASE_HEIGHT + n * AMPLITUDE);
+    return this._terrainInfo(wx, wz).height;
+  }
+
+  // The biome at any column (pure, independent of chunk generation, like
+  // heightAt): used by tree placement and by the game for the F3 debug overlay.
+  biomeAt(wx, wz) {
+    const info = this._terrainInfo(wx, wz);
+    return this.biomes.biomeAt(wx, wz, info.height, info.mountainT, info.river);
   }
 
   // Where new players start: the first land column along a diagonal from the
@@ -57,9 +113,11 @@ export class TerrainGenerator {
   spawnColumn() {
     let bx = 0;
     let bz = 0;
-    for (let i = 0; i < 10 && this.heightAt(bx, bz) <= SEA_LEVEL + 1; i++) {
-      bx += 6;
-      bz += 4;
+    // Continents are now large (see CONTINENT_FREQ), so a coarse search needs
+    // real range to escape starting inside a big ocean.
+    for (let i = 0; i < 80 && this.heightAt(bx, bz) <= SEA_LEVEL + 1; i++) {
+      bx += 24;
+      bz += 16;
     }
     for (let r = 0; r <= 16; r++) {
       for (let dz = -r; dz <= r; dz++) {
@@ -116,25 +174,62 @@ export class TerrainGenerator {
     const baseZ = chunk.cz * S;
     const idx = (x, y, z) => (y * S + z) * S + x;
 
-    // Heights for this chunk plus a 1-column border (needed by the cave rule below).
+    // Heights for this chunk plus a 1-column border (needed by the cave rule
+    // below), and each interior column's biome computed in the same pass
+    // (both come from the same underlying noise fields; see _terrainInfo).
     const H = new Int16Array((S + 2) * (S + 2));
     const hAt = (lx, lz) => H[(lz + 1) * (S + 2) + (lx + 1)];
+    const Biome = new Uint8Array(S * S);
     for (let lz = -1; lz <= S; lz++) {
-      for (let lx = -1; lx <= S; lx++) H[(lz + 1) * (S + 2) + (lx + 1)] = this.heightAt(baseX + lx, baseZ + lz);
+      for (let lx = -1; lx <= S; lx++) {
+        const info = this._terrainInfo(baseX + lx, baseZ + lz);
+        H[(lz + 1) * (S + 2) + (lx + 1)] = info.height;
+        if (lx >= 0 && lx < S && lz >= 0 && lz < S) {
+          Biome[lz * S + lx] = this.biomes.biomeAt(baseX + lx, baseZ + lz, info.height, info.mountainT, info.river);
+        }
+      }
     }
+    const biomeAt = (lx, lz) => Biome[lz * S + lx];
 
     for (let lz = 0; lz < S; lz++) {
       for (let lx = 0; lx < S; lx++) {
         const h = hAt(lx, lz);
+        const biome = biomeAt(lx, lz);
         const isBeach = h <= SEA_LEVEL + 1;
         const top = Math.min(WORLD_HEIGHT - 1, Math.max(h, SEA_LEVEL));
+        let topId;
+        let subId;
+        if (isBeach || isOceanBiome(biome) || biome === BIOME.RIVER || biome === BIOME.DESERT) {
+          topId = BLOCK.SAND;
+          subId = BLOCK.SAND;
+        } else if (biome === BIOME.BADLANDS) {
+          topId = BLOCK.TERRACOTTA;
+          subId = BLOCK.TERRACOTTA;
+        } else if (biome === BIOME.MOUNTAINS && h > SNOW_LINE) {
+          topId = BLOCK.SNOW;
+          subId = BLOCK.STONE;
+        } else if (biome === BIOME.MOUNTAINS && h > BARE_ROCK_LINE) {
+          topId = BLOCK.STONE;
+          subId = BLOCK.STONE;
+        } else if (isSnowy(biome)) {
+          topId = BLOCK.SNOW;
+          subId = BLOCK.DIRT;
+        } else {
+          topId = BLOCK.GRASS;
+          subId = BLOCK.DIRT;
+        }
         for (let y = 0; y <= top; y++) {
           let id;
           if (y > h) id = BLOCK.WATER;
-          else if (y === h) id = isBeach ? BLOCK.SAND : BLOCK.GRASS;
-          else if (y > h - 4) id = isBeach ? BLOCK.SAND : BLOCK.DIRT;
+          else if (y === h) id = topId;
+          else if (y > h - 4) id = subId;
           else id = BLOCK.STONE;
           blocks[idx(lx, y, lz)] = id;
+        }
+        // Swamps get scattered shallow puddles sitting in the ground.
+        if (biome === BIOME.SWAMP && !isBeach && h + 1 < WORLD_HEIGHT && hash2(this.seed ^ SWAMP_SALT, baseX + lx, baseZ + lz) < 0.16) {
+          blocks[idx(lx, h, lz)] = BLOCK.DIRT;
+          blocks[idx(lx, h + 1, lz)] = BLOCK.WATER;
         }
         // Bedrock floor: solid at y=0, ragged at y=1.
         blocks[idx(lx, 0, lz)] = BLOCK.BEDROCK;
@@ -150,26 +245,54 @@ export class TerrainGenerator {
     // chunk, including trees rooted in neighbouring chunks.
     this.trees.placeInChunk(blocks, chunk.cx, chunk.cz);
 
-    // Ground cover: tall grass everywhere on grass, flowers in patches.
+    // Ground cover: tall grass and flowers on grass, cacti and dead bushes in
+    // deserts, and coral/seagrass/kelp on warm ocean floors.
     for (let lz = 0; lz < S; lz++) {
       for (let lx = 0; lx < S; lx++) {
         const h = hAt(lx, lz);
         if (h + 1 >= WORLD_HEIGHT) continue;
         const ground = idx(lx, h, lz);
         const above = idx(lx, h + 1, lz);
-        if (blocks[ground] !== BLOCK.GRASS || blocks[above] !== BLOCK.AIR) continue;
         const wx = baseX + lx;
         const wz = baseZ + lz;
-        const r = hash2(this.seed ^ PLANT_SALT, wx, wz);
-        const patch = this.noise.perlin2(wx * 0.045 + 31.7, wz * 0.045 - 12.3); // -0.7..0.7
-        const flowerChance = Math.max(0, patch - 0.15) * 0.25;
-        if (r < flowerChance) {
-          blocks[above] = hash2(this.seed ^ 0x2f6b, wx, wz) < 0.5 ? BLOCK.FLOWER_RED : BLOCK.FLOWER_YELLOW;
-        } else if (r < flowerChance + 0.11 + Math.max(0, -patch) * 0.1) {
-          blocks[above] = BLOCK.TALL_GRASS;
+        if (blocks[ground] === BLOCK.GRASS && blocks[above] === BLOCK.AIR) {
+          const r = hash2(this.seed ^ PLANT_SALT, wx, wz);
+          const patch = this.noise.perlin2(wx * 0.045 + 31.7, wz * 0.045 - 12.3); // -0.7..0.7
+          const flowerChance = Math.max(0, patch - 0.15) * 0.25;
+          if (r < flowerChance) {
+            blocks[above] = hash2(this.seed ^ 0x2f6b, wx, wz) < 0.5 ? BLOCK.FLOWER_RED : BLOCK.FLOWER_YELLOW;
+          } else if (r < flowerChance + 0.11 + Math.max(0, -patch) * 0.1) {
+            blocks[above] = BLOCK.TALL_GRASS;
+          }
+        } else if (blocks[ground] === BLOCK.SAND && blocks[above] === BLOCK.AIR && biomeAt(lx, lz) === BIOME.DESERT) {
+          const r = hash2(this.seed ^ DESERT_SALT, wx, wz);
+          if (r < 0.003) {
+            const ch = 2 + Math.floor(hash2(this.seed ^ DESERT_SALT ^ 0x91, wx, wz) * 2);
+            for (let k = 0; k < ch && h + 1 + k < WORLD_HEIGHT; k++) blocks[idx(lx, h + 1 + k, lz)] = BLOCK.CACTUS;
+          } else if (r < 0.012) {
+            blocks[above] = BLOCK.DEAD_BUSH;
+          }
+        } else if (blocks[ground] === BLOCK.SAND && blocks[above] === BLOCK.WATER && biomeAt(lx, lz) === BIOME.WARM_OCEAN) {
+          const r = hash2(this.seed ^ REEF_SALT, wx, wz);
+          if (r < 0.05) {
+            blocks[above] = BLOCK.CORAL;
+          } else if (r < 0.11) {
+            blocks[above] = BLOCK.SEAGRASS;
+          } else if (r < 0.16) {
+            const kh = 2 + Math.floor(hash2(this.seed ^ REEF_SALT ^ 0x91, wx, wz) * 3);
+            for (let k = 0; k < kh; k++) {
+              const cell = idx(lx, h + 1 + k, lz);
+              if (h + 1 + k >= WORLD_HEIGHT || blocks[cell] !== BLOCK.WATER) break;
+              blocks[cell] = BLOCK.KELP;
+            }
+          }
         }
       }
     }
+
+    // Villages: placed last so they overwrite any trees or ground cover in
+    // their footprint with a flattened pad, houses, paths and a farm plot.
+    this.villages.placeInChunk(blocks, chunk.cx, chunk.cz);
   }
 
   _carveCaves(blocks, baseX, baseZ, hAt) {

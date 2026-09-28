@@ -280,6 +280,50 @@
     opacity: 0;
     z-index: 9;
   }
+  #scope-overlay {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 11;
+    display: none;
+  }
+  #scope-overlay.visible { display: block; }
+  #scope-overlay::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(circle at center, transparent 0, transparent 29.5%, #000 30%),
+      linear-gradient(#000, #000);
+  }
+  #scope-overlay::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 1px;
+    height: 60vmin;
+    background: rgba(0,0,0,0.55);
+    transform: translate(-50%, -50%);
+    box-shadow: 60vmin 0 0 -0.5px rgba(0,0,0,0.55) inset;
+  }
+  #scope-crosshair {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 30vmin;
+    height: 30vmin;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    border: 1px solid rgba(20,20,20,0.7);
+  }
+  #scope-crosshair::before, #scope-crosshair::after {
+    content: "";
+    position: absolute;
+    background: rgba(20,20,20,0.8);
+  }
+  #scope-crosshair::before { left: 50%; top: 0; bottom: 0; width: 1px; transform: translateX(-50%); }
+  #scope-crosshair::after { top: 50%; left: 0; right: 0; height: 1px; transform: translateY(-50%); }
   .slot-count {
     position: absolute;
     right: 3px;
@@ -447,12 +491,55 @@
     75% { transform: translate(-2px, -1px); }
     100% { transform: translate(0, 0); }
   }
+  /* --- Settings (pause menu) --- */
+  .panel.wide { max-width: 600px; }
+  .settings-tabs { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid rgba(255,255,255,0.15); }
+  .settings-tab {
+    background: none;
+    border: none;
+    color: rgba(255,255,255,0.65);
+    padding: 7px 14px;
+    font-size: 14px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+  .settings-tab:hover { color: #fff; }
+  .settings-tab.active { color: #fff; border-bottom-color: #6fc35a; }
+  .settings-page { min-height: 250px; }
+  .row .val { width: 48px; text-align: right; font-size: 13px; opacity: 0.85; }
+  .row input[type="checkbox"] { width: 18px; height: 18px; accent-color: #5aa845; }
+  .subhead { font-size: 13px; font-weight: 600; opacity: 0.9; margin: 8px 0 8px; }
+  .badge { font-size: 10px; background: #8a6d1d; border-radius: 3px; padding: 1px 5px; margin-left: 6px; text-transform: uppercase; letter-spacing: 1px; }
+  .option-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 18px; }
+  .option-grid .row select { width: 128px; }
+  .menu-buttons.small { margin-top: 4px; }
+  .menu-buttons.small .btn { padding: 6px 12px; font-size: 12px; }
+
+  /* --- Debug overlay (F3) --- */
+  #debug-overlay {
+    position: fixed;
+    top: 36px;
+    left: 8px;
+    margin: 0;
+    font: 12px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace;
+    color: #f0f0f0;
+    background: rgba(0,0,0,0.45);
+    padding: 6px 9px;
+    border-radius: 4px;
+    pointer-events: none;
+    z-index: 12;
+    white-space: pre;
+  }
+  /* F1 hides every HUD element (the held item is hidden by the game). */
+  body.hud-off #hud, body.hud-off #debug-overlay, body.hud-off #scope-overlay { visibility: hidden; }
 </style>
 </head>
 <body>
   <canvas id="game-canvas"></canvas>
 
   <div id="damage-flash"></div>
+  <div id="scope-overlay"><div id="scope-crosshair"></div></div>
   <div id="hud" class="hidden">
     <div id="crosshair"></div>
     <div id="attack-charge" class="hidden"><div></div></div>
@@ -463,6 +550,8 @@
     <div id="status-bars"><div id="hearts"></div><div id="bubbles" class="hidden"></div></div>
     <div id="hotbar"></div>
   </div>
+
+  <pre id="debug-overlay" class="hidden"></pre>
 
   <div id="inventory-screen" class="hidden"></div>
 
@@ -500,8 +589,10 @@
         <b>Left Click</b> mine / attack (hold) &nbsp; <b>Right Click</b> place / use / eat<br/>
         <b>1-9 / Scroll</b> hotbar &nbsp; <b>E</b> inventory &amp; crafting &nbsp; <b>Q</b> drop item<br/>
         <b>Grenade:</b> hold Right Click to charge, release to throw &nbsp; <b>Pistol / Bazooka:</b> Right Click fires<br/>
+        <b>Machine Gun:</b> hold Right Click for auto fire &nbsp; <b>Sniper:</b> Right Click scopes, Left Click fires<br/>
+        <b>Airstrike:</b> aim the laser, Right Click to call it in<br/>
         <b>Creative:</b> double-tap Space to fly, middle click picks a block<br/>
-        <b>Esc</b> pause menu
+        <b>F1</b> hide HUD &nbsp; <b>F3</b> debug info &nbsp; <b>F5</b> camera view &nbsp; <b>Esc</b> pause menu &amp; settings
       </div>
       <div class="row">
         <label for="mode-select">Game mode</label>
@@ -529,40 +620,121 @@
   </div>
 
   <div id="pause-menu" class="overlay hidden">
-    <div class="panel">
+    <div class="panel wide">
       <h2>Paused</h2>
-      <div class="row">
-        <label>Render distance (chunks)</label>
-        <input type="range" id="render-distance" min="2" max="100" step="1" value="20" />
-        <span id="render-distance-value">20</span>
+      <div class="settings-tabs">
+        <button class="settings-tab" data-page="video">Video</button>
+        <button class="settings-tab" data-page="controls">Controls</button>
+        <button class="settings-tab" data-page="audio">Audio</button>
+        <button class="settings-tab" data-page="gameplay">Gameplay</button>
       </div>
-      <div class="row">
-        <label for="graphics-preset">Graphics</label>
-        <select id="graphics-preset">
-          <option value="low">Low</option>
-          <option value="medium">Medium</option>
-          <option value="high">High</option>
-          <option value="ultra">Ultra</option>
-        </select>
+
+      <div class="settings-page" data-page="video">
+        <div class="row">
+          <label>Render distance (chunks)</label>
+          <input type="range" id="render-distance" min="2" max="100" step="1" value="10" />
+          <span id="render-distance-value" class="val">10</span>
+        </div>
+        <div class="row">
+          <label for="graphics-preset">Graphics preset</label>
+          <select id="graphics-preset">
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+            <option value="ultra">Ultra</option>
+          </select>
+        </div>
+        <div id="graphics-hint" class="hint"></div>
+        <div class="subhead">Individual options <span id="gfx-custom-badge" class="badge hidden">custom</span></div>
+        <div id="gfx-options" class="option-grid"></div>
+        <div class="row">
+          <label for="show-fps">Show FPS counter</label>
+          <input type="checkbox" id="show-fps" />
+        </div>
+        <div class="menu-buttons small"><button class="btn secondary" id="gfx-reset-btn">Reset options to preset</button></div>
       </div>
-      <div id="graphics-hint" class="hint"></div>
-      <div class="row">
-        <label for="pause-mode-select">Game mode</label>
-        <select id="pause-mode-select">
-          <option value="survival">Survival</option>
-          <option value="creative">Creative</option>
-        </select>
-      </div>
-      <div id="pause-mode-hint" class="hint"></div>
-      <div id="pause-seed" style="font-size:12px; opacity:0.7; margin-bottom: 10px;">Seed: <span id="pause-seed-value">-</span></div>
-      <div class="controls-list">
+
+      <div class="settings-page hidden" data-page="controls">
+        <div class="row">
+          <label>Field of view</label>
+          <input type="range" id="fov" min="50" max="110" step="1" value="75" />
+          <span id="fov-value" class="val">75</span>
+        </div>
+        <div class="row">
+          <label>Mouse sensitivity</label>
+          <input type="range" id="sensitivity" min="0.1" max="4" step="0.05" value="1" />
+          <span id="sensitivity-value" class="val">1.00x</span>
+        </div>
+        <div class="row">
+          <label for="invert-y">Invert mouse Y</label>
+          <input type="checkbox" id="invert-y" />
+        </div>
+        <div class="controls-list">
         <b>WASD</b> move &nbsp; <b>Mouse</b> look &nbsp; <b>Space</b> jump / swim<br/>
         <b>Shift</b> sneak &nbsp; <b>Ctrl</b> or <b>double-tap W</b> sprint<br/>
         <b>Left Click</b> mine / attack (hold) &nbsp; <b>Right Click</b> place / use / eat<br/>
         <b>1-9 / Scroll</b> hotbar &nbsp; <b>E</b> inventory &amp; crafting &nbsp; <b>Q</b> drop item<br/>
         <b>Grenade:</b> hold Right Click to charge, release to throw &nbsp; <b>Pistol / Bazooka:</b> Right Click fires<br/>
-        <b>Creative:</b> double-tap Space to fly, middle click picks a block
+        <b>Machine Gun:</b> hold Right Click for auto fire &nbsp; <b>Sniper:</b> Right Click scopes, Left Click fires<br/>
+        <b>Airstrike:</b> aim the laser, Right Click to call it in<br/>
+        <b>Creative:</b> double-tap Space to fly, middle click picks a block<br/>
+        <b>F1</b> hide HUD &nbsp; <b>F3</b> debug info &nbsp; <b>F5</b> camera (first person / behind / in front)
+        </div>
       </div>
+
+      <div class="settings-page hidden" data-page="audio">
+        <div id="audio-options"></div>
+      </div>
+
+      <div class="settings-page hidden" data-page="gameplay">
+        <div class="row">
+          <label for="pause-mode-select">Game mode</label>
+          <select id="pause-mode-select">
+            <option value="survival">Survival</option>
+            <option value="creative">Creative</option>
+          </select>
+        </div>
+        <div id="pause-mode-hint" class="hint"></div>
+        <div class="row">
+          <label for="difficulty">Difficulty</label>
+          <select id="difficulty">
+            <option value="peaceful">Peaceful (no hostile creatures)</option>
+            <option value="easy">Easy (half damage)</option>
+            <option value="normal">Normal</option>
+            <option value="hard">Hard (1.5x damage)</option>
+          </select>
+        </div>
+        <div class="row">
+          <label for="mob-spawning">Creatures spawn</label>
+          <input type="checkbox" id="mob-spawning" />
+        </div>
+        <div class="row">
+          <label>Time of day</label>
+          <input type="range" id="time-of-day" min="0" max="23.95" step="0.05" value="12" />
+          <span id="time-of-day-value" class="val">12:00</span>
+        </div>
+        <div class="row">
+          <label for="time-lock">Lock time of day</label>
+          <input type="checkbox" id="time-lock" />
+        </div>
+        <div class="row">
+          <label>Grenade blast size</label>
+          <input type="range" id="explosion-grenade" min="0.4" max="2" step="0.05" value="1" />
+          <span id="explosion-grenade-value" class="val">1.0x</span>
+        </div>
+        <div class="row">
+          <label>Bazooka blast size</label>
+          <input type="range" id="explosion-bazooka" min="0.4" max="2" step="0.05" value="1" />
+          <span id="explosion-bazooka-value" class="val">1.0x</span>
+        </div>
+        <div class="row">
+          <label>Airstrike blast size</label>
+          <input type="range" id="explosion-airstrike" min="0.4" max="2" step="0.05" value="1" />
+          <span id="explosion-airstrike-value" class="val">1.0x</span>
+        </div>
+      </div>
+
+      <div id="pause-seed" style="font-size:12px; opacity:0.7; margin: 12px 0 0 0;">Seed: <span id="pause-seed-value">-</span></div>
       <div class="menu-buttons">
         <button class="btn" id="resume-btn">Resume</button>
         <button class="btn secondary" id="copy-link-btn">Copy world link</button>
@@ -588,8 +760,9 @@
         The browser lost its connection to the graphics card (the WebGL
         context was lost), usually because drawing a frame took too long.
         Your world is saved. The graphics setting is lowered to
-        <b id="gpu-lost-preset">High</b> for the next start: reload to go on
-        playing.
+        <b id="gpu-lost-preset">High</b> for the next start<span
+        id="gpu-lost-reset" class="hidden">, with individual graphics options
+        reset</span>: reload to go on playing.
       </p>
       <div class="menu-buttons">
         <button class="btn" id="gpu-lost-reload">Reload</button>

@@ -33,6 +33,13 @@ export const BLOCK = Object.freeze({
   PINE_LOG: 27,
   PINE_LEAVES: 28,
   OAK_BARK: 29,
+  SNOW: 30,
+  TERRACOTTA: 31,
+  CACTUS: 32,
+  DEAD_BUSH: 33,
+  CORAL: 34,
+  SEAGRASS: 35,
+  KELP: 36,
 });
 
 // Texture layers of the block texture array, in order. Painted procedurally
@@ -72,6 +79,29 @@ export const TILE_NAMES = [
   "pine_side",
   "pine_top",
   "pine_leaves",
+  "snow_top",
+  "snow_side",
+  "terracotta",
+  "cactus_side",
+  "cactus_top",
+  "dead_bush",
+  "coral",
+  "seagrass",
+  "kelp",
+  // Round 4 Part B: sand's side face (no ripples), and the pixel-art plants
+  // drawn as instanced cards near the player (grass.js).
+  "sand_side",
+  "grass_tuft",
+  "grass_tuft_b",
+  "fern",
+  "reed_bottom",
+  "reed_top",
+  "cattail_bottom",
+  "cattail_top",
+  "lily_pad",
+  "flower_blue",
+  "flower_white",
+  "flower_pink",
 ];
 export const TILE = Object.freeze(Object.fromEntries(TILE_NAMES.map((name, i) => [name, i])));
 
@@ -110,7 +140,7 @@ const DEFS = {
   [BLOCK.GRASS]: { name: "Grass Block", faces: { top: "grass_top", bottom: "dirt", side: "grass_side" }, hardness: 0.6, tool: "shovel", sound: "grass" },
   [BLOCK.DIRT]: { name: "Dirt", faces: "dirt", hardness: 0.5, tool: "shovel", sound: "dirt" },
   [BLOCK.STONE]: { name: "Stone", faces: "stone", hardness: 1.5, tool: "pickaxe", minTier: 1 },
-  [BLOCK.SAND]: { name: "Sand", faces: "sand", hardness: 0.5, tool: "shovel", sound: "sand", gravity: true },
+  [BLOCK.SAND]: { name: "Sand", faces: { top: "sand", bottom: "sand", side: "sand_side" }, hardness: 0.5, tool: "shovel", sound: "sand", gravity: true },
   [BLOCK.WATER]: {
     name: "Water",
     faces: "water",
@@ -204,6 +234,51 @@ const DEFS = {
   [BLOCK.PINE_LEAVES]: { name: "Pine Needles", faces: "pine_leaves", render: RENDER.CUTOUT, opaque: false, lightFilter: 1, wave: true, hardness: 0.2, sound: "grass", leaves: true },
   // Bark on every face: branches and roots of oaks.
   [BLOCK.OAK_BARK]: { name: "Oak Wood", faces: "wood_side", hardness: 2, tool: "axe", sound: "wood", log: true },
+  [BLOCK.SNOW]: { name: "Snow Block", faces: { top: "snow_top", bottom: "dirt", side: "snow_side" }, hardness: 0.4, tool: "shovel", sound: "sand" },
+  [BLOCK.TERRACOTTA]: { name: "Terracotta", faces: "terracotta", hardness: 1.5, tool: "pickaxe", minTier: 1 },
+  [BLOCK.CACTUS]: { name: "Cactus", faces: { top: "cactus_top", bottom: "cactus_top", side: "cactus_side" }, hardness: 1, sound: "grass" },
+  [BLOCK.DEAD_BUSH]: {
+    name: "Dead Bush",
+    faces: "dead_bush",
+    render: RENDER.CUTOUT,
+    shape: SHAPE.CROSS,
+    solid: false,
+    opaque: false,
+    skyPass: true,
+    replaceable: true,
+    support: "soil",
+    hardness: 0,
+    sound: "plant",
+  },
+  [BLOCK.CORAL]: { name: "Coral", faces: "coral", hardness: 0.5, sound: "stone" },
+  [BLOCK.SEAGRASS]: {
+    name: "Seagrass",
+    faces: "seagrass",
+    render: RENDER.CUTOUT,
+    shape: SHAPE.CROSS,
+    solid: false,
+    opaque: false,
+    skyPass: true,
+    wave: true,
+    replaceable: true,
+    support: "soil",
+    hardness: 0,
+    sound: "plant",
+  },
+  [BLOCK.KELP]: {
+    name: "Kelp",
+    faces: "kelp",
+    render: RENDER.CUTOUT,
+    shape: SHAPE.CROSS,
+    solid: false,
+    opaque: false,
+    skyPass: true,
+    wave: true,
+    replaceable: true,
+    support: "soil",
+    hardness: 0,
+    sound: "plant",
+  },
 };
 
 // Face order used everywhere: +X, -X, +Y (top), -Y (bottom), +Z, -Z.
@@ -284,7 +359,9 @@ export function blockName(id) {
 export function isSupportedBy(id, belowId) {
   const support = BLOCK_INFO[id]?.support;
   if (!support) return true;
-  if (support === "soil") return belowId === BLOCK.GRASS || belowId === BLOCK.DIRT;
+  // "soil": grass, dirt or sand (so seagrass/kelp can root on a sandy sea
+  // floor too), or the same block again (so kelp can stack on itself).
+  if (support === "soil") return belowId === BLOCK.GRASS || belowId === BLOCK.DIRT || belowId === BLOCK.SAND || belowId === id;
   return IS_SOLID[belowId] === 1 && IS_OPAQUE[belowId] === 1;
 }
 

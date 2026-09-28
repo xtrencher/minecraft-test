@@ -175,6 +175,9 @@ const P = {
   pineBark: [0x2a1a12, 0x3b251a, 0x4d3122, 0x5f3d2a, 0x724a33, 0x86583c].map(hex),
   pineRings: [0x9a6d45, 0xab7c50, 0xba8a5c].map(hex),
   pineNeedles: [0x0f2f25, 0x16402f, 0x1e5139, 0x286244, 0x357350, 0x44845c].map(hex),
+  snow: [0xc7d3d8, 0xd7e1e4, 0xe4ecee, 0xeff5f6, 0xfbfdfd].map(hex),
+  terracotta: [0x8a3f2a, 0xa8522f, 0xbf6a3a, 0xd68f4e, 0xe8b06a, 0xc46b3f, 0x9c4a2c].map(hex),
+  cactus: [0x1f5c2e, 0x2c7a3c, 0x3a944c, 0x49ac5c].map(hex),
 };
 
 // ---------- Painters ----------
@@ -348,6 +351,25 @@ function paintSand(t) {
   }
   for (let i = 0; i < 22; i++) t.set(Math.floor(t.rand() * TEX), Math.floor(t.rand() * TEX), hex(0xad9563));
   for (let i = 0; i < 12; i++) t.set(Math.floor(t.rand() * TEX), Math.floor(t.rand() * TEX), hex(0xf8eed0));
+}
+
+// The side of a sand block: a cross-section through settled sand, faint
+// horizontal layers of finer and coarser grains (the wind ripples only form
+// on the top face).
+function paintSandSide(t) {
+  t.forEach((x, y) => {
+    const layer = Math.sin((y + t.noise(x, y, 4, 7) * 3) * 0.9) * 0.06;
+    const f = t.fbm(x, y, 8, 2, 2) * 0.35 + t.rand() * 0.42 + layer + 0.14;
+    t.set(x, y, ramp(P.sand, f));
+  });
+  for (let i = 0; i < 16; i++) {
+    const x = Math.floor(t.rand() * TEX);
+    const y = Math.floor(t.rand() * TEX);
+    t.set(x, y, hex(0xb49c68));
+    t.set(x + 1, y, hex(0xf6ead0));
+  }
+  for (let i = 0; i < 20; i++) t.set(Math.floor(t.rand() * TEX), Math.floor(t.rand() * TEX), hex(0xad9563));
+  for (let i = 0; i < 10; i++) t.set(Math.floor(t.rand() * TEX), Math.floor(t.rand() * TEX), hex(0xf8eed0));
 }
 
 function paintGravel(t) {
@@ -726,19 +748,195 @@ function paintCraftingSide(t, front) {
 }
 
 function paintTallGrass(t) {
+  // Same style as the instanced tufts (grass.js): many blades of mixed
+  // heights and greens, a few seed heads.
+  paintGrassBlades(t, 18, 12, 31, 3, { heads: 2 });
+}
+
+// ---------- Pixel-art plants ----------
+// Every plant (the tall-grass block and the instanced tufts, ferns, reeds,
+// cattails, lily pads and flowers drawn near the player) is painted in the
+// same style: crisp 1-2 pixel blades, dark at the base, lighter toward the
+// tip, in several different greens, on a transparent background.
+
+const GRASS_PALS = [
+  [0x1d4514, 0x275b18, 0x31711d, 0x3d8724, 0x4b9d2d, 0x5db338, 0x74c647, 0x90d85c].map(hex), // lush
+  [0x163c1c, 0x1d5024, 0x25652d, 0x2f7a37, 0x3b9043, 0x4aa451, 0x5fb863, 0x79c977].map(hex), // cool
+  [0x2b4d15, 0x3a651b, 0x4c7e21, 0x60972a, 0x78ad35, 0x93c243, 0xadd356, 0xc4df6d].map(hex), // sunlit
+  [0x24481a, 0x30601f, 0x3e7925, 0x4f912d, 0x62a637, 0x7aba45, 0x95cc58, 0xb3dc73].map(hex), // bright
+];
+
+// One blade from the bottom row up: `h` pixels tall, leaning `lean` px per
+// row and bending `curve` more toward the tip. Two pixels wide near the base
+// (the right one shaded), a single pixel above; the tip is lightest.
+function drawBlade(t, x0, h, lean, curve, pal, { widthFrac = 0.4, base = TEX - 1, lift = 0 } = {}) {
+  let x = x0;
+  for (let k = 0; k < h; k++) {
+    const y = base - k;
+    if (y < 0) break;
+    const f = k / Math.max(1, h - 1);
+    const xi = Math.round(x);
+    if (xi >= 0 && xi < TEX) {
+      const c = ramp(pal, 0.08 + f * 0.9 + lift);
+      t.set(xi, y, c);
+      if (f < widthFrac && xi + 1 < TEX) t.set(xi + 1, y, scaleRgb(c, 0.74));
+    }
+    x += lean + curve * f;
+  }
+}
+
+function clearTile(t) {
   t.forEach((x, y) => t.set(x, y, [0, 0, 0], 0));
-  const r = makeRand(t.seed + 3);
-  for (let i = 0; i < 13; i++) {
-    let x = 2 + r() * 27;
-    const h = 12 + Math.floor(r() * 18);
-    const lean = (r() - 0.5) * 0.35;
-    for (let k = 0; k < h; k++) {
+}
+
+// Grass: `n` blades between `minH` and `maxH` pixels tall, in mixed greens.
+function paintGrassBlades(t, n, minH, maxH, seed, { heads = 0 } = {}) {
+  clearTile(t);
+  const r = makeRand(t.seed + seed);
+  const blades = [];
+  for (let i = 0; i < n; i++) {
+    blades.push({
+      x: 1 + r() * (TEX - 3),
+      h: Math.floor(minH + Math.pow(r(), 0.8) * (maxH - minH)),
+      lean: (r() - 0.5) * 0.5,
+      curve: (r() - 0.5) * 0.9,
+      pal: GRASS_PALS[Math.floor(r() * GRASS_PALS.length)],
+      lift: (r() - 0.5) * 0.15,
+    });
+  }
+  // Tallest first, so the short blades in front overlap them.
+  blades.sort((a, b) => b.h - a.h);
+  for (const b of blades) drawBlade(t, b.x, b.h, b.lean, b.curve, b.pal, { lift: b.lift });
+  // A few seed heads on the tallest blades.
+  for (let i = 0; i < heads && i < blades.length; i++) {
+    const b = blades[i];
+    let x = b.x;
+    for (let k = 0; k < b.h - 1; k++) x += b.lean + b.curve * (k / (b.h - 1));
+    const tx = Math.round(x);
+    const ty = TEX - b.h;
+    for (let k = 0; k < 4; k++) {
+      t.set(tx + (k % 2), ty + k, k % 2 ? hex(0xb89f5a) : hex(0xd8c27a));
+    }
+  }
+}
+
+// Fern: arching fronds with alternating leaflets.
+function paintFern(t) {
+  clearTile(t);
+  const r = makeRand(t.seed + 5);
+  const pal = [0x0f3314, 0x164519, 0x1f5a20, 0x2a7029, 0x378634, 0x479b40, 0x5aaf4e].map(hex);
+  const fronds = 6;
+  for (let f = 0; f < fronds; f++) {
+    const side = f % 2 === 0 ? -1 : 1;
+    const spread = 0.25 + (f / fronds) * 0.9 + r() * 0.2;
+    let x = 15.5 + side * r() * 2;
+    let y = TEX - 1;
+    const len = 20 + Math.floor(r() * 10);
+    let dx = side * spread * 0.35;
+    for (let k = 0; k < len; k++) {
+      const q = k / len;
+      const xi = Math.round(x);
+      const yi = Math.round(y);
+      t.set(xi, yi, ramp(pal, 0.15 + q * 0.5));
+      // Leaflets on both sides, shorter toward the tip.
+      if (k % 2 === 0 && k > 2) {
+        const leaf = Math.max(1, Math.round((1 - q) * 4));
+        for (let j = 1; j <= leaf; j++) {
+          t.set(xi - j, yi - (j >> 1), ramp(pal, 0.35 + q * 0.5 + j * 0.05));
+          t.set(xi + j, yi - (j >> 1), ramp(pal, 0.25 + q * 0.5 + j * 0.04));
+        }
+      }
+      x += dx;
+      y -= 1 - q * q * 0.85; // rises, then arches over
+      dx += side * 0.035;
+      if (y < 1) break;
+    }
+  }
+}
+
+// Reeds: straight stalks with long leaves. The bottom tile starts at the
+// ground; the top tile continues the same stalks (and cattails end in a
+// brown spike).
+const REED_STALKS = [
+  { x: 7, lean: 0.04 },
+  { x: 12, lean: -0.03 },
+  { x: 17, lean: 0.02 },
+  { x: 23, lean: -0.05 },
+];
+function paintReed(t, top, cattail) {
+  clearTile(t);
+  const pal = cattail ? [0x33461b, 0x40591f, 0x4e6d25, 0x5d822c, 0x6f9535, 0x82a640, 0x98b651].map(hex) : [0x2c4d1a, 0x385f1f, 0x456f25, 0x53812c, 0x629336, 0x74a441, 0x8ab653].map(hex);
+  const r = makeRand(t.seed + (top ? 17 : 3));
+  REED_STALKS.forEach((st, i) => {
+    const height = top ? (cattail ? 14 + (i % 2) * 6 : 10 + ((i * 7) % 11)) : TEX;
+    for (let k = 0; k < height; k++) {
+      const yy = top ? k + TEX : k; // rows above the ground
       const y = TEX - 1 - k;
-      const f = k / h;
-      const col = mixRgb(hex(0x2a5a1b), hex(0x86c957), f);
-      t.set(Math.floor(x), y, col);
-      if (k < h * 0.4 && r() < 0.5) t.set(Math.floor(x) + 1, y, scaleRgb(col, 0.8));
-      x += lean;
+      const x = Math.round(st.x + st.lean * yy);
+      const q = yy / (TEX * 2);
+      t.set(x, y, ramp(pal, 0.2 + q * 0.7));
+      if (!top || k < height * 0.5) t.set(x + 1, y, ramp(pal, 0.05 + q * 0.6));
+    }
+    if (top && cattail && i % 2 === 0) {
+      // The cattail: a dark brown spike with a lit edge, and a thin tip above.
+      const yTop = TEX - height;
+      const x = Math.round(st.x + st.lean * (TEX + height));
+      for (let k = 0; k < 7; k++) {
+        const y = yTop + 2 + k;
+        t.set(x - 1, y, hex(k === 0 ? 0x7a4a26 : 0x5b3219));
+        t.set(x, y, hex(0x6d3d1f));
+        t.set(x + 1, y, hex(0x3f2210));
+      }
+      t.set(x, yTop, hex(0x7c8a44));
+      t.set(x, yTop + 1, hex(0x6e7a3a));
+    }
+  });
+  // Long arching leaves from the bottom tile.
+  if (!top) {
+    for (let i = 0; i < 3; i++) {
+      const side = i % 2 === 0 ? 1 : -1;
+      let x = 10 + i * 5;
+      for (let k = 0; k < 30; k++) {
+        const y = TEX - 1 - k;
+        t.set(Math.round(x), y, ramp(pal, 0.3 + (k / 30) * 0.6));
+        x += side * (0.05 + (k / 30) * 0.35);
+        if (x < 0 || x >= TEX) break;
+      }
+    }
+    // A little variety: random darker nodes on the stalks.
+    for (let i = 0; i < 8; i++) {
+      const st = REED_STALKS[Math.floor(r() * REED_STALKS.length)];
+      const k = Math.floor(r() * TEX);
+      t.set(Math.round(st.x + st.lean * k), TEX - 1 - k, hex(0x2a3d15));
+    }
+  }
+}
+
+// Lily pad: a round leaf with a notch, radiating veins, and sometimes a flower.
+function paintLilyPad(t) {
+  clearTile(t);
+  const c = 15.5;
+  const pal = [0x1c4a1a, 0x255f22, 0x2f742a, 0x3b8933, 0x4a9d3e, 0x5eb04d].map(hex);
+  t.forEach((x, y) => {
+    const dx = x - c;
+    const dy = y - c;
+    const d = Math.hypot(dx, dy);
+    const a = Math.atan2(dy, dx);
+    if (d > 13.5 + Math.sin(a * 5) * 0.6) return;
+    if (Math.abs(a - 0.35) < 0.22 && d > 1.5) return; // the notch
+    const vein = Math.abs(Math.sin(a * 9)) < 0.12 && d > 3;
+    let f = 0.35 + t.fbm(x, y, 4, 2) * 0.35 - d * 0.012;
+    if (vein) f += 0.25;
+    if (d > 12.5) f -= 0.25; // dark rim
+    t.set(x, y, ramp(pal, f));
+  });
+  // A small white-pink flower on some pads.
+  const fx = 10;
+  const fy = 20;
+  for (let dy = -2; dy <= 2; dy++) {
+    for (let dx = -2; dx <= 2; dx++) {
+      if (Math.abs(dx) + Math.abs(dy) > 3) continue;
+      t.set(fx + dx, fy + dy, Math.abs(dx) + Math.abs(dy) <= 1 ? hex(0xffe27a) : hex(dy < 0 ? 0xfff1f6 : 0xf2b8cf));
     }
   }
 }
@@ -796,6 +994,106 @@ function paintWool(t) {
   });
 }
 
+function paintSnowTop(t) {
+  t.forEach((x, y) => {
+    const f = t.fbm(x, y, 5, 3) * 0.3 + t.rand() * 0.2 + 0.65;
+    t.set(x, y, ramp(P.snow, f));
+  });
+  for (let i = 0; i < 14; i++) t.set(Math.floor(t.rand() * TEX), Math.floor(t.rand() * TEX), P.snow[P.snow.length - 1]);
+  for (let i = 0; i < 10; i++) t.set(Math.floor(t.rand() * TEX), Math.floor(t.rand() * TEX), scaleRgb(P.snow[0], 0.92));
+}
+
+function paintSnowSide(t) {
+  paintDirt(t, 4);
+  for (let x = 0; x < TEX; x++) {
+    const depth = 7 + Math.floor(t.noise(x, 0, 8, 6) * 4);
+    for (let y = 0; y < depth; y++) {
+      const f = t.fbm(x, y, 4, 2, 11) * 0.25 + t.rand() * 0.15 + 0.68;
+      t.set(x, y, ramp(P.snow, f));
+    }
+    t.set(x, depth, hex(0xb9c8ce)); // shaded lip
+    t.shade(x, depth + 1, 0.72);
+  }
+}
+
+function paintTerracotta(t) {
+  t.forEach((x, y) => {
+    const band = Math.floor((y + t.fbm(x, y, 8, 2) * 3) / 3);
+    const base = P.terracotta[((band % P.terracotta.length) + P.terracotta.length) % P.terracotta.length];
+    const f = 0.85 + t.rand() * 0.28 + (t.fbm(x, y, 4, 3) - 0.5) * 0.15;
+    t.set(x, y, scaleRgb(base, f));
+  });
+}
+
+function paintCactusSide(t) {
+  t.forEach((x, y) => {
+    const ridge = Math.abs(((x + 16) % 8) - 4) < 1.4 ? -0.16 : 0;
+    const f = t.fbm(x, y, 4, 3) * 0.35 + t.rand() * 0.18 + 0.55 + ridge;
+    t.set(x, y, ramp(P.cactus, f));
+  });
+  for (let i = 0; i < 16; i++) {
+    const x = Math.floor(t.rand() * TEX);
+    const y = Math.floor(t.rand() * TEX);
+    if (x % 8 < 2) t.set(x, y, hex(0xd8cf9a));
+  }
+}
+
+function paintCactusTop(t) {
+  t.forEach((x, y) => t.set(x, y, ramp(P.cactus, 0.58 + t.rand() * 0.22)));
+}
+
+function paintDeadBush(t) {
+  t.forEach((x, y) => t.set(x, y, [0, 0, 0], 0));
+  const r = makeRand(t.seed + 7);
+  for (let i = 0; i < 26; i++) {
+    let x = 10 + r() * 12;
+    let y = 30 - r() * 2;
+    let a = (r() - 0.5) * 1.6;
+    const len = 6 + Math.floor(r() *10);
+    for (let k = 0; k < len; k++) {
+      t.set(Math.floor(x), Math.floor(y), mixRgb(hex(0x5a3d22), hex(0x8a6238), k / len));
+      x += Math.sin(a) * 1.1;
+      y -= 1;
+      a += (r() - 0.5) * 0.5;
+      if (y < 0) break;
+    }
+  }
+}
+
+function paintCoral(t) {
+  const hues = [0xff6f91, 0xff9a56, 0xffd166, 0x9b5de5, 0x4cc9f0, 0xf72585].map(hex);
+  const vor = t.voronoi(22, 3);
+  t.forEach((x, y) => {
+    const v = vor(x, y);
+    const c = hues[v.cell % hues.length];
+    const f = Math.min(1.3, 0.78 + (v.d2 - v.d1) * 0.06 + t.rand() * 0.14);
+    t.set(x, y, scaleRgb(c, f));
+  });
+}
+
+function paintSeagrass(t) {
+  t.forEach((x, y) => t.set(x, y, [0, 0, 0], 0));
+  const r = makeRand(t.seed + 9);
+  for (let i = 0; i < 3; i++) {
+    let x = 7 + i * 8 + r() * 5;
+    const h = 16 + Math.floor(r() * 12);
+    for (let k = 0; k < h; k++) {
+      const y = TEX - 1 - k;
+      t.set(Math.floor(x), y, mixRgb(hex(0x0f5c34), hex(0x3fae6a), k / h));
+      x += Math.sin(k * 0.5) * 0.3;
+    }
+  }
+}
+
+function paintKelp(t) {
+  t.forEach((x, y) => t.set(x, y, [0, 0, 0], 0));
+  for (let y = 0; y < TEX; y++) {
+    const x = 16 + Math.sin(y * 0.4) * 3;
+    t.set(Math.round(x), y, mixRgb(hex(0x2a4a1e), hex(0x5a8a3a), y / TEX));
+    t.set(Math.round(x) + 1, y, scaleRgb(hex(0x3a6a2a), 0.8));
+  }
+}
+
 const PAINTERS = {
   grass_top: paintGrassTop,
   grass_side: paintGrassSide,
@@ -831,6 +1129,27 @@ const PAINTERS = {
   pine_side: paintPineBark,
   pine_top: paintPineTop,
   pine_leaves: paintPineNeedles,
+  snow_top: paintSnowTop,
+  snow_side: paintSnowSide,
+  terracotta: paintTerracotta,
+  cactus_side: paintCactusSide,
+  cactus_top: paintCactusTop,
+  dead_bush: paintDeadBush,
+  coral: paintCoral,
+  seagrass: paintSeagrass,
+  kelp: paintKelp,
+  sand_side: paintSandSide,
+  grass_tuft: (t) => paintGrassBlades(t, 24, 6, 19, 11),
+  grass_tuft_b: (t) => paintGrassBlades(t, 20, 8, 25, 23, { heads: 1 }),
+  fern: paintFern,
+  reed_bottom: (t) => paintReed(t, false, false),
+  reed_top: (t) => paintReed(t, true, false),
+  cattail_bottom: (t) => paintReed(t, false, true),
+  cattail_top: (t) => paintReed(t, true, true),
+  lily_pad: paintLilyPad,
+  flower_blue: (t) => paintFlower(t, [0x2a3f9e, 0x4a66d8, 0x8fa8ff, 0xf5e27a]),
+  flower_white: (t) => paintFlower(t, [0xb8b8b0, 0xe8e8e0, 0xffffff, 0xf2c230]),
+  flower_pink: (t) => paintFlower(t, [0xb03a6e, 0xe86aa0, 0xffb3d1, 0xfff0a0]),
 };
 
 export function paintTile(name) {
@@ -860,7 +1179,8 @@ const RELIEF = {
   dirt: [2.2, 0.95, 1],
   stone: [2.6, 0.72, 0.45],
   cobblestone: [3.2, 0.78, 0.25],
-  sand: [1.6, 0.9, 0.5],
+  sand: [1.2, 0.9, 0.55],
+  sand_side: [1.0, 0.92, 1],
   gravel: [3.0, 0.82, 0.3],
   leaves: [2.4, 0.5, 1],
   wood_side: [3.0, 0.88, 1],
@@ -937,14 +1257,21 @@ function paintRelief(name, t) {
   }
   const span = hi - lo > 1e-4 ? hi - lo : 1;
   for (let i = 0; i < height.length; i++) height[i] = p[i * 4 + 3] < 128 ? 0 : (height[i] - lo) / span;
-  const hAt = (x, y) => height[((y + TEX) % TEX) * TEX + ((x + TEX) % TEX)];
+  // Slopes are measured inside the tile only (one-sided at its borders).
+  // Wrapping around, as a tileable texture would, compared a face's bottom
+  // row with its top row: on tiles whose top and bottom differ (a grass
+  // side's grass fringe over dirt) that invented a steep false slope along
+  // every block's lower and upper edge, which the normal mapping and
+  // parallax turned into a dark band along the bottom of the faces.
+  const hAt = (x, y) => height[Math.min(TEX - 1, Math.max(0, y)) * TEX + Math.min(TEX - 1, Math.max(0, x))];
   const out = new Uint8Array(TEX * TEX * 4);
   for (let y = 0; y < TEX; y++) {
     for (let x = 0; x < TEX; x++) {
       const i = y * TEX + x;
-      // Canvas rows go down, texture v goes up: d/dv = -d/dy.
-      const du = (hAt(x + 1, y) - hAt(x - 1, y)) * 0.5;
-      const dv = -(hAt(x, y + 1) - hAt(x, y - 1)) * 0.5;
+      // Canvas rows go down, texture v goes up: d/dv = -d/dy. Central
+      // differences inside, one-sided at the borders.
+      const du = (hAt(x + 1, y) - hAt(x - 1, y)) / (x === 0 || x === TEX - 1 ? 1 : 2);
+      const dv = -(hAt(x, y + 1) - hAt(x, y - 1)) / (y === 0 || y === TEX - 1 ? 1 : 2);
       let nx = -du * strength;
       let ny = -dv * strength;
       const len = Math.hypot(nx, ny, 1);

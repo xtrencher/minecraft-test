@@ -203,11 +203,11 @@ try {
     assert(saved.graphics === "low", `graphics setting not persisted: ${JSON.stringify(saved)}`);
   });
 
-  await check("default render distance is 20 chunks, up to 100", async () => {
+  await check("default render distance is 10 chunks, up to 100", async () => {
     const slider = await page.$eval("#render-distance", (el) => ({ value: el.value, max: el.max }));
-    assert(slider.value === "20" && slider.max === "100", `slider ${JSON.stringify(slider)}, expected 20 of max 100`);
+    assert(slider.value === "10" && slider.max === "100", `slider ${JSON.stringify(slider)}, expected 10 of max 100`);
     const live = await page.evaluate(() => window.__voxelands.renderDistance);
-    assert(live === 20, `game render distance is ${live}, expected 20`);
+    assert(live === 10, `game render distance is ${live}, expected 10`);
   });
 
   await check("Play button locks pointer and starts the game", async () => {
@@ -217,13 +217,14 @@ try {
     assert(cls.includes("hidden"), `start menu still visible (class="${cls}")`);
   });
 
-  await check("a new world starts in Survival with full health and an empty inventory", async () => {
+  await check("a new world starts in Survival with full health and the default weapon loadout", async () => {
     const s = await page.evaluate(() => {
       const v = window.__voxelands;
       return {
         mode: v.player.mode,
         health: v.player.health,
-        empty: v.inventory.isEmpty(),
+        hotbar: v.inventory.slots.slice(0, 9).map((s) => s?.id ?? 0),
+        rest: v.inventory.slots.slice(9).every((s) => !s),
         hearts: document.querySelectorAll("#hearts canvas").length,
         heartsVisible: !document.getElementById("hearts").classList.contains("hidden"),
         // The spawn column's top block is the ground itself, not a tree.
@@ -231,7 +232,10 @@ try {
         spawnGround: v.world.heightAt(v.spawn.x, v.spawn.z),
       };
     });
-    assert(s.mode === "survival" && s.health === 20 && s.empty, `unexpected start state ${JSON.stringify(s)}`);
+    // 1 pistol, 2 grenade, 3 bazooka, 4 machine gun, 5 airstrike designator, 6 sniper rifle.
+    assert(JSON.stringify(s.hotbar.slice(0, 6)) === JSON.stringify([287, 286, 288, 289, 291, 290]), `unexpected starting hotbar ${JSON.stringify(s.hotbar)}`);
+    assert(s.rest && s.hotbar.slice(6).every((id) => id === 0), `no other starting items expected: ${JSON.stringify(s.hotbar)}`);
+    assert(s.mode === "survival" && s.health === 20, `unexpected start state ${JSON.stringify(s)}`);
     assert(s.hearts === 10 && s.heartsVisible, `expected 10 visible hearts: ${JSON.stringify(s)}`);
     assert(s.spawnTop === s.spawnGround, `the player should start on the ground, not on a tree: ${JSON.stringify(s)}`);
   });
@@ -370,6 +374,125 @@ try {
     });
     await page.click("#resume-btn", { timeout: 20000 });
     await page.waitForFunction(() => window.__voxelands.gameState === "playing", null, { timeout: 10000 });
+  });
+
+  // --- Round 4 Part A, group 5: player and settings ---
+  await check("F5 camera modes show the player model, F1 hides the HUD, F3 shows debug info", async () => {
+    const state = () =>
+      page.evaluate(() => {
+        const v = window.__voxelands;
+        const eye = v.player.getEyePosition();
+        return {
+          mode: v.player.cameraMode,
+          avatar: v.avatar.root.visible,
+          camDist: v.camera.position.distanceTo(eye),
+          hudOff: document.body.classList.contains("hud-off"),
+          debug: !document.getElementById("debug-overlay").classList.contains("hidden"),
+          debugText: document.getElementById("debug-overlay").textContent,
+        };
+      });
+    const frames = (n = 3) => page.evaluate((k) => new Promise((r) => { let i = 0; const f = () => (++i >= k ? r() : requestAnimationFrame(f)); requestAnimationFrame(f); }), n);
+    // Look down a little so the camera behind rises over nearby terrain.
+    await page.evaluate(() => {
+      window.__voxelands.player.pitch = -0.6;
+    });
+    let s0 = await state();
+    assert(s0.mode === 0 && !s0.avatar && s0.camDist < 0.05, `starts in first person: ${JSON.stringify(s0)}`);
+    await page.keyboard.press("F5");
+    await frames(12);
+    const s1 = await state();
+    assert(s1.mode === 1 && s1.avatar && s1.camDist > 0.5, `F5 -> third person behind with a visible model: ${JSON.stringify(s1)}`);
+    await page.keyboard.press("F5");
+    await frames(12);
+    const s2 = await state();
+    const facing = await page.evaluate(() => {
+      const v = window.__voxelands;
+      const f = v.player.getForwardVector();
+      const d = v.camera.position.clone().sub(v.player.getEyePosition());
+      return d.dot(f) / Math.max(1e-6, d.length());
+    });
+    assert(s2.mode === 2 && s2.avatar && (s2.camDist < 0.05 || facing > 0.9), `F5 -> third person in front: ${JSON.stringify(s2)} facing ${facing}`);
+    await page.keyboard.press("F5");
+    await frames(3);
+    const s3 = await state();
+    assert(s3.mode === 0 && !s3.avatar, `F5 -> back to first person: ${JSON.stringify(s3)}`);
+    await page.keyboard.press("F1");
+    await frames(2);
+    assert((await state()).hudOff, "F1 hides the HUD");
+    await page.keyboard.press("F1");
+    await page.keyboard.press("F3");
+    await frames(4);
+    const s4 = await state();
+    assert(!s4.hudOff && s4.debug && /XYZ:/.test(s4.debugText) && /Chunk:/.test(s4.debugText), `F3 debug overlay: ${JSON.stringify(s4)}`);
+    await page.keyboard.press("F3");
+    assert(!(await state()).debug, "F3 again hides the overlay");
+  });
+
+  await check("settings menu: time of day slider and lock, FOV, sensitivity, volume, difficulty and spawning persist", async () => {
+    await page.evaluate(() => document.exitPointerLock());
+    await page.waitForFunction(() => window.__voxelands.gameState === "paused", null, { timeout: 5000 });
+    const setRange = (sel, v) =>
+      page.$eval(sel, (el, value) => {
+        el.value = String(value);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      }, v);
+    const setCheck = (sel, v) =>
+      page.$eval(sel, (el, value) => {
+        el.checked = value;
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }, v);
+    let lockedStill = false;
+    try {
+      // Tabs switch pages.
+      await page.click('.settings-tab[data-page="gameplay"]');
+      assert(await page.isVisible("#time-of-day"), "gameplay tab shows the time slider");
+      await setRange("#time-of-day", 18.5);
+      await setCheck("#time-lock", true);
+      const t = await page.evaluate(() => ({ h: window.__voxelands.sky.hours, locked: window.__voxelands.sky.locked }));
+      assert(Math.abs(t.h - 18.5) < 0.05 && t.locked, `time set to 18:30 and locked: ${JSON.stringify(t)}`);
+      await page.selectOption("#difficulty", "hard");
+      await setCheck("#mob-spawning", false);
+      await page.click('.settings-tab[data-page="controls"]');
+      await setRange("#fov", 90);
+      await setRange("#sensitivity", 1.5);
+      await page.click('.settings-tab[data-page="audio"]');
+      await setRange("#vol-weapons", 0.25);
+      await page.click('.settings-tab[data-page="video"]');
+      await page.selectOption("#gfx-bloom", "on"); // Low has no bloom: an override
+      const live = await page.evaluate(() => {
+        const v = window.__voxelands;
+        return { fov: v.player.baseFov, sens: v.player.mouseSensitivity, vol: v.audio.volumes.weapons, dmg: v.player.mobDamageScale, spawn: v.mobs.spawning, bloom: v.postfx.bloomLevels, s: JSON.parse(localStorage.getItem("voxelands_v1_settings")) };
+      });
+      assert(live.fov === 90 && live.sens === 1.5 && live.vol === 0.25 && live.dmg === 1.5 && live.spawn === false && live.bloom > 0, `live values: ${JSON.stringify(live)}`);
+      assert(live.s.fov === 90 && live.s.sensitivity === 1.5 && live.s.volume.weapons === 0.25 && live.s.difficulty === "hard" && live.s.mobSpawning === false && live.s.timeLocked === true && live.s.gfxOverrides.bloom === "on", `saved: ${JSON.stringify(live.s)}`);
+    } finally {
+      // Always resume, check the locked clock, and restore the defaults for
+      // the rest of the run (unlocked mid-morning clock, Low, spawning on).
+      if ((await page.evaluate(() => window.__voxelands.gameState)) !== "playing") {
+        await page.click("#resume-btn", { timeout: 20000 });
+        await page.waitForFunction(() => window.__voxelands.gameState === "playing", null, { timeout: 10000 });
+      }
+      const h0 = await page.evaluate(() => window.__voxelands.sky.hours);
+      await page.waitForTimeout(1500);
+      const h1 = await page.evaluate(() => window.__voxelands.sky.hours);
+      lockedStill = Math.abs(h1 - h0) < 1e-6;
+      await page.evaluate(() => {
+        const v = window.__voxelands;
+        localStorage.removeItem("voxelands_v1_settings");
+        Object.assign(v.settings, { timeLocked: false, difficulty: "normal", mobSpawning: true, fov: 75, sensitivity: 1, gfxOverrides: {} });
+        v.settings.volume.weapons = 1;
+        v.sky.locked = false;
+        v.player.mobDamageScale = 1;
+        v.mobs.spawning = true;
+        v.mobs.hostileSpawning = true;
+        v.player.baseFov = 75;
+        v.player.mouseSensitivity = 1;
+        v.audio.setVolume("weapons", 1);
+        v.setGraphics("low");
+        v.sky.setHours(10);
+      });
+    }
+    assert(lockedStill, "a locked clock stays put");
   });
 
   // --- Level of detail (Round 3, Phase 3) ---
@@ -642,11 +765,17 @@ try {
     });
     await page.waitForFunction(() => window.__voxelands.world.isIdle && window.__voxelands.world.remeshQueue.size === 0, null, { timeout: 300000, polling: 250 });
     await page.waitForFunction(() => window.__voxelands.grass.count > 0, null, { timeout: 60000, polling: 250 });
-    const g = await page.evaluate(() => Object.fromEntries(Object.entries(window.__voxelands.grass.layers).map(([k, l]) => [k, l.count])));
-    console.log(`        plants: ${JSON.stringify(g)}; tree species nearby: ${r.species.join(", ")} (1 oak, 2 birch, 3 pine, 4 old oak)`);
-    assert(g.tall > 100 && g.short > 50, `expected tall and short grass: ${JSON.stringify(g)}`);
-    assert(g.reed > 5, `expected reeds along the water: ${JSON.stringify(g)}`);
+    const g = await page.evaluate(() => ({ ...window.__voxelands.grass.counts }));
+    console.log(`        plants: ${JSON.stringify(g)}; tree species nearby: ${r.species.join(", ")} (1 oak, 2 birch, 3 pine, 4 old oak, 5 willow)`);
+    assert(g.tall > 100 && g.tuft > 50, `expected tall and short grass: ${JSON.stringify(g)}`);
+    assert(g.reed + g.cattail > 5, `expected reeds and cattails along the water: ${JSON.stringify(g)}`);
     assert(g.fern > 2, `expected ferns under the leafy roof: ${JSON.stringify(g)}`);
+    // Every plant is a pixel-art card from the block texture array (one style).
+    const style = await page.evaluate(() => {
+      const v = window.__voxelands;
+      return { atlas: v.grass.material.uniforms.uAtlas.value === v.world.atlas, textured: /sampler2DArray uAtlas/.test(v.grass.material.fragmentShader) };
+    });
+    assert(style.atlas && style.textured, `plants should sample the block texture array: ${JSON.stringify(style)}`);
     assert(r.species.length >= 3, `expected several tree species, got ${r.species}`);
   });
 
@@ -895,7 +1024,13 @@ try {
   });
 
   await check("creative: instant break, place from the hotbar, scroll, flight toggle; the Blast Orb and F key are gone", async () => {
-    await page.evaluate(() => window.__voxelands.setMode("creative"));
+    await page.evaluate(() => {
+      const v = window.__voxelands;
+      v.setMode("creative");
+      // A new game's hotbar starts with weapons (slots 0-5); put stone in
+      // slot 2 for this test regardless of what's there already.
+      v.inventory.slots[2] = { id: 3, count: 64 };
+    });
     const site = await setupArena(page, 12, 12);
     const target = [site.x, site.y + 1, site.z - 2];
     await page.evaluate(([x, y, z]) => window.__voxelands.world.setBlock(x, y, z, 1), target);
@@ -905,7 +1040,6 @@ try {
     await page.mouse.up({ button: "left" });
     const broken = await page.evaluate(([x, y, z]) => window.__voxelands.world.getBlock(x, y, z), target);
     assert(broken === 0, `creative left click should break the block instantly (block is ${broken})`);
-    // The creative hotbar starts with the building blocks; slot 3 is stone.
     await page.keyboard.press("Digit3");
     const sel = await page.evaluate(() => window.__voxelands.inventory.selectedStack);
     assert(sel && sel.id === 3, `slot 3 should hold stone: ${JSON.stringify(sel)}`);
@@ -993,6 +1127,9 @@ try {
       inv.slots[0] = { id: 286, count: 1 }; // grenade
       inv.slots[1] = { id: 287, count: 1 }; // pistol
       inv.slots[2] = { id: 288, count: 1 }; // bazooka
+      inv.slots[3] = { id: 289, count: 1 }; // machine gun
+      inv.slots[4] = { id: 290, count: 1 }; // sniper rifle
+      inv.slots[5] = { id: 291, count: 1 }; // airstrike designator
     });
 
   await check("grenades: hold to charge (bar shown), quick click lobs short, full charge throws far; they bounce, 5 s fuse", async () => {
@@ -1058,7 +1195,10 @@ try {
     const boom = await waitForExplosion(prev);
     console.log(`        removed ${boom.removed} blocks, farthest ${boom.maxDist.toFixed(2)} from center, carve ${boom.carveMs.toFixed(1)} ms`);
     console.log(`        particles: ${boom.debris} debris, ${boom.smoke} smoke, ${boom.glow} fire/sparks; shake trauma ${boom.trauma.toFixed(2)}; player vy ${boom.playerVy.toFixed(1)}`);
-    assert(boom.removed > 300, `crater too small: ${boom.removed} blocks`);
+    // Craters are now flattened ellipsoids (~half the vertical reach of a
+    // sphere), so the removed-block count is naturally lower (and varies
+    // run to run with the random lumpiness) than the old spherical crater.
+    assert(boom.removed > 150, `crater too small: ${boom.removed} blocks`);
     assert(boom.maxDist > 6 && boom.maxDist < 8.2, `crater reach ${boom.maxDist.toFixed(2)} outside the expected ~7 +/- 0.6`);
     assert(boom.carveMs < 150, `carving took ${boom.carveMs.toFixed(1)} ms`);
     assert(boom.debris > 50 && boom.smoke > 30 && boom.glow > 60, "expected a big particle burst");
@@ -1163,7 +1303,7 @@ try {
     assert(placed === 0, "right-click with a pistol must not place a block");
   });
 
-  await check("bazooka: a fast, nearly flat rocket with a smoke trail and a blast 5x a grenade's", async () => {
+  await check("bazooka: a fast, nearly flat rocket with a smoke trail and a blast a third of its old size", async () => {
     const a = await runway(-110, 0);
     await giveWeapons();
     await page.keyboard.press("Digit3");
@@ -1192,8 +1332,196 @@ try {
     await page.waitForFunction(() => window.__voxelands.world.editRemeshQueue.size === 0, null, { timeout: 60000 });
     console.log(`        rocket: ${fly.speed.toFixed(0)} blocks/s, vertical ${fly.vy.toFixed(2)}; blast radius ${boom.radius}: removed ${boom.removed}, reach ${boom.maxDist.toFixed(1)}, carve ${boom.carveMs.toFixed(0)} ms, ${r.falling} falling blocks`);
     assert(fly.speed > 60 && Math.abs(fly.vy) < 5 && fly.smoke > smoke0, "the rocket should fly fast and nearly straight, trailing smoke");
-    assert(boom.source === "bazooka" && boom.radius === 35 && boom.maxDist > 28 && boom.maxDist < 38, `bazooka blast should be ~35 blocks: ${JSON.stringify(boom)}`);
+    // A third of the old 5x-grenade size ((7*5)/3 ~= 11.67), and roughly 2x
+    // wider than deep now (a flattened ellipsoid, not a sphere).
+    assert(boom.source === "bazooka" && boom.radius > 11 && boom.radius < 12.3 && boom.maxDist > 9 && boom.maxDist < 13.5, `bazooka blast should be ~11.7 blocks: ${JSON.stringify(boom)}`);
     assert(r.falling <= 64, "falling blocks must stay capped");
+  });
+
+  await check("machine gun: holding right click fires automatically with tracers and climbing recoil that settles on release", async () => {
+    const a = await runway(-40, -160);
+    await giveWeapons();
+    await page.keyboard.press("Digit4"); // slot 3: machine gun
+    await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      v.world.setBlocks([x - 1, y + 1, z - 6, 3, x, y + 1, z - 6, 3, x + 1, y + 1, z - 6, 3]); // a wall to shoot
+      v.player.pitch = 0;
+      v.player.yaw = 0;
+    }, a);
+    await page.waitForTimeout(300);
+    const before = await page.evaluate(() => ({ shots: window.__voxelands.weapons.shots, recoil: window.__voxelands.player.recoil }));
+    await page.mouse.down({ button: "right" });
+    // Software rendering can be very slow (a handful of frames/second) and
+    // the simulation step is clamped per frame, so wait for real shot counts
+    // (bounded by simulated time, not a fixed wall-clock delay).
+    await page.waitForFunction((n) => window.__voxelands.weapons.shots >= n + 5, before.shots, { timeout: 120000, polling: 16 });
+    const during = await page.evaluate(() => ({
+      shots: window.__voxelands.weapons.shots,
+      recoil: window.__voxelands.player.recoil,
+      firing: window.__voxelands.weapons._mgFiring,
+      tracers: window.__voxelands.weapons._tracers.filter((t) => t.line.visible).length,
+    }));
+    await page.mouse.up({ button: "right" });
+    await page.waitForTimeout(30);
+    const after = await page.evaluate(() => ({ shots: window.__voxelands.weapons.shots, firing: window.__voxelands.weapons._mgFiring }));
+    const shotsAtRelease = after.shots;
+    await page.waitForTimeout(800);
+    const settledInfo = await page.evaluate(() => ({ recoil: window.__voxelands.player.recoil, shots: window.__voxelands.weapons.shots }));
+    const settled = settledInfo.recoil;
+    console.log(`        ${during.shots - before.shots} auto shots while held, recoil climbed to ${during.recoil.toFixed(2)}, settled to ${settled.toFixed(2)}`);
+    assert(during.shots - before.shots >= 5, `holding the trigger should fire several automatic shots (got ${during.shots - before.shots})`);
+    assert(during.firing && !after.firing, "releasing the button should stop the automatic fire");
+    assert(settledInfo.shots === shotsAtRelease, "no more shots should fire after releasing the button");
+    // An absolute bar rather than "vs. before": recoil decays fast (visually
+    // snappy at 60 fps), so under slow software rendering, the real time
+    // between the shot-count wait resolving and this read can let it settle
+    // some already; what matters is that it's clearly above the noise floor.
+    assert(during.recoil > 0.012, `recoil should be clearly up while firing (got ${during.recoil.toFixed(3)})`);
+    assert(settled < during.recoil, "recoil should settle back down once firing stops");
+    assert(during.tracers > 0, "shots should leave a visible tracer");
+  });
+
+  await check("sniper rifle: right click toggles a zoomed scope with an overlay; left click fires a high-damage, long-range shot", async () => {
+    const a = await runway(-40, -220);
+    await giveWeapons();
+    await page.keyboard.press("Digit5"); // slot 4: sniper rifle
+    await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      v.player.pitch = 0;
+      v.player.yaw = 0;
+    }, a);
+    await page.waitForTimeout(150);
+    const before = await page.evaluate(() => ({ fov: window.__voxelands.camera.fov, scoped: window.__voxelands.weapons.scoped }));
+    await page.mouse.down({ button: "right" });
+    await page.mouse.up({ button: "right" });
+    await page.waitForFunction(() => window.__voxelands.camera.fov < 30, null, { timeout: 5000, polling: 16 });
+    const scoped = await page.evaluate(() => ({
+      fov: window.__voxelands.camera.fov,
+      scoped: window.__voxelands.weapons.scoped,
+      overlay: document.getElementById("scope-overlay").classList.contains("visible"),
+      crosshairHidden: document.getElementById("crosshair").style.visibility === "hidden",
+    }));
+    console.log(`        scoped FOV ${scoped.fov.toFixed(0)} (was ${before.fov.toFixed(0)})`);
+    assert(!before.scoped && scoped.scoped && scoped.fov < 30 && scoped.overlay && scoped.crosshairHidden, `right click should scope in: ${JSON.stringify(scoped)}`);
+    // A long wall, far enough down the runway to be well beyond ordinary reach.
+    await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      v.world.setBlocks([x, y + 1, z - 45, 3]);
+      const eye = v.player.getEyePosition();
+      const [tx, ty, tz] = [x + 0.5, y + 1.5, z - 45 + 0.5];
+      v.player.yaw = Math.atan2(-(tx - eye.x), -(tz - eye.z));
+      v.player.pitch = Math.atan2(ty - eye.y, Math.hypot(tx - eye.x, tz - eye.z));
+    }, a);
+    await page.waitForTimeout(50);
+    const res = await page.evaluate(() => window.__voxelands.weapons.fireSniper());
+    console.log(`        sniper shot: ${JSON.stringify(res)}`);
+    assert(res.type === "block" && res.distance > 40, `a sniper shot should hit the distant wall: ${JSON.stringify(res)}`);
+    // Toggling the scope again turns it off.
+    await page.mouse.down({ button: "right" });
+    await page.mouse.up({ button: "right" });
+    await page.waitForFunction(() => !window.__voxelands.weapons.scoped, null, { timeout: 5000 });
+    // Damage: shoot a zombie in the dark.
+    const r = await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      v.sky.setSunAngle(Math.PI * 1.5);
+      const zb = v.mobs.spawn("zombie", x + 0.5, y + 1, z - 6.5);
+      zb.ai.state = "idle";
+      zb.ai.timer = 999;
+      window.__zb = zb;
+      const eye = v.player.getEyePosition();
+      v.player.yaw = Math.atan2(-(zb.pos.x - eye.x), -(zb.pos.z - eye.z));
+      v.player.pitch = Math.atan2(zb.pos.y + 1.2 - eye.y, Math.hypot(zb.pos.x - eye.x, zb.pos.z - eye.z));
+      const hit = v.weapons.fireSniper();
+      // hit.mob is a live three.js-linked object (circular refs); only
+      // return plain, serializable fields.
+      return { type: hit.type, point: hit.point };
+    }, a);
+    const zb = await page.evaluate(() => ({ hp: window.__zb.health, dead: window.__zb.dead }));
+    console.log(`        sniper hit a zombie: ${JSON.stringify(r)}, health now ${zb.hp}, dead: ${zb.dead}`);
+    // 22 damage vs. a zombie's 20 health: a one-shot kill.
+    assert(r.type === "mob" && zb.hp <= 0, `a sniper shot should deal heavy (one-shot) damage: ${JSON.stringify(zb)}`);
+    await page.evaluate(() => {
+      window.__voxelands.mobs.clear();
+      window.__voxelands.sky.setSunAngle(Math.PI * 0.4);
+    });
+  });
+
+  await check("airstrike designator: a laser follows the aim point; firing rains meteors on the target after a delay", async () => {
+    const a = await runway(160, -40);
+    await giveWeapons();
+    await page.keyboard.press("Digit6"); // slot 5: airstrike designator
+    await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      v.player.pitch = -0.5;
+      v.player.yaw = 0;
+    }, a);
+    await page.waitForTimeout(150);
+    const laser = await page.evaluate(() => ({ visible: window.__voxelands.weapons._laser.visible, dot: window.__voxelands.weapons._laserDot.position }));
+    assert(laser.visible, "the laser sight should show while the designator is held");
+    const prevCount = await page.evaluate(() => window.__voxelands.effects.explosionCount);
+    const t0 = await page.evaluate(() => window.__voxelands.uniforms.uTime.value);
+    await page.mouse.down({ button: "right" });
+    await page.mouse.up({ button: "right" });
+    const noLaserOnOtherWeapon = await page.evaluate(() => {
+      window.__voxelands.inventory.selected = 1; // switch to grenade
+      return true;
+    });
+    await page.waitForTimeout(50);
+    const laserGone = await page.evaluate(() => !window.__voxelands.weapons._laser.visible);
+    assert(noLaserOnOtherWeapon && laserGone, "the laser should hide once another item is selected");
+    await page.evaluate(() => (window.__voxelands.inventory.selected = 5)); // back to the designator (harmless once already fired)
+    // AIRSTRIKE_DELAY is 5 simulated seconds; software rendering can run at a
+    // handful of frames/second with a clamped simulation step per frame, so
+    // this can take a while in real time (see other charge/fuse waits above).
+    await waitForExplosion(prevCount, 150000);
+    const t1 = await page.evaluate(() => window.__voxelands.uniforms.uTime.value);
+    // Let the rest of the meteor rain land.
+    await page.waitForFunction(() => window.__voxelands.weapons.meteors.length === 0 && window.__voxelands.weapons.airstrikes.length === 0, null, { timeout: 90000, polling: 50 });
+    const after = await page.evaluate(() => window.__voxelands.effects.explosionCount);
+    console.log(`        first meteor landed ${(t1 - t0).toFixed(1)}s after firing; ${after - prevCount} meteor blasts total`);
+    assert(t1 - t0 > 4.5, "meteors should start landing only after the delay");
+    assert(after - prevCount >= 5, `expected several meteor impacts, got ${after - prevCount}`);
+  });
+
+  await check("BUG fix: hitscan and projectiles hit terrain far beyond loaded chunks, and the explosion is stored until that chunk loads", async () => {
+    const p = await page.evaluate(() => {
+      const v = window.__voxelands;
+      const x = Math.floor(v.spawn.x) + 5000;
+      const z = Math.floor(v.spawn.z) + 5000;
+      return { x, z, loaded: !!v.world.getChunk(x >> 4, z >> 4) };
+    });
+    assert(!p.loaded, "the target column should not be loaded yet, to exercise the long-range fallback");
+    const res = await page.evaluate(({ x, z }) => {
+      const v = window.__voxelands;
+      const origin = new v.THREE.Vector3(x + 0.5, 200, z + 0.5);
+      const dir = new v.THREE.Vector3(0, -1, 0);
+      return v.world.raycast(origin, dir, 250, { solidOnly: true });
+    }, p);
+    assert(res && res.id !== 0, `a hitscan ray should hit distant, unloaded terrain instead of passing through it: ${JSON.stringify(res)}`);
+    const h = await page.evaluate(({ x, z }) => window.__voxelands.world.heightAt(x, z), p);
+    // Measure before/after in one call (no gap for the periodic autosave to
+    // clear the dirty set in between).
+    const { before, after } = await page.evaluate(
+      ({ x, z, h }) => {
+        const v = window.__voxelands;
+        const before = v.world.dirtyEditChunks.size;
+        v.effects.explode(new v.THREE.Vector3(x + 0.5, h, z + 0.5), { radius: 7, source: "grenade" });
+        return { before, after: v.world.dirtyEditChunks.size };
+      },
+      { ...p, h }
+    );
+    assert(after > before, "an explosion beyond loaded terrain should be recorded as pending block edits");
+    // Streaming that area in should apply the deferred crater.
+    const applied = await page.evaluate(
+      ({ x, z, h }) => {
+        const v = window.__voxelands;
+        v.world.prepareArea(x, z, 1);
+        return v.world.getBlock(x, h, z);
+      },
+      { ...p, h }
+    );
+    console.log(`        distant heightfield hit id ${res.id} at y=${res.block[1]}; crater block after streaming in: ${applied}`);
+    assert(applied === 0, `the deferred crater should apply once the chunk streams in (block is ${applied})`);
   });
 
   await check("explosions shake the camera less the farther away they are", async () => {
@@ -1265,6 +1593,50 @@ try {
     for (const p of result.pockets.slice(0, 5)) console.log(`        pocket ${JSON.stringify(p)}`);
     assert(result.removed > 50, "expected the sea floor to be carved");
     assert(result.pockets.length === 0, `${result.pockets.length} air cells left touching water below sea level`);
+  });
+
+  await check("water physics: a hole dug under still water fills in on its own instead of leaving it floating", async () => {
+    const site = await setupArena(page, -12, 40, 50);
+    const a = await page.evaluate(({ x, y, z }) => {
+      const { world } = window.__voxelands;
+      const edits = [];
+      // A tiny walled basin so the water can't spread sideways, only down
+      // through the hole this test digs straight under it.
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          if (dx === 0 && dz === 0) continue;
+          edits.push(x + dx, y + 1, z + dz, 3); // stone walls
+        }
+      }
+      edits.push(x, y + 1, z, 5); // water resting on the platform floor
+      world.setBlocks(edits);
+      return { x, y, z };
+    }, site);
+    await page.waitForTimeout(150);
+    await page.evaluate(({ x, y, z }) => {
+      const { world } = window.__voxelands;
+      world.setBlocks([x, y, z, 0, x, y - 1, z, 0, x, y - 2, z, 0]); // dig straight down through the floor
+    }, a);
+    // Wait on the specific bottom cell rather than the global active-cell
+    // count: that count covers the whole (persistent, much-blasted-by-now)
+    // world, so unrelated water settling elsewhere could mask this basin's
+    // own signal either way.
+    await page.waitForFunction(({ x, y, z }) => window.__voxelands.world.getBlock(x, y - 2, z) === 5, a, { timeout: 30000, polling: 100 });
+    const r = await page.evaluate(
+      ({ x, y, z }) => {
+        const { world } = window.__voxelands;
+        return {
+          original: world.getBlock(x, y + 1, z),
+          hole1: world.getBlock(x, y, z),
+          hole2: world.getBlock(x, y - 1, z),
+          bottom: world.getBlock(x, y - 2, z),
+        };
+      },
+      a
+    );
+    console.log(`        after settling: ${JSON.stringify(r)}`);
+    assert(r.original === 5, "the original water should still be there");
+    assert(r.hole1 === 5 && r.hole2 === 5 && r.bottom === 5, `water should fall all the way down the hole instead of leaving it floating: ${JSON.stringify(r)}`);
   });
 
   // --- Loose blocks and sounds ---
@@ -1820,6 +2192,89 @@ try {
     await page.waitForFunction(() => window.__voxelands.gameState === "playing", null, { timeout: 10000 });
   });
 
+  await check("skeleton: fires real arrows with gravity that damage the player from range", async () => {
+    const a = await mobArena(-90, 30);
+    const r = await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      v.player.health = 20;
+      v.player._invulnerable = 0;
+      const sk = v.mobs.spawn("skeleton", x + 0.5, y + 1, z - 6.5);
+      sk.ai.state = "idle";
+      sk.ai.timer = 999;
+      sk.attackCooldown = 0;
+      return { hpBefore: v.player.health };
+    }, a);
+    await page.waitForFunction(() => window.__voxelands.mobs.arrows.length > 0, null, { timeout: 20000, polling: 50 });
+    // Gravity integration runs every frame regardless of the archer's
+    // upward aim-compensation arc, so check velocity decay rather than net
+    // height (at short range the arrow can still be rising in an arbitrary
+    // sample window, since it's aimed to arc down onto the target).
+    const vy0 = await page.evaluate(() => window.__voxelands.mobs.arrows[0]?.vel.y ?? null);
+    await page.waitForTimeout(150);
+    const vy1 = await page.evaluate(() => window.__voxelands.mobs.arrows[0]?.vel.y ?? null);
+    if (vy0 !== null && vy1 !== null) assert(vy1 < vy0, `the arrow's vertical velocity should decay under gravity: ${vy0} -> ${vy1}`);
+    await page.waitForFunction(() => window.__voxelands.player.health < 20, null, { timeout: 15000, polling: 50 });
+    const hpAfter = await page.evaluate(() => window.__voxelands.player.health);
+    console.log(`        skeleton shot an arrow (vel.y ${vy0?.toFixed(2)} -> ${vy1?.toFixed(2)}); player health ${r.hpBefore} -> ${hpAfter}`);
+    assert(hpAfter < 20, "the skeleton's arrow should have hurt the player");
+  });
+
+  await check("spider: climbs straight up a wall while chasing the player", async () => {
+    const a = await mobArena(-90, 60);
+    const r = await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      const e = [];
+      for (let dx = -1; dx <= 1; dx++) for (let dy = 1; dy <= 8; dy++) e.push(x + dx, y + dy, z - 4, 3); // an 8-tall wall
+      v.world.setBlocks(e);
+      const sp = v.mobs.spawn("spider", x + 0.5, y + 1, z - 2.5);
+      sp.ai.state = "idle";
+      sp.ai.timer = 999;
+      v.player.position.set(x + 0.5, y + 1, z + 6.5); // on the far side of the wall
+      v.player.yaw = Math.PI;
+      v.player.pitch = 0;
+      window.__spider = sp;
+      return { y0: sp.pos.y };
+    }, a);
+    await page.waitForFunction((y0) => window.__spider.pos.y > y0 + 2, r.y0, { timeout: 30000, polling: 50 });
+    const y1 = await page.evaluate(() => window.__spider.pos.y);
+    console.log(`        spider climbed from y=${r.y0.toFixed(2)} to y=${y1.toFixed(2)}`);
+    assert(y1 > r.y0 + 2, `spider should climb the wall (only reached y=${y1.toFixed(2)})`);
+  });
+
+  await check("cow, pig and chicken spawn and behave like the other passive animals", async () => {
+    const a = await mobArena(-90, 90);
+    await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      v.mobs.spawn("cow", x + 0.5, y + 1, z + 0.5);
+      v.mobs.spawn("pig", x + 2.5, y + 1, z + 0.5);
+      v.mobs.spawn("chicken", x - 2.5, y + 1, z + 0.5);
+    }, a);
+    await page.waitForTimeout(1500);
+    const alive = await page.evaluate(() => window.__voxelands.mobs.mobs.filter((m) => !m.dead).map((m) => m.kind));
+    console.log(`        alive after 1.5s: ${alive.join(", ")}`);
+    assert(alive.includes("cow") && alive.includes("pig") && alive.includes("chicken"), `expected all three animals alive, got ${JSON.stringify(alive)}`);
+  });
+
+  await check("butterflies and fish fly/swim in place without falling under gravity", async () => {
+    const a = await mobArena(-90, -30);
+    const r = await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      const b = v.mobs.spawn("butterfly", x + 0.5, y + 3, z + 0.5);
+      const f = v.mobs.spawn("fish", x + 0.5, y + 2, z + 2.5);
+      return { by0: b.pos.y, fy0: f.pos.y };
+    }, a);
+    await page.waitForTimeout(2000);
+    const r2 = await page.evaluate(() => {
+      const v = window.__voxelands;
+      const b = v.mobs.mobs.find((m) => m.kind === "butterfly" && !m.dead);
+      const f = v.mobs.mobs.find((m) => m.kind === "fish" && !m.dead);
+      return { by1: b ? b.pos.y : null, fy1: f ? f.pos.y : null };
+    });
+    console.log(`        butterfly y ${r.by0.toFixed(2)} -> ${r2.by1 === null ? "?" : r2.by1.toFixed(2)}; fish y ${r.fy0.toFixed(2)} -> ${r2.fy1 === null ? "?" : r2.fy1.toFixed(2)}`);
+    assert(r2.by1 !== null && r2.by1 > r.by0 - 1.5, "a butterfly should not plummet under gravity");
+    assert(r2.fy1 !== null && r2.fy1 > r.fy0 - 1.5, "a fish should not plummet under gravity");
+  });
+
   await check("mob caps, despawning, daylight burning, explosion damage, creative immunity", async () => {
     const a = await mobArena(-60, 60);
     const s = await page.evaluate(({ x, y, z }) => {
@@ -1870,7 +2325,7 @@ try {
       return { hostile, passive, farGone, burned, blasted, ignored };
     }, a);
     console.log(`        after 600 spawn ticks at night: ${s.hostile} zombies, ${s.passive} animals`);
-    assert(s.hostile > 0 && s.hostile <= 10 && s.passive <= 14, `mob caps: ${JSON.stringify(s)}`);
+    assert(s.hostile > 0 && s.hostile <= 12 && s.passive <= 16, `mob caps: ${JSON.stringify(s)}`);
     assert(s.farGone && s.burned && s.blasted && s.ignored, `mob rules: ${JSON.stringify(s)}`);
   });
 
@@ -2013,20 +2468,29 @@ try {
     assert(s.readyAtMenu === false && s.playAtMenu.disabled && /Preparing/.test(s.playAtMenu.text), `the start menu should come up before the world is drawn, with Play waiting: ${JSON.stringify(s)}`);
     assert(!s.play.disabled && s.play.text === "Click to Play", `Play should be ready once the shaders are: ${JSON.stringify(s.play)}`);
     assert(s.preset === "ultra" && s.startSelect === "ultra" && s.boot.preset === "ultra", `default start: ${JSON.stringify(s)}`);
+    // Like picking a preset in the menu, ?graphics= also clears individual options.
+    await p.evaluate(() => {
+      const saved = JSON.parse(localStorage.getItem("voxelands_v1_settings"));
+      localStorage.setItem("voxelands_v1_settings", JSON.stringify({ ...saved, gfxOverrides: { water: "ssr" } }));
+    });
     await p.goto(`http://localhost:${PORT}/index.html?seed=${SEED}&graphics=low`, { waitUntil: "load" });
     await waitReady(p);
-    const low = await p.evaluate(() => ({ preset: window.__voxelands.graphics, saved: JSON.parse(localStorage.getItem("voxelands_v1_settings")).graphics }));
-    assert(low.preset === "low" && low.saved === "low", `?graphics=low should start on Low and keep it: ${JSON.stringify(low)}`);
+    const low = await p.evaluate(() => {
+      const saved = JSON.parse(localStorage.getItem("voxelands_v1_settings"));
+      return { preset: window.__voxelands.graphics, saved: saved.graphics, overrides: saved.gfxOverrides };
+    });
+    assert(low.preset === "low" && low.saved === "low" && Object.keys(low.overrides).length === 0, `?graphics=low should start on plain Low and keep it: ${JSON.stringify(low)}`);
     assert(errs.length === 0, `errors: ${errs.join(" | ")}`);
     await ctx.close();
   });
 
-  await check("startup: after a start that never showed the world, the next one lowers the graphics a step and says so", async () => {
+  await check("startup: after a start that never showed the world, the next one lowers the graphics a step (resetting individual options) and says so", async () => {
     const { p, ctx, errs } = await freshPage(async (p) => {
       await p.addInitScript(() => {
         if (sessionStorage.getItem("primed")) return;
         sessionStorage.setItem("primed", "1");
-        localStorage.setItem("voxelands_v1_settings", JSON.stringify({ graphics: "ultra" }));
+        // An individual option could keep a heavy feature on at any preset.
+        localStorage.setItem("voxelands_v1_settings", JSON.stringify({ graphics: "ultra", gfxOverrides: { water: "ssr" } }));
         localStorage.setItem("voxelands_v1_boot", JSON.stringify({ preset: "ultra", ok: false }));
       });
     });
@@ -2037,9 +2501,11 @@ try {
       preset: window.__voxelands.graphics,
       notice: document.getElementById("start-notice").textContent,
       boot: JSON.parse(localStorage.getItem("voxelands_v1_boot")),
+      overrides: JSON.parse(localStorage.getItem("voxelands_v1_settings")).gfxOverrides,
     }));
     console.log(`        ${JSON.stringify(s)}`);
-    assert(s.preset === "high" && /lowered to High/.test(s.notice), `expected High with a notice: ${JSON.stringify(s)}`);
+    assert(s.preset === "high" && /lowered to High/.test(s.notice) && /options were reset/.test(s.notice), `expected High with a notice: ${JSON.stringify(s)}`);
+    assert(Object.keys(s.overrides).length === 0, `individual options should be reset: ${JSON.stringify(s.overrides)}`);
     assert(s.boot.preset === "high" && s.boot.ok === true, `the boot record should now say High works: ${JSON.stringify(s.boot)}`);
     assert(errs.length === 0, `errors: ${errs.join(" | ")}`);
     await ctx.close();
@@ -2090,7 +2556,7 @@ try {
       await p.addInitScript(() => {
         if (!sessionStorage.getItem("primed")) {
           sessionStorage.setItem("primed", "1");
-          localStorage.setItem("voxelands_v1_settings", JSON.stringify({ graphics: "medium" }));
+          localStorage.setItem("voxelands_v1_settings", JSON.stringify({ graphics: "medium", gfxOverrides: { bloom: "off" } }));
         }
       });
     });
@@ -2100,12 +2566,14 @@ try {
     await p.waitForFunction(() => !document.getElementById("gpu-lost").classList.contains("hidden"), null, { timeout: 30000, polling: 100 });
     const s = await p.evaluate(() => ({
       label: document.getElementById("gpu-lost-preset").textContent,
-      saved: JSON.parse(localStorage.getItem("voxelands_v1_settings")).graphics,
+      resetShown: !document.getElementById("gpu-lost-reset").classList.contains("hidden"),
+      saved: JSON.parse(localStorage.getItem("voxelands_v1_settings")),
       boot: JSON.parse(localStorage.getItem("voxelands_v1_boot")),
       player: !!localStorage.getItem("voxelands_v1_player_42"),
     }));
     console.log(`        ${JSON.stringify(s)}`);
-    assert(s.label === "Low" && s.saved === "low" && s.boot.preset === "low" && s.boot.ok, `expected Low for the next start: ${JSON.stringify(s)}`);
+    assert(s.label === "Low" && s.saved.graphics === "low" && s.boot.preset === "low" && s.boot.ok, `expected Low for the next start: ${JSON.stringify(s)}`);
+    assert(Object.keys(s.saved.gfxOverrides).length === 0 && s.resetShown, `individual options should be reset, and the panel should say so: ${JSON.stringify(s)}`);
     assert(s.player, "the player should be saved");
     await ctx.close();
   });

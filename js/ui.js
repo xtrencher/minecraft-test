@@ -34,6 +34,18 @@ export class UI {
     this.modeHintEl = document.getElementById("mode-hint");
     this.pauseModeSelect = document.getElementById("pause-mode-select");
     this.pauseModeHintEl = document.getElementById("pause-mode-hint");
+    this.scopeOverlayEl = document.getElementById("scope-overlay");
+    this.crosshairEl = document.getElementById("crosshair");
+    this.explosionInputs = {
+      grenade: document.getElementById("explosion-grenade"),
+      bazooka: document.getElementById("explosion-bazooka"),
+      airstrike: document.getElementById("explosion-airstrike"),
+    };
+    this.explosionValueEls = {
+      grenade: document.getElementById("explosion-grenade-value"),
+      bazooka: document.getElementById("explosion-bazooka-value"),
+      airstrike: document.getElementById("explosion-airstrike-value"),
+    };
 
     this._fpsFrames = 0;
     this._fpsTimer = 0;
@@ -76,6 +88,13 @@ export class UI {
   // A line under the start menu's graphics choice ("" hides it).
   setStartNotice(text) {
     this.startNoticeEl.textContent = text;
+  }
+
+  // A sniper scope overlay while zoomed: masks the screen to a circle and
+  // hides the ordinary crosshair (the scope draws its own).
+  setScoped(active) {
+    this.scopeOverlayEl.classList.toggle("visible", active);
+    this.crosshairEl.style.visibility = active ? "hidden" : "";
   }
 
   showStartMenu(seed) {

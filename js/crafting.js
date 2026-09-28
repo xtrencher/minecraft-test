@@ -38,6 +38,9 @@ export const RECIPES = [
   shapeless([ITEM.IRON_INGOT, ITEM.COAL, ITEM.COAL], ITEM.GRENADE),
   shaped(["III", "P.."], { I: ITEM.IRON_INGOT, P: BLOCK.PLANKS }, ITEM.PISTOL),
   shaped(["III", "IGI", "III"], { I: ITEM.IRON_INGOT, G: ITEM.GRENADE }, ITEM.BAZOOKA),
+  shaped(["III", "ISI", "I.I"], { I: ITEM.IRON_INGOT, S: ITEM.STICK }, ITEM.MACHINE_GUN),
+  shaped(["..D", "III", "S.."], { D: ITEM.DIAMOND, I: ITEM.IRON_INGOT, S: ITEM.STICK }, ITEM.SNIPER_RIFLE),
+  shaped(["IGI", "ICI", "III"], { I: ITEM.IRON_INGOT, G: ITEM.GOLD_INGOT, C: ITEM.COAL }, ITEM.AIRSTRIKE),
 ];
 for (const [mat, m] of TOOL_MATERIALS) {
   RECIPES.push(shaped(["M", "M", "S"], { M: m, S: ITEM.STICK }, ITEM[`${mat}_SWORD`]));

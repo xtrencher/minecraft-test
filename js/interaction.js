@@ -203,6 +203,13 @@ export class Interaction {
   // ---------- Left button: attack / mine ----------
 
   _primary() {
+    // The sniper fires on left click instead of mining/melee (right click
+    // toggles its scope, like the other weapons' right-click use).
+    const weapon = this._weapon();
+    if (weapon && weapon.kind === "sniper" && this.weapons) {
+      this.weapons.fireSniper();
+      return;
+    }
     this.held.swing();
     if (this.entityHit) {
       const tool = this._tool();
@@ -246,6 +253,8 @@ export class Interaction {
 
   _updateMining(dt) {
     if (!this.leftDown) return;
+    const weapon = this._weapon();
+    if (weapon && weapon.kind === "sniper") return; // one shot per click, not held-to-mine
     if (this._breakCooldown > 0) {
       this._breakCooldown -= dt;
       if (this._breakCooldown > 0) return;
