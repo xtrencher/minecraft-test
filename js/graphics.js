@@ -110,6 +110,111 @@ export function normalizePreset(name) {
   return PRESETS[name] ? name : DEFAULT_PRESET;
 }
 
+// Individual graphics options that can override the chosen preset (settings
+// menu). Each maps a user-facing choice onto preset fields. The value shown
+// for an option that isn't overridden is read back from the preset with
+// `get`, so the menu always shows what is actually in effect.
+const SHADOW_TIERS = { off: "low", low: "medium", medium: "high", high: "ultra" };
+export const GFX_OPTIONS = {
+  shadows: {
+    label: "Shadows",
+    choices: [["off", "Off"], ["low", "Low"], ["medium", "Medium"], ["high", "High"]],
+    get: (p) => Object.keys(SHADOW_TIERS).find((k) => PRESETS[SHADOW_TIERS[k]].cascades.length === p.cascades.length) || "off",
+    apply: (p, v) => {
+      const src = PRESETS[SHADOW_TIERS[v]] || PRESETS.low;
+      p.cascades = src.cascades;
+      p.shadowQuality = src.shadowQuality;
+    },
+  },
+  antialias: {
+    label: "Anti-aliasing",
+    choices: [["0", "Off"], ["2", "2x MSAA"], ["4", "4x MSAA"]],
+    get: (p) => String(p.post ? p.msaa : 0),
+    apply: (p, v) => {
+      p.msaa = Number(v) || 0;
+    },
+  },
+  bloom: {
+    label: "Bloom",
+    choices: [["on", "On"], ["off", "Off"]],
+    get: (p) => (p.post && p.bloomLevels > 0 ? "on" : "off"),
+    apply: (p, v) => {
+      if (v === "on") {
+        p.post = true;
+        p.bloomLevels = Math.max(p.bloomLevels, 4);
+      } else {
+        p.bloomLevels = 0;
+      }
+    },
+  },
+  godRays: {
+    label: "Light shafts",
+    choices: [["on", "On"], ["off", "Off"]],
+    get: (p) => (p.post && p.godRays ? "on" : "off"),
+    apply: (p, v) => {
+      p.godRays = v === "on";
+      if (p.godRays) p.post = true;
+    },
+  },
+  water: {
+    label: "Water",
+    choices: [["simple", "Simple"], ["refract", "Refractive"], ["ssr", "Reflective + refractive"]],
+    get: (p) => p.water,
+    apply: (p, v) => {
+      p.water = ["simple", "refract", "ssr"].includes(v) ? v : "simple";
+      if (p.water !== "simple") p.post = true;
+    },
+  },
+  plants: {
+    label: "3D plants",
+    choices: [["0", "Off"], ["1", "Normal"], ["2", "Dense"]],
+    get: (p) => String(p.grass),
+    apply: (p, v) => {
+      p.grass = Math.max(0, Math.min(2, Number(v) || 0));
+    },
+  },
+  leaves: {
+    label: "Fancy leaves",
+    choices: [["on", "On"], ["off", "Off"]],
+    get: (p) => (p.fancyLeaves ? "on" : "off"),
+    apply: (p, v) => {
+      p.fancyLeaves = v === "on";
+    },
+  },
+  relief: {
+    label: "Texture relief",
+    choices: [["off", "Flat"], ["normal", "Normal maps"], ["parallax", "Parallax"]],
+    get: (p) => (p.pom ? "parallax" : p.normalMap ? "normal" : "off"),
+    apply: (p, v) => {
+      p.normalMap = v !== "off";
+      p.pom = v === "parallax";
+    },
+  },
+  clouds: {
+    label: "Clouds",
+    choices: [["fast", "Fast"], ["fancy", "Fancy"]],
+    get: (p) => (p.cloudOctaves >= 4 ? "fancy" : "fast"),
+    apply: (p, v) => {
+      p.cloudOctaves = v === "fancy" ? 5 : 2;
+    },
+  },
+};
+
+// The preset's settings with the user's per-option overrides applied.
+export function resolvePreset(name, overrides = {}) {
+  const p = { ...PRESETS[normalizePreset(name)] };
+  for (const [key, opt] of Object.entries(GFX_OPTIONS)) {
+    if (overrides && overrides[key] !== undefined && overrides[key] !== null) opt.apply(p, String(overrides[key]));
+  }
+  // Water drawn over the finished image needs the multisampled HDR target.
+  if (p.water !== "simple" && p.msaa === 0) p.msaa = 2;
+  if (!p.post) {
+    p.bloomLevels = 0;
+    p.godRays = false;
+  }
+  return p;
+}
+
 // Soft-shadow tuning, in blocks: the width of a plain filtered shadow
 // edge, and the apparent size of the sun (tangent of its diameter; a bit
 // larger than the real sun's, for pleasantly soft penumbrae).
@@ -119,9 +224,9 @@ const MAX_PENUMBRA = 0.34;
 
 // Applies a preset. ctx: { renderer, postfx, sunLight, sky, materials (array
 // of materials to recompile), chunkMaterials ({ opaque, cutout, water }),
-// atlas, onResize }.
+// atlas, onResize, overrides (per-option overrides, see GFX_OPTIONS) }.
 export function applyPreset(name, ctx) {
-  const p = PRESETS[normalizePreset(name)];
+  const p = resolvePreset(name, ctx.overrides);
   const { renderer, postfx, sky } = ctx;
 
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, p.maxPixelRatio));

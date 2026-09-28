@@ -494,7 +494,477 @@ const ZOMBIE = {
   },
 };
 
-export const MODELS = { fluffalo: FLUFFALO, hoplet: HOPLET, mossback: MOSSBACK, zombie: ZOMBIE };
+const SKELETON = {
+  parts: [
+    { name: "legL", size: [4, 12, 4], pivot: [-2, 12, 0], from: [-2, -12, -2] },
+    { name: "legR", size: [4, 12, 4], pivot: [2, 12, 0], from: [-2, -12, -2] },
+    { name: "body", size: [7, 12, 3], pivot: [0, 12, 0], from: [-3.5, 0, -1.5] },
+    { name: "head", size: [7, 7, 7], pivot: [0, 24, 0], from: [-3.5, 0, -3.5], parent: "body" },
+    { name: "armL", size: [3, 12, 3], pivot: [-5, 23, 0], from: [-1.5, -11, -1.5], parent: "body" },
+    { name: "armR", size: [3, 12, 3], pivot: [5, 23, 0], from: [-1.5, -11, -1.5], parent: "body" },
+  ],
+  paint(s) {
+    const bone = hex(0xd8d2bf);
+    const boneDark = hex(0xb3ab90);
+    const strap = hex(0x4a3b2a);
+    const boned = (x, y, seed) => {
+      let c = grain(bone, x, y, seed, 0.1);
+      if (hash(x, y >> 1, seed + 1) > 0.9) c = boneDark;
+      return c;
+    };
+    s.part("head", (f, x, y, w, h) => {
+      let c = boned(x, y, 121);
+      if (f === "front") {
+        for (const ex of [1, 9]) if (y >= 3 && y < 5 && x >= ex && x < ex + 3) c = y === 3 ? [180, 220, 235] : [10, 10, 10];
+        if (y === 9 && x >= 2 && x < 12) c = boneDark; // jaw line
+      }
+      return c;
+    });
+    s.part("body", (f, x, y, w, h) => {
+      let c = boned(x, y, 122);
+      if (f === "front" && ((x + y) % 5 === 0)) c = shade(c, 0.85); // ribs
+      if (f === "front" && y >= h - 4) c = grain(strap, x, y, 123, 0.15); // a quiver strap
+      return c;
+    });
+    for (const arm of ["armL", "armR"]) s.part(arm, (f, x, y, w, h) => boned(x, y, 124));
+    for (const leg of ["legL", "legR"]) s.part(leg, (f, x, y, w, h) => boned(x, y, 125));
+  },
+  animate(p, st) {
+    const swing = Math.sin(st.walkPhase) * 0.6 * st.walk;
+    p.legL.rotation.x = swing;
+    p.legR.rotation.x = -swing;
+    const draw = st.attack < 1 ? (1 - st.attack) * 0.9 : 0; // draws the bow before releasing
+    p.armL.rotation.x = -1.1 - draw * 0.3;
+    p.armR.rotation.x = -1.1 + draw * 0.5;
+    p.armL.rotation.z = -0.1;
+    p.armR.rotation.z = 0.1;
+    p.body.rotation.z = Math.sin(st.walkPhase * 0.5) * 0.04 * st.walk;
+    p.head.rotation.y = st.headYaw;
+    p.head.rotation.x = -st.headPitch;
+  },
+};
+
+const SPIDER = {
+  parts: [
+    { name: "body", size: [8, 7, 11], pivot: [0, 5, 2], from: [-4, -3.5, -3.5] },
+    { name: "abdomen", size: [9, 9, 9], pivot: [0, 5, -7], from: [-4.5, -4.5, -4.5], parent: "body", rigid: true },
+    { name: "head", size: [5, 5, 4], pivot: [0, 5, 7], from: [-2.5, -2.5, 0], parent: "body", rigid: true },
+    { name: "leg1L", size: [8, 1, 1], pivot: [-4, 6, 3], from: [-8, -0.5, -0.5] },
+    { name: "leg2L", size: [8, 1, 1], pivot: [-4, 6, 1], from: [-8, -0.5, -0.5] },
+    { name: "leg3L", size: [8, 1, 1], pivot: [-4, 6, -1], from: [-8, -0.5, -0.5] },
+    { name: "leg4L", size: [8, 1, 1], pivot: [-4, 6, -3], from: [-8, -0.5, -0.5] },
+    { name: "leg1R", size: [8, 1, 1], pivot: [4, 6, 3], from: [0, -0.5, -0.5] },
+    { name: "leg2R", size: [8, 1, 1], pivot: [4, 6, 1], from: [0, -0.5, -0.5] },
+    { name: "leg3R", size: [8, 1, 1], pivot: [4, 6, -1], from: [0, -0.5, -0.5] },
+    { name: "leg4R", size: [8, 1, 1], pivot: [4, 6, -3], from: [0, -0.5, -0.5] },
+  ],
+  paint(s) {
+    const fur = hex(0x1c1a22);
+    const furLight = hex(0x332f3d);
+    const marking = hex(0x8a2f3a);
+    const eye = hex(0xc23b3b);
+    const spiderTex = (x, y, seed) => grain(mix(fur, furLight, hash(x >> 1, y >> 1, seed) * 0.5), x, y, seed + 1, 0.16);
+    s.part("body", (f, x, y, w, h) => spiderTex(x, y, 131));
+    s.part("abdomen", (f, x, y, w, h) => {
+      let c = spiderTex(x, y, 132);
+      if (f !== "bottom" && ((x + y) % 6 === 0)) c = grain(marking, x, y, 133, 0.15);
+      return c;
+    });
+    s.part("head", (f, x, y, w, h) => {
+      let c = spiderTex(x, y, 134);
+      if (f === "front" && y >= 1 && y < 3) {
+        if (x === 0 || x === 1 || x === w - 2 || x === w - 1) c = eye;
+      }
+      return c;
+    });
+    for (const leg of ["leg1L", "leg2L", "leg3L", "leg4L", "leg1R", "leg2R", "leg3R", "leg4R"]) {
+      s.part(leg, (f, x, y, w, h) => spiderTex(x, y, 135));
+    }
+  },
+  animate(p, st) {
+    const t = st.walkPhase;
+    const legs = ["leg1L", "leg2L", "leg3L", "leg4L", "leg1R", "leg2R", "leg3R", "leg4R"];
+    for (let i = 0; i < legs.length; i++) {
+      const side = i < 4 ? 1 : -1;
+      const phase = t + (i % 4) * 1.5 + (i < 4 ? 0 : Math.PI);
+      const swing = Math.sin(phase) * 0.35 * st.walk;
+      p[legs[i]].rotation.z = side * (0.5 + swing);
+      p[legs[i]].rotation.y = Math.cos(phase) * 0.2 * st.walk;
+    }
+    p.body.rotation.y = st.headYaw * 0.4;
+  },
+};
+
+const COW = {
+  parts: [
+    { name: "body", size: [14, 12, 20], pivot: [0, 11, 0], from: [-7, 0, -10] },
+    { name: "head", size: [7, 7, 6], pivot: [0, 15, 10], from: [-3.5, -5, 0] },
+    { name: "earL", size: [1, 2, 3], pivot: [-3.5, 18, 12], from: [-3, -1, -1.5], parent: "head", rigid: true },
+    { name: "earR", size: [1, 2, 3], pivot: [3.5, 18, 12], from: [2, -1, -1.5], parent: "head", rigid: true },
+    { name: "tail", size: [1, 6, 1], pivot: [0, 14, -10], from: [-0.5, -6, -1], parent: "body" },
+    { name: "legFL", size: [4, 11, 4], pivot: [-4.5, 11, 7], from: [-2, -11, -2] },
+    { name: "legFR", size: [4, 11, 4], pivot: [4.5, 11, 7], from: [-2, -11, -2] },
+    { name: "legBL", size: [4, 11, 4], pivot: [-4.5, 11, -7], from: [-2, -11, -2] },
+    { name: "legBR", size: [4, 11, 4], pivot: [4.5, 11, -7], from: [-2, -11, -2] },
+  ],
+  paint(s) {
+    const hideA = hex(0x3a2e26);
+    const hideB = hex(0xe8dfce);
+    const nose = hex(0x2a2320);
+    const hoof = hex(0x18130f);
+    const patchy = (x, y, w, h, seed, top) => {
+      const p1 = hash(Math.floor(x / 3), Math.floor((y + (top ? 0 : 4)) / 3), seed);
+      const p2 = hash(Math.floor(x / 5) + 11, Math.floor(y / 5) + 7, seed + 1);
+      const dark = p1 > 0.42 || p2 > 0.78;
+      return grain(dark ? hideA : hideB, x, y, seed + 2, 0.1);
+    };
+    s.part("body", (f, x, y, w, h) => (f === "bottom" ? grain(hideB, x, y, 141, 0.1) : patchy(x, y, w, h, 142, f === "top")));
+    s.part("head", (f, x, y, w, h) => {
+      if (f === "front" && y >= h - 3 && x >= 2 && x < w - 2) return grain(hex(0xd9a793), x, y, 143, 0.1); // muzzle
+      if (f === "front" && y === h - 4 && (x === 2 || x === w - 3)) return nose;
+      return patchy(x, y, w, h, 144, f === "top");
+    });
+    for (const ear of ["earL", "earR"]) s.part(ear, () => grain(hideA, 0, 0, 145, 0.1));
+    s.part("tail", (f, x, y, w, h) => (y > h - 3 ? grain(hex(0x1c1712), x, y, 146, 0.15) : grain(hideA, x, y, 147, 0.1)));
+    for (const leg of ["legFL", "legFR", "legBL", "legBR"]) {
+      s.part(leg, (f, x, y, w, h) => (y >= h - 2 ? grain(hoof, x, y, 148, 0.15) : patchy(x, y, w, h, 149, false)));
+    }
+  },
+  animate(p, st) {
+    const swing = Math.sin(st.walkPhase) * 0.4 * st.walk;
+    p.legFL.rotation.x = swing;
+    p.legBR.rotation.x = swing;
+    p.legFR.rotation.x = -swing;
+    p.legBL.rotation.x = -swing;
+    p.tail.rotation.x = Math.sin(st.time * 2) * 0.15;
+    p.head.rotation.y = st.headYaw;
+    p.head.rotation.x = -st.headPitch + st.graze * 0.85;
+  },
+};
+
+const PIG = {
+  parts: [
+    { name: "body", size: [10, 8, 15], pivot: [0, 7, 0], from: [-5, 0, -7.5] },
+    { name: "head", size: [6, 6, 5], pivot: [0, 9, 7.5], from: [-3, -3, 0] },
+    { name: "snout", size: [3, 2, 1], pivot: [0, 8, 12.5], from: [-1.5, -1, 0], parent: "head", rigid: true },
+    { name: "earL", size: [2, 2, 1], pivot: [-2.5, 12, 8], from: [-1.5, 0, -0.5], parent: "head", rigid: true },
+    { name: "earR", size: [2, 2, 1], pivot: [2.5, 12, 8], from: [-0.5, 0, -0.5], parent: "head", rigid: true },
+    { name: "legFL", size: [3, 6, 3], pivot: [-3, 6, 5], from: [-1.5, -6, -1.5] },
+    { name: "legFR", size: [3, 6, 3], pivot: [3, 6, 5], from: [-1.5, -6, -1.5] },
+    { name: "legBL", size: [3, 6, 3], pivot: [-3, 6, -5], from: [-1.5, -6, -1.5] },
+    { name: "legBR", size: [3, 6, 3], pivot: [3, 6, -5], from: [-1.5, -6, -1.5] },
+  ],
+  paint(s) {
+    const skinA = hex(0xdf9c92);
+    const skinB = hex(0xc47f79);
+    const pink = (x, y, seed) => grain(mix(skinA, skinB, hash(x >> 1, y >> 1, seed) * 0.5), x, y, seed + 1, 0.1);
+    s.part("body", (f, x, y, w, h) => pink(x, y, 151));
+    s.part("head", (f, x, y, w, h) => pink(x, y, 152));
+    s.part("snout", (f, x, y, w, h) => {
+      if (f === "front" && (x === 0 || x === w - 1)) return [40, 20, 20];
+      return grain(hex(0xe8b0a6), x, y, 153, 0.08);
+    });
+    for (const ear of ["earL", "earR"]) s.part(ear, () => pink(1, 1, 154));
+    for (const leg of ["legFL", "legFR", "legBL", "legBR"]) {
+      s.part(leg, (f, x, y, w, h) => (y >= h - 1 ? [40, 24, 22] : pink(x, y, 155)));
+    }
+  },
+  animate(p, st) {
+    const swing = Math.sin(st.walkPhase) * 0.45 * st.walk;
+    p.legFL.rotation.x = swing;
+    p.legBR.rotation.x = swing;
+    p.legFR.rotation.x = -swing;
+    p.legBL.rotation.x = -swing;
+    p.head.rotation.y = st.headYaw;
+    p.head.rotation.x = -st.headPitch + st.graze * 0.7;
+  },
+};
+
+const CHICKEN = {
+  parts: [
+    { name: "body", size: [6, 7, 8], pivot: [0, 8, 0], from: [-3, -3.5, -4] },
+    { name: "head", size: [4, 4, 4], pivot: [0, 12, 3], from: [-2, -1, 0], parent: "body" },
+    { name: "beak", size: [2, 1, 2], pivot: [0, 12, 7], from: [-1, -1, 0], parent: "head", rigid: true },
+    { name: "comb", size: [2, 2, 2], pivot: [0, 15, 5], from: [-1, -1, -1], parent: "head", rigid: true },
+    { name: "wingL", size: [1, 4, 5], pivot: [-3, 9, 0], from: [-1, -4, -2.5], parent: "body" },
+    { name: "wingR", size: [1, 4, 5], pivot: [3, 9, 0], from: [0, -4, -2.5], parent: "body" },
+    { name: "tail", size: [1, 5, 3], pivot: [0, 10, -4], from: [-0.5, -1, -3], parent: "body", rigid: true },
+    { name: "legL", size: [1, 4, 1], pivot: [-1.5, 4, 0], from: [-0.5, -4, -0.5] },
+    { name: "legR", size: [1, 4, 1], pivot: [1.5, 4, 0], from: [-0.5, -4, -0.5] },
+  ],
+  paint(s) {
+    const white = hex(0xf2ece0);
+    const brown = hex(0x8a5a34);
+    const comb = hex(0xc23b3b);
+    const beakC = hex(0xe8b23a);
+    const feather = (x, y, seed) => grain(mix(white, brown, hash(x >> 1, y >> 2, seed) * 0.3), x, y, seed + 1, 0.12);
+    s.part("body", (f, x, y, w, h) => feather(x, y, 161));
+    s.part("head", (f, x, y, w, h) => {
+      if (f === "front" && y === 1 && (x === 0 || x === w - 1)) return [20, 16, 12];
+      return feather(x, y, 162);
+    });
+    s.part("beak", () => beakC);
+    s.part("comb", () => comb);
+    for (const wing of ["wingL", "wingR"]) s.part(wing, (f, x, y, w, h) => feather(x, y, 163));
+    s.part("tail", (f, x, y, w, h) => feather(x, y, 164));
+    for (const leg of ["legL", "legR"]) s.part(leg, () => beakC);
+  },
+  animate(p, st) {
+    const peck = Math.sin(st.time * 4) * 0.02;
+    p.legL.rotation.x = Math.sin(st.walkPhase) * 0.6 * st.walk;
+    p.legR.rotation.x = -Math.sin(st.walkPhase) * 0.6 * st.walk;
+    p.wingL.rotation.z = 0.15 + Math.sin(st.time * 6) * 0.06 * st.walk;
+    p.wingR.rotation.z = -0.15 - Math.sin(st.time * 6) * 0.06 * st.walk;
+    p.head.rotation.y = st.headYaw;
+    p.head.rotation.x = -st.headPitch + peck;
+    p.head.position.y = 12 * PX - Math.max(0, Math.sin(st.time * 4)) * 0.03;
+  },
+};
+
+// Small flying/decorative critters (butterflies, parrots, fish): a lighter
+// rig, animated by simple wing/tail flaps rather than the walk cycle.
+const BUTTERFLY = {
+  parts: [
+    { name: "body", size: [1, 1, 3], pivot: [0, 0, 0], from: [-0.5, -0.5, -1.5] },
+    { name: "wingL", size: [5, 3, 1], pivot: [0, 0.5, 0], from: [-5, -1.5, -0.5] },
+    { name: "wingR", size: [5, 3, 1], pivot: [0, 0.5, 0], from: [0, -1.5, -0.5] },
+  ],
+  paint(s) {
+    const hues = [hex(0xf7b733), hex(0xe94f9b), hex(0x4cc9f0), hex(0xf72585)];
+    const hue = hues[Math.floor(hash(1, 1, s.seed) * hues.length)];
+    s.part("body", () => hex(0x2a2018));
+    for (const wing of ["wingL", "wingR"]) {
+      s.part(wing, (f, x, y, w, h) => {
+        if (f !== "front" && f !== "back") return shade(hue, 0.7);
+        const d = Math.hypot(x - w * 0.6, y - h * 0.4);
+        return d < w * 0.35 ? hex(0xfff6d8) : hue;
+      });
+    }
+  },
+  animate(p, st) {
+    const flap = Math.sin(st.time * 14) * 0.9 + 0.9;
+    p.wingL.rotation.z = flap;
+    p.wingR.rotation.z = -flap;
+    p.body.rotation.y = st.headYaw;
+  },
+};
+
+const PARROT = {
+  parts: [
+    { name: "body", size: [4, 5, 7], pivot: [0, 4, 0], from: [-2, -2.5, -3.5] },
+    { name: "head", size: [3, 3, 3], pivot: [0, 6.5, 3], from: [-1.5, -1, 0], parent: "body" },
+    { name: "beak", size: [2, 1, 2], pivot: [0, 6, 6], from: [-1, -0.5, 0], parent: "head", rigid: true },
+    { name: "wingL", size: [1, 3, 4], pivot: [-2, 5, 0], from: [-1, -2.5, -2], parent: "body" },
+    { name: "wingR", size: [1, 3, 4], pivot: [2, 5, 0], from: [0, -2.5, -2], parent: "body" },
+    { name: "tail", size: [2, 2, 5], pivot: [0, 4, -3.5], from: [-1, -1, -5], parent: "body" },
+  ],
+  paint(s) {
+    const body = hex(0x2f9e44);
+    const belly = hex(0xf7b733);
+    const blue = hex(0x2b6fd1);
+    const beakC = hex(0x2a2320);
+    s.part("body", (f, x, y, w, h) => (f === "bottom" ? grain(belly, x, y, 171, 0.1) : grain(body, x, y, 172, 0.1)));
+    s.part("head", () => grain(blue, 3, 3, 173, 0.1));
+    s.part("beak", () => beakC);
+    for (const wing of ["wingL", "wingR"]) s.part(wing, (f, x, y, w, h) => grain(body, x, y, 174, 0.12));
+    s.part("tail", (f, x, y, w, h) => grain(hex(0xd6336c), x, y, 175, 0.1));
+  },
+  animate(p, st) {
+    const flap = Math.sin(st.time * 10) * 0.5;
+    p.wingL.rotation.z = 0.3 + flap;
+    p.wingR.rotation.z = -0.3 - flap;
+    p.tail.rotation.x = Math.sin(st.time * 2) * 0.1;
+    p.head.rotation.y = st.headYaw;
+    p.head.rotation.x = -st.headPitch;
+  },
+};
+
+const FISH = {
+  parts: [
+    { name: "body", size: [3, 4, 10], pivot: [0, 0, 0], from: [-1.5, -2, -5] },
+    { name: "tail", size: [1, 4, 4], pivot: [0, 0, -5], from: [-0.5, -2, -4], parent: "body" },
+    { name: "finTop", size: [1, 2, 4], pivot: [0, 2, 0], from: [-0.5, 0, -2], parent: "body", rigid: true },
+  ],
+  paint(s) {
+    const hues = [hex(0xe8863a), hex(0x4cc9f0), hex(0xc9184a), hex(0xffd166)];
+    const hue = hues[Math.floor(hash(2, 5, s.seed) * hues.length)];
+    s.part("body", (f, x, y, w, h) => (f === "bottom" ? shade(hue, 0.7) : grain(hue, x, y, 181, 0.14)));
+    s.part("tail", () => shade(hue, 0.85));
+    s.part("finTop", () => shade(hue, 0.9));
+  },
+  animate(p, st) {
+    const wig = Math.sin(st.time * 7) * 0.35;
+    p.tail.rotation.y = wig;
+    p.body.rotation.y = st.headYaw * 0.5 + Math.sin(st.time * 3.5) * 0.15;
+  },
+};
+
+const VILLAGER = {
+  parts: [
+    { name: "legL", size: [4, 11, 4], pivot: [-2, 11, 0], from: [-2, -11, -2] },
+    { name: "legR", size: [4, 11, 4], pivot: [2, 11, 0], from: [-2, -11, -2] },
+    { name: "body", size: [8, 11, 5], pivot: [0, 11, 0], from: [-4, 0, -2.5] },
+    { name: "head", size: [7, 7, 7], pivot: [0, 22, 0], from: [-3.5, 0, -3.5], parent: "body" },
+    { name: "nose", size: [2, 2, 2], pivot: [0, 26, 4.5], from: [-1, -1, 0], parent: "head", rigid: true },
+    { name: "armL", size: [3, 10, 3], pivot: [-5.5, 21, 0], from: [-1.5, -9, -1.5], parent: "body" },
+    { name: "armR", size: [3, 10, 3], pivot: [5.5, 21, 0], from: [-1.5, -9, -1.5], parent: "body" },
+  ],
+  paint(s) {
+    const skin = hex(0xd9a066);
+    const robe = hex(0x8a6a3c);
+    const robeDark = hex(0x6a4f2b);
+    const trim = hex(0xb9925a);
+    const pants = hex(0x4a4438);
+    const cloth = (x, y, seed, base) => grain(base, x, y, seed, 0.1);
+    s.part("head", (f, x, y, w, h) => {
+      let c = grain(skin, x, y, 91, 0.08);
+      if (f === "top") c = grain(mix(skin, hex(0x3a2a1c), 0.5), x, y, 92, 0.15); // hair
+      if (f === "front") {
+        if (y >= 2 && y < 4 && (x === 1 || x === w - 2)) c = [30, 24, 20]; // eyes
+        if (y === 5) c = shade(c, 0.85); // mouth shadow line
+      }
+      return c;
+    });
+    s.part("nose", () => hex(0xc98f57));
+    s.part("body", (f, x, y, w, h) => {
+      if (f === "front" && y < 3 && x >= 2 && x < 6) return grain(trim, x, y, 93, 0.1); // collar
+      let c = cloth(x, y, 94, robe);
+      if ((x + y) % 7 === 0) c = cloth(x, y, 95, robeDark);
+      if (f === "front" && y >= h - 3) c = grain(trim, x, y, 96, 0.1); // hem band
+      return c;
+    });
+    for (const arm of ["armL", "armR"]) {
+      s.part(arm, (f, x, y, w, h) => (y >= h - 2 || f === "bottom" ? grain(skin, x, y, 97, 0.08) : cloth(x, y, 98, robe)));
+    }
+    for (const leg of ["legL", "legR"]) {
+      s.part(leg, (f, x, y, w, h) => grain(pants, x, y, 99, 0.1));
+    }
+  },
+  animate(p, st) {
+    const swing = Math.sin(st.walkPhase) * 0.55 * st.walk;
+    p.legL.rotation.x = swing;
+    p.legR.rotation.x = -swing;
+    p.armL.rotation.x = -swing * 0.6;
+    p.armR.rotation.x = swing * 0.6;
+    p.body.rotation.z = Math.sin(st.walkPhase * 0.5) * 0.04 * st.walk;
+    p.head.rotation.y = st.headYaw;
+    p.head.rotation.x = -st.headPitch;
+  },
+};
+
+// The player, seen in third person (F5): an original "wayfarer" with auburn
+// hair, a moss-green tunic, a leather satchel strap and belt, rolled sleeves,
+// slate trousers and worn boots. Same proportions as other humanoids.
+const PLAYER = {
+  parts: [
+    { name: "legL", size: [4, 12, 4], pivot: [-2, 12, 0], from: [-2, -12, -2] },
+    { name: "legR", size: [4, 12, 4], pivot: [2, 12, 0], from: [-2, -12, -2] },
+    { name: "body", size: [8, 12, 4], pivot: [0, 12, 0], from: [-4, 0, -2] },
+    { name: "head", size: [8, 8, 8], pivot: [0, 24, 0], from: [-4, 0, -4], parent: "body" },
+    { name: "armL", size: [4, 12, 4], pivot: [-6, 22, 0], from: [-2, -10, -2], parent: "body" },
+    { name: "armR", size: [4, 12, 4], pivot: [6, 22, 0], from: [-2, -10, -2], parent: "body" },
+  ],
+  paint(s) {
+    const skin = hex(0xd29a6e);
+    const skinShade = hex(0xb57f57);
+    const hair = hex(0x7a3a1c);
+    const hairDark = hex(0x552510);
+    const tunic = hex(0x4f7a3a);
+    const tunicDark = hex(0x3a5b2a);
+    const leather = hex(0x6b4424);
+    const buckle = hex(0xd8b04a);
+    const trousers = hex(0x3e4a5c);
+    const boot = hex(0x4a3222);
+    const hairAt = (x, y, seed) => grain(mix(hair, hairDark, hash(x, y >> 1, seed) * 0.8), x, y, seed + 1, 0.12);
+    const cloth = (x, y, seed, a, b) => grain(mix(a, b, hash(x >> 1, y >> 2, seed) * 0.5), x, y, seed + 1, 0.08);
+    s.part("head", (f, x, y, w, h) => {
+      let c = grain(skin, x, y, 201, 0.06);
+      if (f === "top") return hairAt(x, y, 202);
+      if (f === "bottom") return grain(skinShade, x, y, 203, 0.06);
+      // A thick, uneven mop of hair down the back and sides.
+      const fringe = f === "front" ? 3 + Math.floor(hash(x >> 1, 0, 204) * 2) : f === "back" ? 12 : 5 + Math.floor(hash(x, 0, 205) * 3);
+      if (y < fringe) return hairAt(x, y, 206);
+      if (f === "front") {
+        // Eyes: white, a green iris and a dark pupil; brows; a small mouth.
+        for (const ex of [3, 9]) {
+          if (y === 7 && x >= ex && x < ex + 4) c = shade(hairDark, 1.1); // brows
+          if (y >= 8 && y < 10 && x >= ex && x < ex + 4) {
+            const k = x - ex;
+            c = k === 0 || k === 3 ? [236, 232, 226] : y === 8 && k === (ex === 3 ? 2 : 1) ? [24, 30, 22] : [58, 128, 72];
+          }
+        }
+        if (y === 11 && (x === 7 || x === 8)) c = skinShade; // nose shadow
+        if (y === 13 && x >= 6 && x < 10) c = hex(0x8c4f3c); // mouth
+        if (y >= 10 && y < 12 && (x === 2 || x === 13)) c = mix(c, [220, 120, 110], 0.25); // cheeks
+      }
+      return c;
+    });
+    s.part("body", (f, x, y, w, h) => {
+      if (f === "bottom") return cloth(x, y, 210, tunicDark, tunicDark);
+      let c = cloth(x, y, 211, tunic, tunicDark);
+      // Collar opening, belt with a buckle, and a satchel strap across the chest.
+      if (f === "front" && y < 3 && x >= 6 && x < 10) c = grain(skin, x, y, 212, 0.05);
+      if (f === "front" && y === 3 && x >= 5 && x < 11) c = tunicDark;
+      if (y >= 16 && y < 19) c = grain(leather, x, y, 213, 0.12);
+      if (f === "front" && y >= 16 && y < 19 && x >= 7 && x < 9) c = buckle;
+      if (f === "front" && Math.abs(x - (w - 1 - y * 0.62)) < 1.2 && y < 16) c = grain(shade(leather, 1.1), x, y, 214, 0.1);
+      if (f === "back" && Math.abs(x - y * 0.62) < 1.2 && y < 16) c = grain(shade(leather, 1.1), x, y, 215, 0.1);
+      if (y >= h - 2) c = shade(c, 0.85); // hem
+      return c;
+    });
+    for (const arm of ["armL", "armR"]) {
+      s.part(arm, (f, x, y, w, h) => {
+        if (f === "top" || y < 9) return cloth(x, y, 220, tunic, tunicDark);
+        if (y < 11) return grain(shade(tunic, 1.12), x, y, 221, 0.06); // rolled cuff
+        return grain(f === "bottom" ? skinShade : skin, x, y, 222, 0.06);
+      });
+    }
+    for (const leg of ["legL", "legR"]) {
+      s.part(leg, (f, x, y, w, h) => {
+        if (f === "bottom" || y >= h - 7) {
+          let c = grain(boot, x, y, 230, 0.14);
+          if (y === h - 7) c = shade(boot, 1.25); // boot cuff
+          if (f !== "bottom" && y >= h - 2) c = shade(boot, 0.7); // sole
+          return c;
+        }
+        return cloth(x, y, 231, trousers, shade(trousers, 0.85));
+      });
+    }
+  },
+  animate(p, st) {
+    const swing = Math.sin(st.walkPhase) * 0.7 * st.walk;
+    p.legL.rotation.x = swing;
+    p.legR.rotation.x = -swing;
+    p.armL.rotation.x = -swing * 0.8;
+    // The right arm swings with the walk, chops when mining or attacking,
+    // and is raised to aim when holding a gun.
+    const chop = Math.sin(st.swing * Math.PI);
+    p.armR.rotation.x = st.aim ? -1.35 - st.headPitch * 0.9 : swing * 0.8 - chop * 1.6;
+    p.armR.rotation.z = st.aim ? 0 : chop * 0.3;
+    p.armL.rotation.x = st.aim === "two" ? -1.2 - st.headPitch * 0.9 : p.armL.rotation.x;
+    p.armL.rotation.y = st.aim === "two" ? 0.45 : 0;
+    p.body.rotation.x = st.sneak ? 0.45 : 0;
+    p.head.rotation.x = -st.headPitch - (st.sneak ? 0.45 : 0);
+    p.head.rotation.y = st.headYaw;
+  },
+};
+
+export const MODELS = {
+  fluffalo: FLUFFALO,
+  hoplet: HOPLET,
+  mossback: MOSSBACK,
+  zombie: ZOMBIE,
+  villager: VILLAGER,
+  player: PLAYER,
+  skeleton: SKELETON,
+  spider: SPIDER,
+  cow: COW,
+  pig: PIG,
+  chicken: CHICKEN,
+  butterfly: BUTTERFLY,
+  parrot: PARROT,
+  fish: FISH,
+};
 
 // Shared per species: skin texture, material and part geometries.
 const built = new Map();

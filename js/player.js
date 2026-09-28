@@ -28,6 +28,14 @@ const SAFE_FALL = 3; // blocks you can fall without damage
 
 export const BASE_FOV = 75;
 
+// Camera modes (F5): first person, third person behind, third person in front.
+export const CAMERA_MODES = ["first", "behind", "front"];
+const THIRD_PERSON_DISTANCE = 4;
+// Creature attacks scaled by difficulty (settings menu).
+const MOB_CAUSES = new Set(["zombie", "skeleton", "spider"]);
+
+const CAMERA_PROBE = [[0, 0, 0], [0.12, 0.12, 0.12], [-0.12, 0.12, -0.12], [0.12, -0.12, -0.12], [-0.12, -0.12, 0.12]];
+
 export class Player {
   constructor(camera, world, domElement) {
     this.camera = camera;
@@ -77,6 +85,14 @@ export class Player {
     this._lastWTime = -10;
     this._footstepDistance = 0;
     this.fov = BASE_FOV;
+    this.zoomFov = null; // set by a scoped weapon to override the normal FOV
+    this.zoomSensMul = 1; // mouse-look multiplier while zoomed (sniper scope)
+    this.mouseSensitivity = 1; // user setting multiplier
+    this.invertY = false;
+    this.baseFov = BASE_FOV; // user setting
+    this.mobDamageScale = 1; // difficulty
+    this.cameraMode = 0; // index into CAMERA_MODES
+    this._camDist = 0; // smoothed third-person camera distance
 
     this.enabled = false;
     this.onFlightToggle = null;
@@ -143,9 +159,9 @@ export class Player {
 
   _onMouseMove(e) {
     if (!this.locked || this.dead) return;
-    const sensitivity = 0.0022;
+    const sensitivity = 0.0022 * this.mouseSensitivity * this.zoomSensMul;
     this.yaw -= e.movementX * sensitivity;
-    this.pitch -= e.movementY * sensitivity;
+    this.pitch -= e.movementY * sensitivity * (this.invertY ? -1 : 1);
     const limit = Math.PI / 2 - 0.01;
     this.pitch = Math.max(-limit, Math.min(limit, this.pitch));
   }
@@ -191,6 +207,10 @@ export class Player {
   // Deals damage in half-hearts. Returns true if it was applied (creative
   // players, the dead and the briefly invulnerable take none).
   damage(amount, cause) {
+    if (MOB_CAUSES.has(cause) && this.mobDamageScale !== 1) {
+      if (this.mobDamageScale <= 0) return false;
+      amount = Math.max(1, Math.round(amount * this.mobDamageScale));
+    }
     if (this.dead || this.creative || amount <= 0) return false;
     // Right after a hit only a stronger hit counts (and only its excess).
     let applied = amount;
@@ -245,9 +265,55 @@ export class Player {
       drop = k * k * 1.15;
     }
     this.camera.rotation.order = "YXZ";
-    this.camera.rotation.set(Math.min(Math.PI / 2, this.pitch + this.recoil), this.yaw, roll);
-    this.camera.position.copy(this.getEyePosition());
-    this.camera.position.y -= drop;
+    const pitch = Math.min(Math.PI / 2, this.pitch + this.recoil);
+    const eye = this.getEyePosition();
+    eye.y -= drop;
+    // A scoped weapon always looks through the scope (first person).
+    const mode = this.zoomFov != null ? "first" : CAMERA_MODES[this.cameraMode] || "first";
+    if (mode === "first") {
+      this.camera.rotation.set(pitch, this.yaw, roll);
+      this.camera.position.copy(eye);
+      this._camDist = 0;
+      return;
+    }
+    // Third person: pull the camera back along the view (or out in front,
+    // looking back at the player), stopping short of any solid block.
+    const f = this.getForwardVector();
+    const sign = mode === "behind" ? -1 : 1;
+    const dist = this._clearDistance(eye, f.x * sign, f.y * sign, f.z * sign, THIRD_PERSON_DISTANCE);
+    // Snap in at once when something is in the way, ease back out otherwise.
+    this._camDist = dist < this._camDist ? dist : this._camDist + (dist - this._camDist) * 0.15;
+    this.camera.position.set(eye.x + f.x * sign * this._camDist, eye.y + f.y * sign * this._camDist, eye.z + f.z * sign * this._camDist);
+    if (mode === "behind") this.camera.rotation.set(pitch, this.yaw, roll);
+    else this.camera.rotation.set(-pitch, this.yaw + Math.PI, -roll);
+  }
+
+  get thirdPerson() {
+    return this.cameraMode !== 0;
+  }
+
+  // Cycles first person -> behind -> in front -> first person.
+  cycleCamera() {
+    this.cameraMode = (this.cameraMode + 1) % CAMERA_MODES.length;
+    this._camDist = 0;
+    return CAMERA_MODES[this.cameraMode];
+  }
+
+  // How far the camera can move from `from` along (dx, dy, dz) (unit) before
+  // it gets closer than a small margin to a solid block, up to `max`.
+  _clearDistance(from, dx, dy, dz, max) {
+    const margin = 0.3;
+    const step = 0.1;
+    for (let t = step; t <= max + margin; t += step) {
+      const x = from.x + dx * t;
+      const y = from.y + dy * t;
+      const z = from.z + dz * t;
+      // Check a small box around the point so the near plane doesn't clip walls.
+      for (const [ox, oy, oz] of CAMERA_PROBE) {
+        if (this.world.isSolidAt(Math.floor(x + ox), Math.floor(y + oy), Math.floor(z + oz))) return Math.max(0, t - margin);
+      }
+    }
+    return max;
   }
 
   // Maximum movement along one axis before the player's box would overlap a
@@ -399,7 +465,7 @@ export class Player {
     // Camera: sneaking lowers the eyes; sprinting widens the field of view.
     const eyeTarget = this.sneaking ? SNEAK_EYE_DROP : 0;
     this._eyeOffset += (eyeTarget - this._eyeOffset) * Math.min(1, dt * 12);
-    const fovTarget = BASE_FOV + (this.sprinting ? 9 : 0) + (this.flying && this.sprinting ? 6 : 0);
+    const fovTarget = this.zoomFov != null ? this.zoomFov : this.baseFov + (this.sprinting ? 9 : 0) + (this.flying && this.sprinting ? 6 : 0);
     this.fov += (fovTarget - this.fov) * Math.min(1, dt * 8);
     if (Math.abs(this.camera.fov - this.fov) > 0.01) {
       this.camera.fov = this.fov;

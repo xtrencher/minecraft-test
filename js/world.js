@@ -18,7 +18,7 @@ import {
   isSupportedBy,
 } from "./blocks.js";
 import { Chunk } from "./chunk.js";
-import { CHUNK_SIZE, WORLD_HEIGHT, SEA_LEVEL, blockIndex, floorDiv } from "./constants.js";
+import { CHUNK_SIZE, WORLD_HEIGHT, SEA_LEVEL, blockIndex, floorDiv, chunkKey } from "./constants.js";
 import { setEdit } from "./storage.js";
 import { TerrainGenerator } from "./terrain.js";
 import { LightEngine, sampleLight } from "./light.js";
@@ -162,6 +162,28 @@ export class World {
     return this.setBlocks([wx, wy, wz, id], opts) > 0;
   }
 
+  // Like setBlock, but also works for a column whose chunk hasn't generated
+  // yet: the edit is simply recorded (like a saved edit) and applied
+  // automatically once that chunk streams in. Used for explosions that land
+  // beyond the loaded terrain, out in distant/LOD ground.
+  queueEdit(x, y, z, id) {
+    x = Math.floor(x);
+    y = Math.floor(y);
+    z = Math.floor(z);
+    if (y < 0 || y >= WORLD_HEIGHT) return;
+    const cx = x >> 4;
+    const cz = z >> 4;
+    if (this.getChunk(cx, cz)) {
+      this.setBlocks([x, y, z, id]);
+      return;
+    }
+    const lx = x - cx * CHUNK_SIZE;
+    const lz = z - cz * CHUNK_SIZE;
+    setEdit(this.edits, cx, cz, blockIndex(lx, y, lz), id);
+    this.dirtyEditChunks.add(chunkKey(cx, cz));
+    if (this.onEdit) this.onEdit();
+  }
+
   // Bulk edit: `list` is a flat [x, y, z, id, ...] array. Blocks in unloaded
   // chunks are skipped. Torches/plants left without support pop off. Light
   // is updated once for the whole batch, and every affected chunk (plus
@@ -202,7 +224,7 @@ export class World {
       if (c.meshed) this.editRemeshQueue.add(c);
     }
     if (recordEdit && this.onEdit) this.onEdit();
-    for (const fn of this.changeListeners) fn(changed);
+    for (const fn of this.changeListeners) fn(changed, { recordEdit });
     return changed.length / 3;
   }
 
@@ -477,11 +499,27 @@ export class World {
     this.edits = edits;
   }
 
+  // Block id at (x, y, z) for ray casting: the real block where its chunk is
+  // loaded, otherwise an approximate solid/air guess from the deterministic
+  // height map (so hitscan weapons and projectiles can still hit distant,
+  // unloaded/LOD terrain instead of sailing through it forever).
+  _castBlock(x, y, z, heightfield) {
+    if (y < 0) return BLOCK.BEDROCK;
+    if (y >= WORLD_HEIGHT) return BLOCK.AIR;
+    const chunk = this.getChunk(x >> 4, z >> 4);
+    if (chunk) return chunk.blocks[(y << 8) | ((z & 15) << 4) | (x & 15)];
+    if (!heightfield) return BLOCK.AIR;
+    return y <= this.heightAt(x, z) ? BLOCK.STONE : BLOCK.AIR;
+  }
+
   // Voxel traversal ray cast (Amanatides & Woo). Returns
   // { block: [x,y,z], place: [x,y,z], normal: [x,y,z], id, distance } for
   // the first selectable block (non-cube blocks use their selection box), or null.
   // solidOnly: pass through non-solid blocks (plants, torches), e.g. for bullets.
-  raycast(origin, direction, maxDistance = 6, { solidOnly = false } = {}) {
+  // heightfield: beyond loaded terrain, hit-test against the height map
+  // instead of always passing through (on by default; block-placement/mining
+  // reach never needs it since it never sees unloaded chunks).
+  raycast(origin, direction, maxDistance = 6, { solidOnly = false, heightfield = true } = {}) {
     const dir = direction.clone().normalize();
     let x = Math.floor(origin.x);
     let y = Math.floor(origin.y);
@@ -498,7 +536,7 @@ export class World {
     let normal = null;
     let t = 0;
     while (t <= maxDistance) {
-      const id = this.getBlock(x, y, z);
+      const id = this._castBlock(x, y, z, heightfield);
       if (IS_SELECTABLE[id] && (!solidOnly || IS_SOLID[id])) {
         const hitT = SHAPE_OF[id] === SHAPE.CUBE ? t : rayBox(origin, dir, x, y, z, selectionBox(id));
         if (hitT !== null && hitT <= maxDistance) {

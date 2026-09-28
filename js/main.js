@@ -8,10 +8,13 @@ import { Sky } from "./sky.js";
 import { loadEdits, saveEdits, loadSettings, saveSettings, loadPlayer, savePlayer } from "./storage.js";
 import { EffectsSystem } from "./effects.js";
 import { PostFX } from "./postfx.js";
-import { PRESETS, applyPreset, normalizePreset } from "./graphics.js";
+import { PRESETS, applyPreset, normalizePreset, resolvePreset, GFX_OPTIONS } from "./graphics.js";
+import { normalizeSettings, SettingsPanel, AUDIO_CATEGORIES, DIFFICULTY_DAMAGE, formatHours } from "./settings.js";
+import { PlayerAvatar } from "./player-avatar.js";
+import { BIOME_NAMES } from "./biomes.js";
 import { worldUniforms } from "./shaders.js";
 import { Inventory, HOTBAR_SIZE, makeStack } from "./inventory.js";
-import { itemInfo } from "./items.js";
+import { itemInfo, STARTING_WEAPONS } from "./items.js";
 import { IconCache } from "./slot-view.js";
 import { Hud } from "./hud.js";
 import { InventoryScreen } from "./inventory-ui.js";
@@ -21,9 +24,10 @@ import { Interaction } from "./interaction.js";
 import { MobManager } from "./mobs.js";
 import { isUnderwater, surfaceHeight } from "./water.js";
 import { FallingBlocks } from "./falling.js";
+import { WaterSim } from "./watersim.js";
 import { WeaponSystem } from "./weapons.js";
 import { BulletHoles } from "./decals.js";
-import { GRENADE_RADIUS } from "./effects.js";
+import { GRENADE_RADIUS, explosionScale } from "./effects.js";
 import { LodSystem } from "./lod.js";
 import { GrassField } from "./grass.js";
 import { UnderwaterMotes } from "./motes.js";
@@ -57,16 +61,17 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 // Used only when post-processing is off (Low preset); otherwise the
 // composite pass tone-maps with the same ACES curve.
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.info.autoReset = false; // reset once per frame, so the F3 stats cover every pass
 
 const scene = new THREE.Scene();
 
 // ---------- Settings ----------
 // Chunks. Beyond each preset's detail distance, terrain is drawn as
 // simplified level-of-detail tiles (see lod.js).
-const DEFAULT_RENDER_DISTANCE = 20;
+const DEFAULT_RENDER_DISTANCE = 10;
 const MIN_RENDER_DISTANCE = 2;
 const MAX_RENDER_DISTANCE = 100;
-const settings = loadSettings();
+const settings = normalizeSettings(loadSettings());
 
 function clampRenderDistance(value) {
   const n = Math.round(Number(value));
@@ -76,6 +81,11 @@ function clampRenderDistance(value) {
 
 let renderDistance = clampRenderDistance(settings.renderDistance ?? DEFAULT_RENDER_DISTANCE);
 let graphicsPreset = normalizePreset(settings.graphics);
+// The preset with the user's individual graphics options applied.
+let activePreset = resolvePreset(graphicsPreset, settings.gfxOverrides);
+
+// Per-weapon explosion-size multipliers (settings sliders), persisted.
+Object.assign(explosionScale, settings.explosionScale);
 
 // Built-in three.js materials (debris, particles) use this fog; the world's
 // own shaders use the shared uniforms in shaders.js (same distances).
@@ -134,10 +144,10 @@ window.addEventListener("resize", onResize);
 const world = new World(scene, SEED);
 world.loadEdits(loadEdits(SEED));
 postfx.setWaterMaterial(world.materials.water);
-world.meshOptions.fancyLeaves = PRESETS[graphicsPreset].fancyLeaves; // before the first chunks are meshed
+world.meshOptions.fancyLeaves = activePreset.fancyLeaves; // before the first chunks are meshed
 // Decides which chunks are meshed and shown, and draws the land beyond them.
 const lod = new LodSystem(scene, world, SEED);
-lod.configure({ renderDistance, detailDistance: PRESETS[graphicsPreset].detailDistance });
+lod.configure({ renderDistance, detailDistance: activePreset.detailDistance });
 // 3D grass blades near the player (High/Ultra).
 const grass = new GrassField(scene, world);
 
@@ -186,6 +196,15 @@ ui.renderDistanceInput.value = String(renderDistance);
 ui.renderDistanceValueEl.textContent = String(renderDistance);
 ui.graphicsSelect.value = graphicsPreset;
 
+for (const kind of ["grenade", "bazooka", "airstrike"]) {
+  SettingsPanel.range(`explosion-${kind}`, explosionScale[kind], (v) => `${v.toFixed(2)}x`, (value) => {
+    const v = Math.max(0.4, Math.min(2, Number(value) || 1));
+    explosionScale[kind] = v;
+    settings.explosionScale[kind] = v;
+    saveSettings(settings);
+  });
+}
+
 const player = new Player(camera, world, canvas);
 const inventory = new Inventory();
 const audio = new Audio();
@@ -199,9 +218,12 @@ held.resize(camera.aspect);
 const interaction = new Interaction({ scene, world, player, inventory, entities, audio, effects, held });
 const invScreen = new InventoryScreen({ icons, inventory, audio });
 const mobs = new MobManager({ scene, world, player, entities, audio, effects, sky });
+// The player's own body, drawn in the third-person camera modes (F5).
+const avatar = new PlayerAvatar(scene, world.atlas);
 const falling = new FallingBlocks(scene, world);
+const waterSim = new WaterSim(world);
 const decals = new BulletHoles(scene, world);
-const weapons = new WeaponSystem({ scene, world, player, effects, audio, mobs, held, decals });
+const weapons = new WeaponSystem({ scene, world, player, effects, audio, mobs, held, decals, inventory });
 interaction.weapons = weapons;
 interaction.combat = mobs;
 
@@ -209,6 +231,15 @@ interaction.combat = mobs;
 function fillCreativeHotbar() {
   HOTBAR.forEach((id, i) => {
     if (i < HOTBAR_SIZE && !inventory.slots[i]) inventory.slots[i] = makeStack(id, 64);
+  });
+}
+
+// A brand new game (either mode) starts with a full weapon loadout in slots
+// 1-6: pistol, grenade, bazooka, machine gun, airstrike designator, sniper
+// rifle. Always wins those slots (called once, right as a new game starts).
+function fillStartingWeapons() {
+  STARTING_WEAPONS.forEach((id, i) => {
+    if (i < HOTBAR_SIZE) inventory.slots[i] = makeStack(id, 1);
   });
 }
 
@@ -320,9 +351,13 @@ const DEATH_MESSAGES = {
   void: "Fell out of the world",
   grenade: "Blown up by your own grenade",
   bazooka: "Blown up by your own bazooka",
+  airstrike: "Blown up by your own airstrike",
   grenade_fall: "Sent flying by your own grenade",
   bazooka_fall: "Sent flying by your own bazooka",
+  airstrike_fall: "Sent flying by your own airstrike",
   zombie: "Killed by a zombie",
+  skeleton: "Shot by a skeleton",
+  spider: "Killed by a spider",
 };
 let lastBlastHitTime = -Infinity;
 let lastBlastSource = "grenade";
@@ -448,9 +483,11 @@ ui.pauseModeSelect.addEventListener("change", () => setMode(ui.pauseModeSelect.v
 // ---------- Graphics ----------
 const allWorldMaterials = [world.materials.opaque, world.materials.cutout, world.materials.water, world.materials.cutoutDepth, lod.material, grass.material];
 
-function setGraphics(name, { adoptRenderDistance = false } = {}) {
+function setGraphics(name, { adoptRenderDistance = false, keepOverrides = true } = {}) {
   graphicsPreset = normalizePreset(name);
+  if (!keepOverrides) settings.gfxOverrides = {};
   const preset = applyPreset(graphicsPreset, {
+    overrides: settings.gfxOverrides,
     renderer,
     postfx,
     sunLight,
@@ -460,18 +497,19 @@ function setGraphics(name, { adoptRenderDistance = false } = {}) {
     chunkMaterials: world.materials,
     onResize,
   });
+  activePreset = preset;
   lod.configure({ detailDistance: preset.detailDistance });
   grass.configure({ level: preset.grass });
   world.setMeshOptions({ fancyLeaves: preset.fancyLeaves });
   if (adoptRenderDistance) setRenderDistance(preset.renderDistance);
   ui.graphicsSelect.value = graphicsPreset;
-  ui.graphicsHintEl.textContent = describePreset(graphicsPreset);
+  ui.graphicsHintEl.textContent = describePreset(preset);
+  refreshGfxOptions();
   settings.graphics = graphicsPreset;
   saveSettings(settings);
 }
 
-function describePreset(name) {
-  const p = PRESETS[name];
+function describePreset(p) {
   const parts = [];
   if (p.cascades.length === 0) parts.push("no shadows");
   else parts.push(`${p.cascades.length > 1 ? `${p.cascades.length}-cascade` : "basic"} ${p.shadowQuality === 3 ? "soft " : ""}sun shadows`);
@@ -494,12 +532,126 @@ function setRenderDistance(value) {
   saveSettings(settings);
 }
 
+// ---------- Settings menu ----------
+const settingsPanel = new SettingsPanel();
+
+// Individual graphics options: one select per option. The value shown is
+// what's in effect (the preset's, unless overridden).
+const gfxSelects = {};
+const gfxOptionsEl = document.getElementById("gfx-options");
+for (const [key, opt] of Object.entries(GFX_OPTIONS)) {
+  const row = document.createElement("div");
+  row.className = "row";
+  const label = document.createElement("label");
+  label.textContent = opt.label;
+  label.htmlFor = `gfx-${key}`;
+  const select = document.createElement("select");
+  select.id = `gfx-${key}`;
+  for (const [value, text] of opt.choices) {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = text;
+    select.appendChild(o);
+  }
+  select.addEventListener("change", () => {
+    const presetValue = opt.get(resolvePreset(graphicsPreset, {}));
+    if (select.value === presetValue) delete settings.gfxOverrides[key];
+    else settings.gfxOverrides[key] = select.value;
+    setGraphics(graphicsPreset);
+  });
+  row.append(label, select);
+  gfxOptionsEl.appendChild(row);
+  gfxSelects[key] = select;
+}
+
+function refreshGfxOptions() {
+  for (const [key, opt] of Object.entries(GFX_OPTIONS)) gfxSelects[key].value = opt.get(activePreset);
+  document.getElementById("gfx-custom-badge").classList.toggle("hidden", Object.keys(settings.gfxOverrides).length === 0);
+}
+
+document.getElementById("gfx-reset-btn").addEventListener("click", () => setGraphics(graphicsPreset, { keepOverrides: false }));
+
 setGraphics(graphicsPreset);
 
 ui.graphicsSelect.addEventListener("change", () => {
-  // Picking a preset also applies its suggested render distance; the slider
-  // can still be changed afterwards.
-  setGraphics(ui.graphicsSelect.value, { adoptRenderDistance: true });
+  // Picking a preset also applies its suggested render distance (the slider
+  // can still be changed afterwards) and clears individual overrides.
+  setGraphics(ui.graphicsSelect.value, { adoptRenderDistance: true, keepOverrides: false });
+});
+
+const fpsEl = document.getElementById("fps-counter");
+function applyShowFps() {
+  fpsEl.style.display = settings.showFps ? "" : "none";
+}
+applyShowFps();
+SettingsPanel.checkbox("show-fps", settings.showFps, (v) => {
+  settings.showFps = v;
+  applyShowFps();
+  saveSettings(settings);
+});
+
+// Controls.
+player.baseFov = settings.fov;
+player.mouseSensitivity = settings.sensitivity;
+player.invertY = settings.invertY;
+SettingsPanel.range("fov", settings.fov, (v) => String(Math.round(v)), (v) => {
+  settings.fov = v;
+  player.baseFov = v;
+  saveSettings(settings);
+});
+SettingsPanel.range("sensitivity", settings.sensitivity, (v) => `${v.toFixed(2)}x`, (v) => {
+  settings.sensitivity = v;
+  player.mouseSensitivity = v;
+  saveSettings(settings);
+});
+SettingsPanel.checkbox("invert-y", settings.invertY, (v) => {
+  settings.invertY = v;
+  player.invertY = v;
+  saveSettings(settings);
+});
+
+// Audio: a volume slider per category.
+const audioOptionsEl = document.getElementById("audio-options");
+for (const [key, label] of AUDIO_CATEGORIES) {
+  const row = document.createElement("div");
+  row.className = "row";
+  row.innerHTML = `<label>${label}</label><input type="range" id="vol-${key}" min="0" max="1" step="0.01" /><span id="vol-${key}-value" class="val"></span>`;
+  audioOptionsEl.appendChild(row);
+  audio.setVolume(key, settings.volume[key]);
+  SettingsPanel.range(`vol-${key}`, settings.volume[key], (v) => `${Math.round(v * 100)}%`, (v) => {
+    settings.volume[key] = v;
+    audio.setVolume(key, v);
+    saveSettings(settings);
+  });
+}
+
+// Gameplay: difficulty, creature spawning, time of day.
+function applyDifficulty() {
+  player.mobDamageScale = DIFFICULTY_DAMAGE[settings.difficulty] ?? 1;
+  mobs.spawning = settings.mobSpawning;
+  mobs.hostileSpawning = settings.difficulty !== "peaceful";
+  if (settings.difficulty === "peaceful") mobs.removeHostiles();
+}
+applyDifficulty();
+SettingsPanel.select("difficulty", settings.difficulty, (v) => {
+  settings.difficulty = v;
+  applyDifficulty();
+  saveSettings(settings);
+});
+SettingsPanel.checkbox("mob-spawning", settings.mobSpawning, (v) => {
+  settings.mobSpawning = v;
+  applyDifficulty();
+  saveSettings(settings);
+});
+sky.locked = settings.timeLocked;
+const timeSlider = SettingsPanel.range("time-of-day", sky.hours, formatHours, (v) => {
+  sky.setHours(v);
+  playerDirty = true;
+});
+SettingsPanel.checkbox("time-lock", settings.timeLocked, (v) => {
+  settings.timeLocked = v;
+  sky.locked = v;
+  saveSettings(settings);
 });
 
 // ---------- Game state / pointer lock ----------
@@ -524,11 +676,13 @@ function showPause() {
   interaction.release();
   ui.showHud(false);
   ui.showPauseMenu(SEED, renderDistance);
+  timeSlider.set(Math.round(sky.hours * 20) / 20);
 }
 
 ui.playBtn.addEventListener("click", () => {
   audio.ensureStarted();
   setMode(ui.modeSelect.value);
+  if (newWorld) fillStartingWeapons();
   markInventoryChanged();
   requestLock();
 });
@@ -600,6 +754,15 @@ window.addEventListener("keydown", (e) => {
     }
     return;
   }
+  // F1 / F3 / F5 would otherwise open help, find, or reload the page.
+  if (e.code === "F1" || e.code === "F3" || e.code === "F5") {
+    e.preventDefault();
+    if (gameState !== "playing" || e.repeat) return;
+    if (e.code === "F1") toggleHud();
+    else if (e.code === "F3") toggleDebug();
+    else player.cycleCamera();
+    return;
+  }
   if (gameState !== "playing") return;
   const idx = DIGIT_CODES.indexOf(e.code);
   if (idx !== -1) selectSlot(idx);
@@ -607,6 +770,56 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "KeyE") openInventory("inventory");
   else if (e.code === "KeyQ") interaction.dropSelected(e.ctrlKey);
 });
+
+// F1: hide the whole HUD (and the item in hand) for clean screenshots.
+let hudHidden = false;
+function toggleHud() {
+  hudHidden = !hudHidden;
+  document.body.classList.toggle("hud-off", hudHidden);
+}
+
+// F3: a debug overlay (position, chunk, biome, light, time, rendering stats).
+const debugEl = document.getElementById("debug-overlay");
+let debugShown = false;
+let debugTimer = 0;
+function toggleDebug() {
+  debugShown = !debugShown;
+  debugEl.classList.toggle("hidden", !debugShown);
+  debugTimer = 0;
+}
+
+const FACING = ["north (-Z)", "west (-X)", "south (+Z)", "east (+X)"];
+function updateDebug(dt, frameTime) {
+  if (!debugShown) return;
+  debugTimer -= dt;
+  if (debugTimer > 0) return;
+  debugTimer = 0.25;
+  const p = player.position;
+  const bx = Math.floor(p.x);
+  const by = Math.floor(p.y);
+  const bz = Math.floor(p.z);
+  const light = world.lightAt(p.x, p.y + 0.5, p.z);
+  const yawDeg = ((((-player.yaw * 180) / Math.PI) % 360) + 360) % 360;
+  const facing = FACING[Math.round((((player.yaw % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) / (Math.PI / 2)) % 4];
+  const biomeId = world.terrain?.biomeAt ? world.terrain.biomeAt(bx, bz) : null;
+  const biome = BIOME_NAMES[biomeId] ?? biomeId ?? "?";
+  const info = renderer.info;
+  const target = interaction.target;
+  const lines = [
+    `Voxelands  ${Math.round(1 / Math.max(1e-3, frameTime))} fps  (${graphicsPreset}${Object.keys(settings.gfxOverrides).length ? ", custom" : ""})`,
+    `XYZ: ${p.x.toFixed(2)} / ${p.y.toFixed(2)} / ${p.z.toFixed(2)}`,
+    `Block: ${bx} ${by} ${bz}   Chunk: ${bx >> 4} ${bz >> 4}  (in chunk ${bx & 15} ${bz & 15})`,
+    `Facing: ${facing}  yaw ${yawDeg.toFixed(1)}  pitch ${((player.pitch * 180) / Math.PI).toFixed(1)}`,
+    `Biome: ${biome}   Light: sky ${light.sky}, block ${light.block}`,
+    `Time: ${formatHours(sky.hours)}${sky.locked ? " (locked)" : ""}   Camera: ${["first person", "behind", "in front"][player.cameraMode]}`,
+    `Mode: ${player.mode}${player.flying ? ", flying" : ""}   Difficulty: ${settings.difficulty}${settings.mobSpawning ? "" : ", no spawning"}`,
+    `Chunks: ${world.chunks.size} loaded   LOD tiles: ${lod.tiles.size}   Render distance: ${renderDistance}`,
+    `Mobs: ${mobs.mobs.length}   Items: ${entities.items.length}   Plants: ${activePreset.grass ? grass.count ?? 0 : 0}`,
+    `Draw calls: ${info.render.calls}   Triangles: ${info.render.triangles}   Geometries: ${info.memory.geometries}   Textures: ${info.memory.textures}`,
+  ];
+  if (target && target.block) lines.push(`Looking at: ${target.block.join(" ")}  (${BLOCK_INFO[target.id]?.name ?? target.id})`);
+  debugEl.textContent = lines.join("\n");
+}
 
 canvas.addEventListener("wheel", (e) => {
   if (gameState !== "playing") return;
@@ -645,7 +858,8 @@ const motes = new UnderwaterMotes(scene);
 let heldLight = { sky: 15, block: 0 };
 
 function updateEnvironment(dt) {
-  const eye = player.getEyePosition();
+  // The view's position: the eyes, or the third-person camera.
+  const eye = player.thirdPerson ? camera.position.clone() : player.getEyePosition();
   lookDir.copy(player.getForwardVector());
   sky.update(dt, eye, lookDir);
   worldUniforms.uTime.value += dt;
@@ -674,7 +888,7 @@ function updateEnvironment(dt) {
   // Low mist over the water, thickest around sunrise and sunset.
   const e = worldUniforms.uSunDir.value.y;
   dawnDusk = Math.exp(-((e / 0.2) ** 2));
-  const mist = PRESETS[graphicsPreset].mist;
+  const mist = activePreset.mist;
   worldUniforms.uMist.value.set(mist * (0.003 + 0.022 * dawnDusk + 0.006 * worldUniforms.uNight.value), 2.5 + 3 * dawnDusk, 1, SEA_LEVEL + 0.9);
 
   // Eye adaptation: brighten gradually in dark places (caves, at night), less
@@ -688,10 +902,10 @@ function updateEnvironment(dt) {
 
 function renderFrame() {
   const exposure = sky.exposure * eyeAdaptation;
-  const preset = PRESETS[graphicsPreset];
+  const preset = activePreset;
   sky.material.uniforms.uWriteSkyMask.value = preset.post ? 1 : 0;
   // The item in hand is drawn on top of the world (fresh depth buffer).
-  const showHeld = gameState === "playing" || gameState === "inventory";
+  const showHeld = (gameState === "playing" || gameState === "inventory") && !player.thirdPerson && !hudHidden;
   const overlay = showHeld ? { scene: held.scene, camera: held.camera } : null;
   if (preset.post) {
     sunWorldPos.copy(camera.position).addScaledVector(worldUniforms.uSunDir.value, 400);
@@ -750,6 +964,7 @@ window.__voxelands = {
   invScreen,
   mobs,
   falling,
+  waterSim,
   weapons,
   decals,
   audio,
@@ -760,6 +975,10 @@ window.__voxelands = {
   water: { isUnderwater, surfaceHeight },
   hud,
   held,
+  avatar,
+  settings,
+  toggleHud,
+  toggleDebug,
   uniforms: worldUniforms,
   spawn: { x: spawnX, z: spawnZ },
   setGraphics,
@@ -847,6 +1066,7 @@ function animate() {
     entities.update(dt, player);
     mobs.update(dt);
     falling.update(dt);
+    waterSim.update();
     // A drawn throw is dropped if the grenade leaves the hand (thrown away, swapped).
     if (weapons.charging && itemInfo(inventory.selectedStack?.id)?.weapon?.kind !== "grenade") weapons.cancel();
     weapons.update(dt);
@@ -872,10 +1092,14 @@ function animate() {
   hud.update(dt, player);
   hud.setAttackCharge(gameState === "playing" ? mobs.charge(interaction.tool) : 1);
   hud.setThrowCharge(gameState === "playing" ? weapons.charge : 0);
+  ui.setScoped(gameState === "playing" && weapons.scoped);
   held.setItem(inventory.selectedStack?.id ?? 0); // follows the selected slot (no-op when unchanged)
   held.update(dt, player, heldLight, camera, interaction.eating);
+  avatar.update(dt, player, heldLight, { visible: player.thirdPerson && gameState !== "start", swing: held.swingProgress, heldId: inventory.selectedStack?.id ?? 0 });
+  updateDebug(dt, frameTime);
 
   ui.updateFps(frameTime); // real frame time, so slow frames aren't hidden by the clamp
+  renderer.info.reset(); // counted over all of a frame's passes (debug overlay)
   renderFrame();
 }
 

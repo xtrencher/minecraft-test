@@ -140,19 +140,21 @@ void main() {
   float depth = texture2D(tDepth, vUv).r;
   vec4 w = uInvViewProj * vec4(vUv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
   vec3 ray = w.xyz / w.w - uCamPos;
-  float len = min(length(ray), 30.0);
+  // The water is clearer now (see uUnderwaterFog), so the shafts reach
+  // farther too: marched up to 56 blocks, fading with depth and distance.
+  float len = min(length(ray), 56.0);
   vec3 dir = normalize(ray);
   float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
   vec2 slant = uLight.xz / max(uLight.y, 0.3);
   float sum = 0.0;
-  for (int i = 0; i < 24; i++) {
-    float t = (float(i) + jitter) / 24.0 * len;
+  for (int i = 0; i < 32; i++) {
+    float t = (float(i) + jitter) / 32.0 * len;
     vec3 q = uCamPos + dir * t;
     float below = uSurfaceY - q.y;
     if (below < 0.0) continue;
-    sum += bands((q.xz + slant * below) * 0.42, uTime) * exp(-below * 0.085 - t * 0.055);
+    sum += bands((q.xz + slant * below) * 0.42, uTime) * exp(-below * 0.06 - t * 0.028);
   }
-  gl_FragColor = vec4(vec3(sum / 24.0 * len / 12.0), 1.0);
+  gl_FragColor = vec4(vec3(sum / 32.0 * len / 14.0), 1.0);
 }
 `;
 const COMPOSITE = /* glsl */ `

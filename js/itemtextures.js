@@ -210,10 +210,56 @@ function paintBazooka() {
   return c.render([RAMPS.olive, RAMPS.gunmetal]);
 }
 
+function paintMachineGun() {
+  const c = new Canvas();
+  const METAL = 0;
+  const GRIP = 1;
+  c.poly(METAL, [[3, 13], [27, 8], [29, 12], [5, 17]], (x, y) => (y < 12 ? 0.5 : -0.1)); // barrel + receiver
+  c.line(METAL, 26, 8, 30, 4, 1.6, () => 0.4); // barrel tip
+  c.poly(GRIP, [[7, 16], [13, 15], [12, 27], [5, 28], [4, 24]], (x, y) => (x < 8 ? 0.4 : -0.1)); // pistol grip
+  c.poly(METAL, [[9, 17], [17, 16], [16, 22], [9, 23]], () => -0.25); // magazine
+  c.line(GRIP, 24, 10, 30, 20, 2.6, () => -0.15); // folding stock
+  for (const sx of [17, 20, 23]) c.line(METAL, sx, 8.5, sx, 12.5, 0.6, () => -1.5); // vents
+  c.disc(METAL, 5.5, 14.5, 1, 1, () => 0.8); // sight
+  return c.render([RAMPS.gunmetal, RAMPS.grip]);
+}
+
+function paintSniper() {
+  const c = new Canvas();
+  const METAL = 0;
+  const GRIP = 1;
+  const GLASS = 2;
+  c.line(METAL, 2, 27, 29, 5, 2.6, across(2, 27, 29, 5, 0.4)); // long barrel
+  c.poly(METAL, [[12, 17], [22, 10], [24, 13], [14, 20]], () => -0.1); // receiver block
+  c.line(GLASS, 13, 12, 22, 6, 3, () => 0.5); // scope tube
+  c.disc(GLASS, 22.5, 5.5, 1.6, 1.6, () => 0.9); // scope lens
+  c.disc(GLASS, 12.5, 12.5, 1.4, 1.4, () => 0.9);
+  c.poly(GRIP, [[10, 19], [15, 17], [13, 27], [7, 29], [6, 24]], (x, y) => (x < 10 ? 0.4 : -0.1)); // grip
+  c.line(GRIP, 4, 22, 12, 18, 2.4, () => -0.2); // stock
+  return c.render([RAMPS.gunmetal, RAMPS.grip, RAMPS.diamond]);
+}
+
+function paintAirstrike() {
+  const c = new Canvas();
+  const BODY = 0;
+  const LENS = 1;
+  const METAL = 2;
+  c.poly(BODY, [[6, 10], [22, 8], [24, 24], [8, 26]], (x, y) => (x + y < 30 ? 0.35 : -0.15)); // handheld body
+  c.disc(LENS, 15, 15, 4.2, 4.2, () => 0.5); // targeting lens
+  c.disc(LENS, 15, 15, 2.2, 2.2, () => 1.2); // bright center
+  c.line(METAL, 21, 9, 27, 3, 1.4, () => 0.5); // antenna
+  c.disc(METAL, 27.5, 2.5, 1, 1, () => 0.8);
+  c.line(METAL, 9, 24, 12, 24, 1.4, () => -0.2); // grip button
+  return c.render([RAMPS.olive, RAMPS.red, RAMPS.gunmetal]);
+}
+
 const PAINTERS = {
   grenade: paintGrenade,
   pistol: paintPistol,
   bazooka: paintBazooka,
+  machinegun: paintMachineGun,
+  sniper: paintSniper,
+  airstrike: paintAirstrike,
   stick: () => {
     const c = new Canvas();
     c.line(0, 7, 26, 25, 8, 2.6);

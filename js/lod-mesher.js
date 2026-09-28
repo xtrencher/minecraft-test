@@ -23,6 +23,10 @@ import { BLOCK, IS_SOLID, IS_LOG, IS_LEAVES } from "./blocks.js";
 import { TREE } from "./trees.js";
 import { CHUNK_SIZE, WORLD_HEIGHT, SEA_LEVEL } from "./constants.js";
 import { WATER_SURFACE_HEIGHT } from "./mesher.js";
+import { BIOME, isSnowy } from "./biomes.js";
+
+const MOUNTAIN_SNOW_LINE = 58;
+const MOUNTAIN_BARE_ROCK_LINE = 44;
 
 export const LOD_CELLS = 32;
 // Trees are drawn as boxes up to this level; beyond, they only tint the grass.
@@ -126,7 +130,13 @@ export class LodTerrain {
       out.depth = SEA_LEVEL - h;
     } else {
       out.top = h + 1;
-      out.id = h <= SEA_LEVEL + 1 ? BLOCK.SAND : BLOCK.GRASS;
+      const biome = this.terrain.biomeAt(wx, wz);
+      if (h <= SEA_LEVEL + 1 || biome === BIOME.DESERT) out.id = BLOCK.SAND;
+      else if (biome === BIOME.BADLANDS) out.id = BLOCK.TERRACOTTA;
+      else if (biome === BIOME.MOUNTAINS && h > MOUNTAIN_SNOW_LINE) out.id = BLOCK.SNOW;
+      else if (biome === BIOME.MOUNTAINS && h > MOUNTAIN_BARE_ROCK_LINE) out.id = BLOCK.STONE;
+      else if (isSnowy(biome)) out.id = BLOCK.SNOW;
+      else out.id = BLOCK.GRASS;
       out.depth = 0;
     }
     return out;

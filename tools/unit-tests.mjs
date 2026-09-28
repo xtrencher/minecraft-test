@@ -451,12 +451,15 @@ await test("trees: oaks, birches, pines and old oaks grow, and trees are whole a
   assert.ok(counts[TREE.OLD_OAK] < counts[TREE.OAK] / 4, "old oaks should be rare");
   // Every leaf and trunk block of every tree in a region ends up in the
   // generated chunks, even where the tree spans several chunks.
-  const { gen, get } = generateRegion(42, 7, -3, -3);
+  // Biomes now gate tree density (deserts, oceans, snowy plains and
+  // mountains have none), so this samples a much bigger area than before to
+  // reliably land on enough forest regardless of where they fall for this seed.
+  const { gen, get } = generateRegion(42, 16, -8, -8);
   let trees = 0;
   let crossing = 0;
   let missing = 0;
-  for (let x = -48 + 10; x < 64 - 10; x++) {
-    for (let z = -48 + 10; z < 64 - 10; z++) {
+  for (let x = -128 + 10; x < 128 - 10; x++) {
+    for (let z = -128 + 10; z < 128 - 10; z++) {
       const root = gen.trees.rootAt(x, z);
       if (!root) continue;
       trees++;
@@ -476,6 +479,144 @@ await test("trees: oaks, birches, pines and old oaks grow, and trees are whole a
   console.log(`        ${trees} trees in the region, ${crossing} spanning chunk borders, ${missing} blocks missing`);
   assert.ok(trees > 15 && crossing > 5, `too few trees to check (${trees}, ${crossing} crossing)`);
   assert.equal(missing, 0, "every tree block should be placed, whichever chunk it falls in");
+});
+
+await test("biomes: a wide sample covers land, ocean, beach, snow and desert with sensible surface blocks", async () => {
+  const { BIOME, isOceanBiome } = await import("../js/biomes.js");
+  const gen = new TerrainGenerator(2024);
+  const counts = {};
+  const bad = [];
+  const STEP = 6;
+  const R = 900;
+  for (let x = -R; x <= R; x += STEP) {
+    for (let z = -R; z <= R; z += STEP) {
+      const h = gen.heightAt(x, z);
+      const biome = gen.biomeAt(x, z);
+      counts[biome] = (counts[biome] || 0) + 1;
+      if (isOceanBiome(biome) && h >= SEA_LEVEL - 1) bad.push(`${biome} at ${x},${z} has land height ${h}`);
+      if (biome === BIOME.BEACH && (h < SEA_LEVEL - 1 || h > SEA_LEVEL + 1)) bad.push(`beach at ${x},${z} height ${h} out of range`);
+    }
+  }
+  const present = Object.keys(counts).length;
+  console.log(`        ${present} distinct biomes in a ${2 * R}x${2 * R} sample; counts: ${JSON.stringify(counts)}`);
+  assert.equal(bad.length, 0, `biome/height mismatches: ${bad.slice(0, 5).join("; ")}`);
+  assert.ok(present >= 8, `expected a wide variety of biomes, only saw ${present}`);
+  assert.ok((counts[BIOME.OCEAN] || 0) + (counts[BIOME.DEEP_OCEAN] || 0) + (counts[BIOME.WARM_OCEAN] || 0) > 0, "expected some ocean");
+  assert.ok((counts[BIOME.MOUNTAINS] || 0) > 0, "expected some mountains at this scale");
+});
+
+await test("biome surface materials: snow on cold ground, sand in deserts, terracotta in badlands, coral/kelp in warm oceans", async () => {
+  const { BIOME } = await import("../js/biomes.js");
+  const gen = new TerrainGenerator(2024);
+  // Search a wide area for one column of each biome of interest, then
+  // generate its chunk and check the actual placed surface block.
+  const want = [BIOME.SNOWY_PLAINS, BIOME.DESERT, BIOME.BADLANDS, BIOME.WARM_OCEAN];
+  const found = {};
+  for (let x = -1400; x <= 1400 && Object.keys(found).length < want.length; x += 8) {
+    for (let z = -1400; z <= 1400 && Object.keys(found).length < want.length; z += 8) {
+      const biome = gen.biomeAt(x, z);
+      if (want.includes(biome) && !found[biome]) found[biome] = [x, z];
+    }
+  }
+  for (const biome of want) assert.ok(found[biome], `no column of biome ${biome} found to check`);
+  const reefBlocks = new Set([BLOCK.CORAL, BLOCK.SEAGRASS, BLOCK.KELP, BLOCK.SAND, BLOCK.WATER]);
+  for (const [biome, [x, z]] of Object.entries(found)) {
+    const cx = x >> 4;
+    const cz = z >> 4;
+    const c = { cx, cz, blocks: new Uint8Array(16 * 16 * H) };
+    gen.generate(c);
+    const lx = x - cx * 16;
+    const lz = z - cz * 16;
+    const h = gen.heightAt(x, z);
+    const at = (y) => c.blocks[(y * 16 + lz) * 16 + lx];
+    if (Number(biome) === BIOME.SNOWY_PLAINS) assert.equal(at(h), BLOCK.SNOW, `snowy plains column should be snow-capped (got ${at(h)})`);
+    else if (Number(biome) === BIOME.DESERT) assert.equal(at(h), BLOCK.SAND, `desert column should be sand (got ${at(h)})`);
+    else if (Number(biome) === BIOME.BADLANDS) assert.equal(at(h), BLOCK.TERRACOTTA, `badlands column should be terracotta (got ${at(h)})`);
+    else if (Number(biome) === BIOME.WARM_OCEAN) assert.ok(reefBlocks.has(at(h + 1)) || reefBlocks.has(at(h)), `warm ocean column should have a normal sea-floor/reef block`);
+  }
+});
+
+await test("forest density: open meadows have no trees, and no-tree biomes (desert, ocean, snowy plains, mountains) never grow any", async () => {
+  const { BIOME } = await import("../js/biomes.js");
+  const gen = new TerrainGenerator(99);
+  let openZero = 0;
+  let openChecked = 0;
+  for (let x = -600; x <= 600; x += 3) {
+    for (let z = -600; z <= 600; z += 3) {
+      const { density, forest } = gen.trees._density(x, z);
+      if (forest <= -0.15) {
+        openChecked++;
+        if (density === 0) openZero++;
+      }
+    }
+  }
+  console.log(`        ${openZero}/${openChecked} very open columns had exactly zero tree density`);
+  assert.ok(openChecked > 20 && openZero === openChecked, "columns in the most open meadows should never place a tree");
+  let badBiomeTrees = 0;
+  for (let x = -600; x <= 600; x += 4) {
+    for (let z = -600; z <= 600; z += 4) {
+      const biome = gen.biomeAt(x, z);
+      if (biome === BIOME.DESERT || biome === BIOME.OCEAN || biome === BIOME.SNOWY_PLAINS || biome === BIOME.MOUNTAINS) {
+        if (gen.trees.rootAt(x, z)) badBiomeTrees++;
+      }
+    }
+  }
+  assert.equal(badBiomeTrees, 0, `${badBiomeTrees} trees found in biomes that should never grow any`);
+});
+
+await test("villages: a rare, deterministic structure with houses, a torch-lit doorway, paths and a farm, whole across chunk borders", async () => {
+  const gen = new TerrainGenerator(777);
+  let center = null;
+  for (let cx = -6; cx <= 6 && !center; cx++) {
+    for (let cz = -6; cz <= 6 && !center; cz++) {
+      const c = gen.villages._cellCenter(cx, cz);
+      if (c) center = c;
+    }
+  }
+  assert.ok(center, "no village found in a 12x12 cell search (seed 777)");
+  // Generate every chunk the village could reach and check the real placed blocks.
+  const { VILLAGE_REACH } = await import("../js/village.js");
+  const c0 = (center.x - VILLAGE_REACH) >> 4;
+  const c1 = (center.x + VILLAGE_REACH) >> 4;
+  const cz0 = (center.z - VILLAGE_REACH) >> 4;
+  const cz1 = (center.z + VILLAGE_REACH) >> 4;
+  const chunks = new Map();
+  for (let cx = c0; cx <= c1; cx++) {
+    for (let cz = cz0; cz <= cz1; cz++) {
+      const c = { cx, cz, blocks: new Uint8Array(16 * 16 * H) };
+      gen.generate(c);
+      chunks.set(`${cx},${cz}`, c);
+    }
+  }
+  const get = (x, y, z) => {
+    const c = chunks.get(`${x >> 4},${z >> 4}`);
+    return c ? c.blocks[(y * 16 + ((z & 15) + 16) % 16) * 16 + (((x & 15) + 16) % 16)] : undefined;
+  };
+  let planks = 0;
+  let torches = 0;
+  let gravel = 0;
+  let crops = 0;
+  for (let dx = -VILLAGE_REACH; dx <= VILLAGE_REACH; dx++) {
+    for (let dz = -VILLAGE_REACH; dz <= VILLAGE_REACH; dz++) {
+      for (let dy = -6; dy <= 9; dy++) {
+        const id = get(center.x + dx, center.groundY + dy, center.z + dz);
+        if (id === BLOCK.PLANKS) planks++;
+        else if (id === BLOCK.TORCH) torches++;
+        else if (id === BLOCK.GRAVEL) gravel++;
+        else if (id === BLOCK.TALL_GRASS) crops++;
+      }
+    }
+  }
+  console.log(`        village at (${center.x}, ${center.z}): ${planks} plank blocks, ${torches} torches, ${gravel} gravel path blocks, ${crops} crop blocks`);
+  assert.ok(planks > 50, `expected substantial house walls, got ${planks} plank blocks`);
+  assert.equal(torches, 2, `expected exactly 2 torches (one per house), got ${torches}`);
+  assert.ok(gravel > 20, `expected a real path network, got ${gravel} gravel blocks`);
+  assert.ok(crops > 0, "expected some crops in the farm plot");
+  // Regenerating the same chunks independently gives identical results
+  // (determinism across chunk borders, like trees).
+  const again = { cx: c0, cz: cz0, blocks: new Uint8Array(16 * 16 * H) };
+  gen.generate(again);
+  assert.deepEqual(again.blocks, chunks.get(`${c0},${cz0}`).blocks, "village placement must be deterministic");
 });
 
 await test("new players start on the ground, never on top of a tree", async () => {
@@ -790,7 +931,11 @@ console.log("\nDistant terrain (lod-mesher.js)");
       const inner = walls.filter((f) => !onBorder(f));
       const border = walls.filter((f) => !inner.includes(f));
       const area = inner.reduce((a, f) => a + (f.y1 - f.y0) * Math.max(f.x1 - f.x0, f.z1 - f.z0), 0);
-      assert.ok(Math.abs(area - expected) < 1e-3, `level ${level}: wall area ${area} vs height steps ${expected}`);
+      // Absolute tolerance for small sums, relative for large ones: bigger
+      // mountain heights make for bigger sums, where float summation order
+      // (this loop vs. the mesher's) can differ by a little more in absolute
+      // terms without it meaning anything is actually wrong.
+      assert.ok(Math.abs(area - expected) < Math.max(1e-3, expected * 1e-6), `level ${level}: wall area ${area} vs height steps ${expected}`);
       // Skirts: along each of the 4 borders, walls cover the full length,
       // reaching from below the lowest top in the tile up to each cell's top.
       const lowest = Math.min(...heights.flat());
@@ -831,6 +976,135 @@ console.log("\nDistant terrain (lod-mesher.js)");
     assert.equal(lt.treeAt(tree[0], tree[1]), null);
     lt.setChunkEdits(`${cx},${cz}`, []);
     assert.ok(lt.treeAt(tree[0], tree[1]), "clearing the edits restores the tree");
+  });
+}
+
+console.log("\nFlowing water (watersim.js)");
+{
+  const { WaterSim, MAX_FLOW_DISTANCE } = await import("../js/watersim.js");
+  const { BLOCK } = await import("../js/blocks.js");
+
+  // A minimal stand-in for World: a sparse block map plus the same
+  // getChunk/getBlock/setBlock/changeListeners contract WaterSim relies on.
+  class FakeWorld {
+    constructor() {
+      this.blocks = new Map();
+      this.loaded = new Set();
+      this.changeListeners = [];
+    }
+    k(x, y, z) {
+      return `${x},${y},${z}`;
+    }
+    load(cx, cz) {
+      this.loaded.add(`${cx},${cz}`);
+    }
+    getChunk(cx, cz) {
+      return this.loaded.has(`${cx},${cz}`) || undefined;
+    }
+    getBlock(x, y, z) {
+      return this.blocks.get(this.k(x, y, z)) ?? BLOCK.AIR;
+    }
+    setBlock(x, y, z, id, { recordEdit = true } = {}) {
+      const key = this.k(x, y, z);
+      if (this.blocks.get(key) === id) return false;
+      this.blocks.set(key, id);
+      const changed = [x, y, z];
+      for (const fn of this.changeListeners) fn(changed, { recordEdit });
+      return true;
+    }
+  }
+  const floor = (w, x0, x1, y, z0, z1) => {
+    for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) w.setBlock(x, y, z, BLOCK.STONE);
+  };
+  const loadArea = (w, x0, x1, z0, z1) => {
+    for (let x = (x0 >> 4) - 1; x <= (x1 >> 4) + 1; x++) for (let z = (z0 >> 4) - 1; z <= (z1 >> 4) + 1; z++) w.load(x, z);
+  };
+  const drain = (sim, max = 2000) => {
+    let steps = 0;
+    while (sim.activeCount > 0 && steps++ < max) sim.update(9999);
+    return steps;
+  };
+
+  await test("water falls to fill a hole dug beneath it, instead of floating", () => {
+    const w = new FakeWorld();
+    loadArea(w, -5, 5, -5, 5);
+    floor(w, -3, 3, 10, -3, 3);
+    w.setBlock(0, 11, 0, BLOCK.WATER); // resting on the floor
+    const sim = new WaterSim(w);
+    // Dig a 3-deep hole under the water (as an explosion would), then let it react.
+    w.setBlock(0, 10, 0, BLOCK.AIR);
+    w.setBlock(0, 9, 0, BLOCK.AIR);
+    w.setBlock(0, 8, 0, BLOCK.AIR);
+    drain(sim);
+    assert.equal(w.getBlock(0, 11, 0), BLOCK.WATER, "the original water should still be there");
+    assert.equal(w.getBlock(0, 10, 0), BLOCK.WATER, "water should fall into the hole below it");
+    assert.equal(w.getBlock(0, 9, 0), BLOCK.WATER);
+    assert.equal(w.getBlock(0, 8, 0), BLOCK.WATER, "water should reach the bottom of the hole");
+  });
+
+  await test("water spreads sideways from a source up to a limited distance, and no farther", () => {
+    const w = new FakeWorld();
+    loadArea(w, -2, 20, -2, 2);
+    floor(w, -1, 20, 10, -1, 1);
+    w.setBlock(0, 11, 0, BLOCK.WATER);
+    const sim = new WaterSim(w);
+    sim.active.add(sim._key(0, 11, 0)); // wake it manually: it was placed before the sim existed
+    drain(sim);
+    for (let x = 1; x <= MAX_FLOW_DISTANCE; x++) assert.equal(w.getBlock(x, 11, 0), BLOCK.WATER, `should have reached x=${x}`);
+    assert.equal(w.getBlock(MAX_FLOW_DISTANCE + 1, 11, 0), BLOCK.AIR, "flow should stop at its maximum distance");
+  });
+
+  await test("a flow dries up once its source is removed", () => {
+    const w = new FakeWorld();
+    loadArea(w, -2, 8, -2, 2);
+    floor(w, -1, 8, 10, -1, 1);
+    w.setBlock(0, 11, 0, BLOCK.WATER);
+    const sim = new WaterSim(w);
+    sim.active.add(sim._key(0, 11, 0));
+    drain(sim);
+    assert.equal(w.getBlock(2, 11, 0), BLOCK.WATER, "sanity: the flow should have spread first");
+    w.setBlock(0, 11, 0, BLOCK.AIR); // remove the source
+    drain(sim);
+    for (let x = 0; x <= MAX_FLOW_DISTANCE; x++) assert.equal(w.getBlock(x, 11, 0), BLOCK.AIR, `x=${x} should have dried up`);
+  });
+
+  await test("original terrain water never dries up on its own (an untouched lake stays full)", () => {
+    const w = new FakeWorld();
+    loadArea(w, -2, 2, -2, 2);
+    floor(w, -1, 1, 10, -1, 1);
+    w.setBlock(0, 11, 0, BLOCK.WATER);
+    const sim = new WaterSim(w);
+    // Wake it without any real edit nearby (as a neighboring, unrelated dig might).
+    sim.active.add(sim._key(0, 11, 0));
+    drain(sim);
+    assert.equal(w.getBlock(0, 11, 0), BLOCK.WATER, "an original water block with solid support should never dry up");
+  });
+
+  await test("out-of-band scaffolding (recordEdit: false) never wakes water, so test/world-setup placements can't trigger the sim", () => {
+    const w = new FakeWorld();
+    loadArea(w, -3, 3, -3, 3);
+    floor(w, -2, 2, 10, -2, 2);
+    w.setBlock(0, 11, 0, BLOCK.WATER, { recordEdit: false });
+    const sim = new WaterSim(w);
+    w.setBlock(0, 10, 0, BLOCK.AIR, { recordEdit: false });
+    assert.equal(sim.activeCount, 0, "an out-of-band edit should not wake the water simulation");
+  });
+
+  await test("update() only processes a bounded number of cells per call (throttled)", () => {
+    const w = new FakeWorld();
+    loadArea(w, -2, 30, -2, 2);
+    floor(w, -1, 30, 10, -1, 1);
+    w.setBlock(0, 11, 0, BLOCK.WATER);
+    const sim = new WaterSim(w);
+    sim.active.add(sim._key(0, 11, 0));
+    let calls = 0;
+    while (sim.activeCount > 0 && calls < 50) {
+      const before = sim.processed;
+      sim.update(1); // a budget of exactly one cell per call
+      assert.ok(sim.processed - before <= 1, "a budget of 1 should tick at most one cell per call");
+      calls++;
+    }
+    assert.ok(calls > 1, `spreading across several cells should take more than one throttled call (took ${calls})`);
   });
 }
 

@@ -235,7 +235,7 @@ function foliageTint(wx, y, wz) {
   const v = smooth01(wx, wz, 7, 3) * 0.65 + hash01(wx, y, wz) * 0.35;
   return Math.max(16, Math.min(240, Math.round(128 + (v - 0.5) * 230)));
 }
-function grassTint(wx, wz) {
+export function grassTint(wx, wz) {
   const v = smooth01(wx, wz, 11, 5) * 0.75 + smooth01(wx, wz, 3, 9) * 0.25;
   return Math.max(24, Math.min(232, Math.round(128 + (v - 0.5) * 200)));
 }

@@ -684,3 +684,58 @@ The codebase grew from ~10,800 lines of JavaScript in 34 modules to ~15,200 line
   - boxes for distant tree crowns.
 
   Each was much cheaper and close enough for the look.
+
+---
+
+# Round 4, Part A checklist
+
+## 1. Weapons — DONE
+- [x] Default hotbar in a new game: 1 pistol, 2 grenade, 3 bazooka, 4 machine gun, 5 airstrike designator, 6 sniper rifle
+- [x] Explosions carve wide, flatter craters (horizontal ellipsoid ~2x wider than deep)
+- [x] Reduce bazooka explosion to 1/3 of current size
+- [x] Settings: explosion-size slider per weapon (pause menu)
+- [x] Machine gun: hold RMB auto fire, tracers, recoil climb
+- [x] Sniper rifle: scope zoom + overlay, high damage, very long range
+- [x] Airstrike: laser-aim, fire, 5s delay, meteor rain on target + random spots
+- [x] BUG: long-range hitscan/projectiles hit LOD/distant terrain via a heightfield fallback in World.raycast; deferred explosions stored via World.queueEdit and applied when chunks load
+- [x] Keep no reload / unlimited ammo
+
+## 2. Water physics — DONE
+- [x] BUG: floating water after explosions (js/watersim.js reacts to edits and flows down/into holes)
+- [x] Source + flowing water blocks that spread/fall, fill craters, throttled updates (budgeted per frame, MAX_FLOW_DISTANCE=4)
+
+## 3. World generation — DONE
+- [x] Full biome set (js/biomes.js: temperature/moisture climate fields + height/mountain/river) with organic (noise-contour) blending and large-scale continents/mountain ranges/rivers (js/terrain.js `_terrainInfo`)
+- [x] Variable forest density (open/sparse/dense noise field, true zero in open meadows, per-biome multipliers)
+- [x] Warm ocean coral reefs, seagrass, kelp (new blocks + placement in terrain.js)
+- [x] Villages: js/village.js (rare grid-cell placement, flattened pad, 2 houses, gravel paths, a farm plot) + wandering villager NPCs (mobs.js/mob-models.js)
+- [x] Default render distance 10 chunks (max still 100)
+
+## 4. Mobs and animals — DONE
+- [x] Hostile: skeleton archers with real gravity-affected arrow projectiles (js/mobs.js `_shootArrow`/`_updateArrows`) that damage the player; wall-climbing spiders (previous-frame `blocked` flag drives a climb velocity); zombies unchanged
+- [x] Passive animals, original designs (js/mob-models.js + js/mobs.js): fluffalo (sheep), hoplet (rabbit), mossback already existed; added cow, pig, chicken, plus butterflies over flowers, schools of fish (3-5 at once) in deep-enough water, and parrots in jungle biomes — all with dedicated box-model rigs
+- [x] Mobs spawn farther away (hostiles 28-118 blocks out, seed/ongoing passive spawns pushed out too), overall mob cap (MAX_TOTAL_MOBS=34) on top of per-category caps, simplified far AI (mobs beyond FAR_AI_DISTANCE=40 skip steering/pathing, just hop toward the player)
+- Validated via tools/check-mob-models.mjs (all 13 species build cleanly), tools/check-mobs.mjs (arrow gravity+damage, spider climbing, new animals, flyers), and 4 new permanent checks in tools/smoke-test.mjs
+- BUG fix found during validation: skeleton arrows aimed using feet-to-feet height delta while launching from the archer's eye height, so a level shot at a same-height target already cleared the player's hitbox before gravity-compensation pushed it even higher, sailing clean over the player's head; fixed to aim at the player's torso center from the archer's actual launch height
+
+## 5. Player and settings — DONE
+- [x] F5 camera modes (1st/3rd behind/3rd front) with visible player model — `Player.cycleCamera`/`syncCamera` (camera pulled back along the view and stopped short of solid blocks, eased back out; a scoped sniper always stays first person), new original "wayfarer" box model (`player` species in js/mob-models.js) driven by js/player-avatar.js (walk cycle, sneaking, head follows the view with body lag, arm chops when mining, raised to aim with guns, held item in the hand, lit by the voxel light, casts shadows); the first-person held item hides in third person; the underwater state follows the third-person camera
+- [x] F1 hide HUD, F3 debug overlay — F1 toggles `body.hud-off` (hotbar, hearts, crosshair, FPS and the held item); F3 shows position, block/chunk, facing, biome, light, clock, camera mode, difficulty, chunk/LOD/mob/item/plant counts, draw calls and triangles for the whole frame (renderer.info is now reset once per frame so every pass counts) and the targeted block. F1/F3/F5 are preventDefault-ed so the browser doesn't open help/find or reload
+- [x] Time-of-day slider + lock — `Sky.hours`/`setHours` (sunrise 6:00, sunset 18:00) and `Sky.locked` (stops the clock); slider + lock checkbox on the Gameplay tab; the slider shows the current time whenever the menu opens
+- [x] Full settings menu, persisted in localStorage — the pause menu is now tabbed (Video / Controls / Audio / Gameplay; js/settings.js validates and defaults every value, so old or corrupted saves load cleanly). Video: render distance, preset, 9 individual graphics options that override the preset (shadows, anti-aliasing, bloom, light shafts, water, 3D plants, fancy leaves, texture relief, clouds; `GFX_OPTIONS`/`resolvePreset` in js/graphics.js; picking a preset or "Reset" clears overrides; a "custom" badge shows when any are set), FPS counter toggle. Controls: FOV, mouse sensitivity, invert Y. Audio: master plus 5 category volumes (blocks, weapons, creatures, player, menus/pickups; each category is its own gain bus in js/audio.js). Gameplay: game mode, difficulty (Peaceful removes hostiles and stops them spawning; Easy/Hard scale creature damage x0.5/x1.5), creature spawning on/off, time of day + lock, the three explosion-size sliders
+- Tested: two new smoke checks (F5 cycles behind/front/first with the model shown only in third person; F1/F3; every settings tab applies live and persists, locked time stays put), plus tools/probe.mjs, a new quick harness that boots the game, runs a scenario file and saves screenshots (used for visual checks throughout Round 4 Part B)
+
+(tick items as completed; commit after each numbered group)
+
+R4 PART A COMPLETE
+
+---
+
+# Round 4, Part B checklist
+
+Note: the task referred to reference images in a `/reference` directory (current-grass.png, current-underwater.png, ref-marsh.png, ref-grass.png) that did not exist in this repository or session, so all of Part B was implemented from the written descriptions only, checked against my own headless screenshots (tools/probe.mjs).
+
+## 1. Bugs — DONE
+- [x] Grass on Ultra mixed two styles — root cause: js/grass.js drew smooth, vertex-coloured triangle blades (their own shader, no texture) on top of the mesher's pixel-art tall-grass cross blocks. Rewrote grass.js so every instanced plant is a set of crossed cards sampling the block texture array with new pixel-art tiles (grass_tuft, grass_tuft_b, fern, reeds/cattails, flowers, lily pad) in exactly the style of the redrawn tall_grass block; one plant shader (js/shaders.js) with the shared wind, same tint as the grass blocks
+- [x] Dark curved shading on lower edges/faces — root cause in the relief (normal/height) maps: `paintRelief` took slopes with wrap-around, so a face's bottom row was compared with its top row; on tiles whose top and bottom differ (grass side's fringe over dirt, the sand's ripple texture) that invented a steep false slope along every block's lower edge, and parallax (repeat-wrapped) also stepped past the tile edge into the opposite side. Fixed with one-sided differences at tile borders and a clamped parallax march; sand now has its own ripple-free side texture (the wavy ripple bands were what read as dark curves on seabed walls)
+- [x] Underwater darkened too fast — fog density is now a uniform (`uUnderwaterFog`, 0.085 -> 0.03 per block, ~3x the visibility); the underwater light shafts march 56 blocks (was 30) with gentler falloff, colour grading unchanged

@@ -34,6 +34,9 @@ export const ITEM = Object.freeze({
   GRENADE: 286,
   PISTOL: 287,
   BAZOOKA: 288,
+  MACHINE_GUN: 289,
+  SNIPER_RIFLE: 290,
+  AIRSTRIKE: 291,
 });
 
 // Tool materials: tier (what they can harvest), mining speed multiplier,
@@ -62,6 +65,9 @@ const ITEM_DEFS = {
   [ITEM.GRENADE]: { name: "Grenade", icon: "grenade", stack: 1, weapon: { kind: "grenade" } },
   [ITEM.PISTOL]: { name: "Pistol", icon: "pistol", stack: 1, weapon: { kind: "pistol" } },
   [ITEM.BAZOOKA]: { name: "Bazooka", icon: "bazooka", stack: 1, weapon: { kind: "bazooka" } },
+  [ITEM.MACHINE_GUN]: { name: "Machine Gun", icon: "machinegun", stack: 1, weapon: { kind: "machinegun" } },
+  [ITEM.SNIPER_RIFLE]: { name: "Sniper Rifle", icon: "sniper", stack: 1, weapon: { kind: "sniper" } },
+  [ITEM.AIRSTRIKE]: { name: "Airstrike Designator", icon: "airstrike", stack: 1, weapon: { kind: "airstrike" } },
 };
 
 const TOOL_KINDS = [
@@ -171,11 +177,16 @@ export const CREATIVE_ITEMS = [
   BLOCK.GRASS, BLOCK.DIRT, BLOCK.STONE, BLOCK.COBBLESTONE, BLOCK.SAND, BLOCK.GRAVEL, BLOCK.WOOD, BLOCK.PLANKS,
   BLOCK.LEAVES, BLOCK.OAK_BARK, BLOCK.BIRCH_LOG, BLOCK.BIRCH_LEAVES, BLOCK.PINE_LOG, BLOCK.PINE_LEAVES, BLOCK.GLASS, BLOCK.BRICKS, BLOCK.WOOL, BLOCK.CRAFTING_TABLE, BLOCK.TORCH, BLOCK.LUMEN, BLOCK.BEDROCK,
   BLOCK.COAL_ORE, BLOCK.IRON_ORE, BLOCK.GOLD_ORE, BLOCK.DIAMOND_ORE, BLOCK.TALL_GRASS, BLOCK.FLOWER_RED, BLOCK.FLOWER_YELLOW,
+  BLOCK.SNOW, BLOCK.TERRACOTTA, BLOCK.CACTUS, BLOCK.DEAD_BUSH, BLOCK.CORAL, BLOCK.SEAGRASS, BLOCK.KELP,
   ITEM.STICK, ITEM.COAL, ITEM.IRON_INGOT, ITEM.GOLD_INGOT, ITEM.DIAMOND, ITEM.FLUFF,
   ITEM.APPLE, ITEM.GOLDEN_APPLE, ITEM.RAW_MEAT, ITEM.COOKED_MEAT,
   ITEM.WOOD_SWORD, ITEM.STONE_SWORD, ITEM.IRON_SWORD, ITEM.DIAMOND_SWORD,
   ITEM.WOOD_PICKAXE, ITEM.STONE_PICKAXE, ITEM.IRON_PICKAXE, ITEM.DIAMOND_PICKAXE,
   ITEM.WOOD_AXE, ITEM.STONE_AXE, ITEM.IRON_AXE, ITEM.DIAMOND_AXE,
   ITEM.WOOD_SHOVEL, ITEM.STONE_SHOVEL, ITEM.IRON_SHOVEL, ITEM.DIAMOND_SHOVEL,
-  ITEM.GRENADE, ITEM.PISTOL, ITEM.BAZOOKA,
+  ITEM.GRENADE, ITEM.PISTOL, ITEM.BAZOOKA, ITEM.MACHINE_GUN, ITEM.SNIPER_RIFLE, ITEM.AIRSTRIKE,
 ];
+
+// Slots 0-5 of a brand new game's hotbar (both modes): a full loadout so a
+// new player has every weapon to try immediately.
+export const STARTING_WEAPONS = [ITEM.PISTOL, ITEM.GRENADE, ITEM.BAZOOKA, ITEM.MACHINE_GUN, ITEM.AIRSTRIKE, ITEM.SNIPER_RIFLE];

@@ -38,6 +38,12 @@ export const worldUniforms = {
   uWaterFogColor: { value: new THREE.Color(0.02, 0.1, 0.16) },
   uWaveStrength: { value: 1 },
   uCaustics: { value: 1 },
+  // Wind: xy = direction it blows toward (unit, world x/z), z = strength
+  // (about 0.2 calm to 1.4 stormy), w = gust phase. Set by sky.js; moves
+  // leaves, plants and the water's waves.
+  uWind: { value: new THREE.Vector4(0.8, 0.6, 0.6, 0) },
+  // Under-water fog density per block (how far you can see when submerged).
+  uUnderwaterFog: { value: 0.03 },
   // Sun shadows (see SUN_SHADOW): filter radius in shadow-map texels for
   // cascades 0-2, and the blocker-search radius for cascade 0 (w);
   // penumbra texels per unit of depth difference (contact-hardening soft
@@ -46,6 +52,26 @@ export const worldUniforms = {
   uPcssScale: { value: 0 },
   uShadowQuality: { value: 1 },
 };
+
+// Wind sway shared by leaves, plants and the shadow pass: layered waves that
+// travel along the wind direction, with slow gusts, scaled by strength.
+// Returns a world-space offset for a point that sways fully.
+export const WIND_GLSL = /* glsl */ `
+uniform vec4 uWind;
+vec3 windSway(vec3 p, float t) {
+  vec2 d = uWind.xy;
+  float along = dot(p.xz, d);
+  float gust = 0.6 + 0.4 * sin(t * 0.31 - along * 0.045 + uWind.w) * sin(t * 0.17 + along * 0.02);
+  float w = sin(t * 1.6 - along * 0.55 + p.x * 0.13) * 0.5
+          + sin(t * 2.5 - along * 0.3 + p.z * 0.61) * 0.32
+          + sin(t * 5.1 + p.x * 1.7 + p.z * 1.3) * 0.14;
+  float s = uWind.z * (0.55 + 0.45 * gust);
+  // Leaning with the wind, and flutter around that.
+  vec2 lean = d * (0.35 + 0.65 * (w * 0.5 + 0.5)) * s;
+  vec2 flutter = vec2(-d.y, d.x) * w * 0.35 * s;
+  return vec3(lean.x + flutter.x, w * 0.12 * s, lean.y + flutter.y);
+}
+`;
 
 export const WORLD_COMMON = /* glsl */ `
 uniform vec3 uSunDir;
@@ -66,6 +92,7 @@ uniform vec4 uMist;
 uniform float uUnderwater;
 uniform vec3 uWaterFogColor;
 uniform float uWaveStrength;
+uniform float uUnderwaterFog;
 
 // Sky radiance in direction dir (no sun disc, moon or stars).
 vec3 skyColor(vec3 dir) {
@@ -125,7 +152,7 @@ vec3 applyFog(vec3 color, vec3 worldPos) {
     vec3 dir = d / max(dist, 0.001);
     vec3 murk = uWaterFogColor * (0.75 + 1.6 * smoothstep(-0.3, 0.95, dir.y));
     murk += uWaterFogColor * vec3(1.2, 1.6, 1.3) * pow(max(dot(dir, uLightDir), 0.0), 6.0) * 2.0 * smoothstep(-0.05, 0.1, uLightDir.y);
-    return mix(color, murk, 1.0 - exp(-dist * 0.085));
+    return mix(color, murk, 1.0 - exp(-dist * uUnderwaterFog));
   }
   vec3 dir = d / max(dist, 0.001);
   float edge = smoothstep(uFog.x, uFog.y, dist);
@@ -339,17 +366,14 @@ uniform float uTime;
 uniform float uWaveStrength;
 #include <common>
 #include <shadowmap_pars_vertex>
+${WIND_GLSL}
 
 const vec3 FACE_NORMALS[6] = vec3[6](
   vec3(1.0, 0.0, 0.0), vec3(-1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0),
   vec3(0.0, -1.0, 0.0), vec3(0.0, 0.0, 1.0), vec3(0.0, 0.0, -1.0));
 
 vec3 windOffset(vec3 p) {
-  float t = uTime;
-  float w = sin(t * 1.6 + p.x * 0.55 + p.z * 0.4) * 0.5
-          + sin(t * 2.4 + p.x * 0.3 - p.z * 0.7) * 0.35
-          + sin(t * 5.3 + p.x * 1.7 + p.z * 1.3) * 0.15;
-  return vec3(w, w * 0.2, w * 0.6) * 0.075 * uWaveStrength;
+  return windSway(p, uTime) * 0.11 * uWaveStrength;
 }
 
 void main() {
@@ -408,17 +432,22 @@ vec2 parallaxUv(vec3 uvw, vec3 vts, float depthScale) {
   float steps = mix(28.0, 10.0, clamp(vts.z, 0.0, 1.0));
   float layer = 1.0 / steps;
   vec2 delta = vts.xy / max(vts.z, 0.2) * depthScale * layer;
-  vec2 uv = uvw.xy;
+  // The march must stay on this face's own tile: with repeat wrapping it
+  // used to step past the tile's edge into its opposite side, so the bottom
+  // rows of a side face showed (and were shaded by) the tile's top rows.
+  vec2 lo = vec2(0.5 / 32.0);
+  vec2 hi = vec2(1.0 - 0.5 / 32.0);
+  vec2 uv = clamp(uvw.xy, lo, hi);
   float cur = 0.0;
   float depth = 1.0 - textureLod(uRelief, vec3(uv, uvw.z), 0.0).b;
   for (int i = 0; i < 28; i++) {
     if (float(i) >= steps || cur >= depth) break;
-    uv -= delta;
+    uv = clamp(uv - delta, lo, hi);
     cur += layer;
     depth = 1.0 - textureLod(uRelief, vec3(uv, uvw.z), 0.0).b;
   }
   // Refine between the last two steps.
-  vec2 prev = uv + delta;
+  vec2 prev = clamp(uv + delta, lo, hi);
   float after = depth - cur;
   float before = (1.0 - textureLod(uRelief, vec3(prev, uvw.z), 0.0).b) - (cur - layer);
   float w = clamp(after / (after - before + 1e-5), 0.0, 1.0);
@@ -524,12 +553,9 @@ varying vec3 vTexCoord;
 uniform float uTime;
 uniform float uWaveStrength;
 #include <common>
+${WIND_GLSL}
 vec3 windOffset(vec3 p) {
-  float t = uTime;
-  float w = sin(t * 1.6 + p.x * 0.55 + p.z * 0.4) * 0.5
-          + sin(t * 2.4 + p.x * 0.3 - p.z * 0.7) * 0.35
-          + sin(t * 5.3 + p.x * 1.7 + p.z * 1.3) * 0.15;
-  return vec3(w, w * 0.2, w * 0.6) * 0.075 * uWaveStrength;
+  return windSway(p, uTime) * 0.11 * uWaveStrength;
 }
 void main() {
   int flags = int(aData.w + 0.5);
@@ -807,80 +833,107 @@ void main() {
 // ---------------------------------------------------------------------------
 // Ground plants (see grass.js)
 // ---------------------------------------------------------------------------
-// Instanced grass, reeds, ferns and flowers standing on blocks near the player,
-// lit like the terrain (voxel light at the block, sun shadows), with light
-// shining through the blades when you look toward the sun.
+// Instanced pixel-art plants (grass tufts, ferns, reeds, cattails, flowers,
+// lily pads) standing on blocks near the player: crossed cards textured from
+// the block texture array, in exactly the style of the tall-grass block, lit
+// like the terrain (voxel light at the block, sun shadows, light shining
+// through the blades), swaying with the shared wind, and bending away from
+// the player's feet. Lily pads lie flat and bob on the water's waves.
 
 const grassVertex = /* glsl */ `
-attribute float aTip;       // 0 at a plant's base, 1 at its top
-attribute vec3 aBladeNormal;
-attribute vec3 aColor;      // linear color
-attribute float aPaint;     // 1: take the instance's color (flower petals)
+attribute float aTip;       // 0 at a plant's base, 1 at its top (sway)
+attribute float aStep;      // texture layer offset (the upper card of a reed)
+attribute float aFlat;      // 1: a flat card on the water (lily pad)
 attribute vec3 iOffset;     // plant position (top of the block it stands on)
-attribute vec3 iRotScaleTint;
+attribute vec4 iParams;     // angle, width scale, height scale, tint (0.5 = none)
 attribute vec2 iLight;      // sky, block light above the block (0-1)
-attribute vec3 iPaint;
+attribute float iLayer;     // texture layer
 uniform vec3 uPlayer;       // the player's feet
 uniform float uRadius;
 uniform float uTime;
 uniform float uWaveStrength;
+varying vec3 vUvw;
 varying float vTip;
 varying vec2 vLight;
 varying vec3 vWorldPos;
 varying vec3 vNormal;
-varying vec3 vColor;
+varying float vTint;
 #include <common>
 #include <shadowmap_pars_vertex>
+${WIND_GLSL}
+// Keep in sync with the water shader and js/water.js (surfaceHeight).
+float plantWaveHeight(vec2 p, float t) {
+  return (sin(p.x * 0.8 + t * 1.3) * 0.5 + sin(p.y * 0.65 - t * 1.05) * 0.5
+        + sin((p.x + p.y) * 1.7 + t * 2.2) * 0.22) * 0.055 * uWaveStrength;
+}
 void main() {
-  float c = cos(iRotScaleTint.x);
-  float s = sin(iRotScaleTint.x);
+  float c = cos(iParams.x);
+  float s = sin(iParams.x);
   mat2 rot = mat2(c, s, -s, c);
   vec3 p = position;
-  p.xz = rot * p.xz;
-  // Shrink away toward the edge of the field, so tufts never pop in or out.
+  p.xz = rot * (p.xz * iParams.y);
+  // Shrink away toward the edge of the field, so plants never pop in or out.
   float d = distance(iOffset.xz, uPlayer.xz);
-  float fade = 1.0 - smoothstep(uRadius * 0.65, uRadius, d);
-  p.y *= iRotScaleTint.y * fade;
+  float fade = 1.0 - smoothstep(uRadius * 0.7, uRadius, d);
+  p.y *= iParams.z;
+  p *= mix(1.0, fade, 1.0 - aFlat * 0.5);
   vec3 wp = iOffset + p;
-  // Wind: layered gusts, strongest at the tips.
-  float t = uTime;
-  float w = sin(t * 1.7 + wp.x * 0.6 + wp.z * 0.45) * 0.5 + sin(t * 2.9 + wp.x * 0.25 - wp.z * 0.8) * 0.3
-          + sin(t * 6.3 + wp.x * 1.9 + wp.z * 1.4) * 0.12;
-  wp.xz += vec2(w, w * 0.6) * 0.1 * aTip * aTip * (0.6 + position.y) * uWaveStrength;
-  // Blades bend away from the player's feet.
-  vec2 away = wp.xz - uPlayer.xz;
-  float near = (1.0 - smoothstep(0.25, 1.0, length(away))) * (1.0 - smoothstep(0.4, 1.4, abs(iOffset.y - uPlayer.y)));
-  wp.xz += normalize(away + vec2(1e-4)) * near * 0.3 * aTip;
-  wp.y -= near * 0.12 * aTip;
+  if (aFlat > 0.5) {
+    // Floating on the water surface.
+    wp.y += plantWaveHeight(wp.xz, uTime) - 0.06 * uWaveStrength + 0.012;
+  } else {
+    // Wind: strongest at the tips (and more for taller plants).
+    float tip = aTip * aTip;
+    wp += windSway(wp, uTime) * 0.16 * tip * (0.5 + iParams.z * 0.5) * uWaveStrength;
+    // Plants bend away from the player's feet.
+    vec2 away = wp.xz - uPlayer.xz;
+    float near = (1.0 - smoothstep(0.25, 1.0, length(away))) * (1.0 - smoothstep(0.4, 1.4, abs(iOffset.y - uPlayer.y)));
+    wp.xz += normalize(away + vec2(1e-4)) * near * 0.35 * aTip;
+    wp.y -= near * 0.15 * aTip;
+  }
   vec4 worldPosition = vec4(wp, 1.0);
-  vec3 n = normalize(vec3((rot * aBladeNormal.xz) * 0.4, 1.0));
+  // Soft, mostly-up normals: tufts read as a mass of blades, not flat cards.
+  vec3 n = aFlat > 0.5 ? vec3(0.0, 1.0, 0.0) : normalize(vec3(rot * vec2(0.0, 0.35), 1.0).xzy);
   vec3 transformedNormal = (viewMatrix * vec4(n, 0.0)).xyz;
   #include <shadowmap_vertex>
   gl_Position = projectionMatrix * viewMatrix * worldPosition;
-  vTip = aTip;
+  vUvw = vec3(uv, iLayer + aStep);
+  vTip = aFlat > 0.5 ? 1.0 : aTip;
   vLight = iLight;
   vWorldPos = wp;
   vNormal = n;
-  vColor = mix(aColor, iPaint, aPaint) * iRotScaleTint.z;
+  vTint = iParams.w;
 }
 `;
 
 const grassFragment = /* glsl */ `
+uniform highp sampler2DArray uAtlas;
+varying vec3 vUvw;
 varying float vTip;
 varying vec2 vLight;
 varying vec3 vWorldPos;
 varying vec3 vNormal;
-varying vec3 vColor;
+varying float vTint;
 ${FRAGMENT_LIGHT_INCLUDES}
 ${WORLD_COMMON}
 void main() {
-  vec3 albedo = vColor;
+  vec4 tex = texture(uAtlas, vUvw);
+  // Keep thin blades from dissolving at a distance (see the chunk shader).
+  vec2 tdx = dFdx(vUvw.xy * 32.0);
+  vec2 tdy = dFdy(vUvw.xy * 32.0);
+  float lod = 0.5 * log2(max(dot(tdx, tdx), dot(tdy, tdy)));
+  tex.a *= 1.0 + max(lod, 0.0) * 0.3;
+  if (tex.a < 0.5) discard;
+  vec3 albedo = tex.rgb;
+  // Meadow color variation, as on the grass blocks (0.5 = none).
+  albedo *= 1.0 + (vTint - 0.502) * vec3(0.34, 0.16, -0.3);
   float shadow = sunShadow();
-  vec3 light = worldLighting(vNormal, vLight.x, vLight.y, mix(0.72, 1.0, vTip), shadow);
-  // Sunlight shining through the blades.
+  // Blades are darker deep in the tuft, lit at the tips.
+  vec3 light = worldLighting(vNormal, vLight.x, vLight.y, mix(0.55, 1.0, vTip), shadow);
+  // Sunlight shining through the blades toward the eye.
   vec3 V = normalize(cameraPosition - vWorldPos);
-  float through = pow(max(dot(-V, uLightDir), 0.0), 4.0) * vTip * sunVisibility(vLight.x, shadow);
-  vec3 color = albedo * light + albedo * uLightColor * through * 0.7;
+  float through = pow(max(dot(-V, uLightDir), 0.0), 4.0) * sunVisibility(vLight.x, shadow);
+  vec3 color = albedo * light + albedo * vec3(1.0, 1.05, 0.7) * uLightColor * through * 0.8 * vTip;
   color = applyFog(color, vWorldPos);
   gl_FragColor = vec4(color, 1.0);
   #include <tonemapping_fragment>
@@ -888,9 +941,10 @@ void main() {
 }
 `;
 
-export function createGrassMaterial() {
+export function createGrassMaterial(atlas) {
   return new THREE.ShaderMaterial({
     uniforms: litUniforms({
+      uAtlas: { value: atlas },
       uPlayer: { value: new THREE.Vector3() },
       uRadius: { value: 16 },
     }),
@@ -1151,7 +1205,7 @@ export function createChunkMaterials(atlas, waterLayer, relief) {
     side: THREE.DoubleSide,
   });
   const cutoutDepth = new THREE.ShaderMaterial({
-    uniforms: { uAtlas: { value: atlas }, uTime: worldUniforms.uTime, uWaveStrength: worldUniforms.uWaveStrength },
+    uniforms: { uAtlas: { value: atlas }, uTime: worldUniforms.uTime, uWaveStrength: worldUniforms.uWaveStrength, uWind: worldUniforms.uWind },
     vertexShader: cutoutDepthVertex,
     fragmentShader: cutoutDepthFragment,
     side: THREE.DoubleSide,
