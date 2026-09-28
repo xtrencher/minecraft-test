@@ -765,11 +765,17 @@ try {
     });
     await page.waitForFunction(() => window.__voxelands.world.isIdle && window.__voxelands.world.remeshQueue.size === 0, null, { timeout: 300000, polling: 250 });
     await page.waitForFunction(() => window.__voxelands.grass.count > 0, null, { timeout: 60000, polling: 250 });
-    const g = await page.evaluate(() => Object.fromEntries(Object.entries(window.__voxelands.grass.layers).map(([k, l]) => [k, l.count])));
-    console.log(`        plants: ${JSON.stringify(g)}; tree species nearby: ${r.species.join(", ")} (1 oak, 2 birch, 3 pine, 4 old oak)`);
-    assert(g.tall > 100 && g.short > 50, `expected tall and short grass: ${JSON.stringify(g)}`);
-    assert(g.reed > 5, `expected reeds along the water: ${JSON.stringify(g)}`);
+    const g = await page.evaluate(() => ({ ...window.__voxelands.grass.counts }));
+    console.log(`        plants: ${JSON.stringify(g)}; tree species nearby: ${r.species.join(", ")} (1 oak, 2 birch, 3 pine, 4 old oak, 5 willow)`);
+    assert(g.tall > 100 && g.tuft > 50, `expected tall and short grass: ${JSON.stringify(g)}`);
+    assert(g.reed + g.cattail > 5, `expected reeds and cattails along the water: ${JSON.stringify(g)}`);
     assert(g.fern > 2, `expected ferns under the leafy roof: ${JSON.stringify(g)}`);
+    // Every plant is a pixel-art card from the block texture array (one style).
+    const style = await page.evaluate(() => {
+      const v = window.__voxelands;
+      return { atlas: v.grass.material.uniforms.uAtlas.value === v.world.atlas, textured: /sampler2DArray uAtlas/.test(v.grass.material.fragmentShader) };
+    });
+    assert(style.atlas && style.textured, `plants should sample the block texture array: ${JSON.stringify(style)}`);
     assert(r.species.length >= 3, `expected several tree species, got ${r.species}`);
   });
 

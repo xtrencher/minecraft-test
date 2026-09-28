@@ -728,3 +728,14 @@ The codebase grew from ~10,800 lines of JavaScript in 34 modules to ~15,200 line
 (tick items as completed; commit after each numbered group)
 
 R4 PART A COMPLETE
+
+---
+
+# Round 4, Part B checklist
+
+Note: the task referred to reference images in a `/reference` directory (current-grass.png, current-underwater.png, ref-marsh.png, ref-grass.png) that did not exist in this repository or session, so all of Part B was implemented from the written descriptions only, checked against my own headless screenshots (tools/probe.mjs).
+
+## 1. Bugs — DONE
+- [x] Grass on Ultra mixed two styles — root cause: js/grass.js drew smooth, vertex-coloured triangle blades (their own shader, no texture) on top of the mesher's pixel-art tall-grass cross blocks. Rewrote grass.js so every instanced plant is a set of crossed cards sampling the block texture array with new pixel-art tiles (grass_tuft, grass_tuft_b, fern, reeds/cattails, flowers, lily pad) in exactly the style of the redrawn tall_grass block; one plant shader (js/shaders.js) with the shared wind, same tint as the grass blocks
+- [x] Dark curved shading on lower edges/faces — root cause in the relief (normal/height) maps: `paintRelief` took slopes with wrap-around, so a face's bottom row was compared with its top row; on tiles whose top and bottom differ (grass side's fringe over dirt, the sand's ripple texture) that invented a steep false slope along every block's lower edge, and parallax (repeat-wrapped) also stepped past the tile edge into the opposite side. Fixed with one-sided differences at tile borders and a clamped parallax march; sand now has its own ripple-free side texture (the wavy ripple bands were what read as dark curves on seabed walls)
+- [x] Underwater darkened too fast — fog density is now a uniform (`uUnderwaterFog`, 0.085 -> 0.03 per block, ~3x the visibility); the underwater light shafts march 56 blocks (was 30) with gentler falloff, colour grading unchanged

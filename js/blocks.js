@@ -88,6 +88,20 @@ export const TILE_NAMES = [
   "coral",
   "seagrass",
   "kelp",
+  // Round 4 Part B: sand's side face (no ripples), and the pixel-art plants
+  // drawn as instanced cards near the player (grass.js).
+  "sand_side",
+  "grass_tuft",
+  "grass_tuft_b",
+  "fern",
+  "reed_bottom",
+  "reed_top",
+  "cattail_bottom",
+  "cattail_top",
+  "lily_pad",
+  "flower_blue",
+  "flower_white",
+  "flower_pink",
 ];
 export const TILE = Object.freeze(Object.fromEntries(TILE_NAMES.map((name, i) => [name, i])));
 
@@ -126,7 +140,7 @@ const DEFS = {
   [BLOCK.GRASS]: { name: "Grass Block", faces: { top: "grass_top", bottom: "dirt", side: "grass_side" }, hardness: 0.6, tool: "shovel", sound: "grass" },
   [BLOCK.DIRT]: { name: "Dirt", faces: "dirt", hardness: 0.5, tool: "shovel", sound: "dirt" },
   [BLOCK.STONE]: { name: "Stone", faces: "stone", hardness: 1.5, tool: "pickaxe", minTier: 1 },
-  [BLOCK.SAND]: { name: "Sand", faces: "sand", hardness: 0.5, tool: "shovel", sound: "sand", gravity: true },
+  [BLOCK.SAND]: { name: "Sand", faces: { top: "sand", bottom: "sand", side: "sand_side" }, hardness: 0.5, tool: "shovel", sound: "sand", gravity: true },
   [BLOCK.WATER]: {
     name: "Water",
     faces: "water",
