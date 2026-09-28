@@ -45,7 +45,10 @@ mode, your position, inventory and health.
 | Drop the held item (whole stack with `Ctrl`) | `Q` |
 | Fly up / down (Creative) | Double-tap `Space` to toggle, then `Space` / `Shift` |
 | Pick the targeted block (Creative) | Middle click |
-| Pause menu (render distance, graphics, game mode) | `Esc` |
+| Cycle camera (1st person / 3rd person behind / 3rd person front) | `F5` |
+| Hide/show the HUD | `F1` |
+| Debug overlay (position, chunk, biome, light, time, mobs) | `F3` |
+| Pause menu (render distance, graphics, camera, time of day, difficulty...) | `Esc` |
 
 **In the inventory screen:** left click picks up, puts down or swaps a stack;
 right click takes half or places one; `Shift` + click moves a stack between
@@ -68,7 +71,11 @@ make right now highlighted: click one to fill the grid.
   gives 4 stone, 4 gravel + coal gives 4 bricks). Tools come in wood, stone,
   iron and diamond: sword, pickaxe, axe and shovel.
 - **Caves and ores:** caves wind underground with coal, iron, gold and, deep
-  down, diamonds. Glowing lumen crystals grow on deep cave ceilings.
+  down, diamonds. Glowing lumen crystals grow on deep cave ceilings, and
+  deep pools of glowing lava light the darkness (and will hurt you if you
+  fall in — keep your distance, or bridge over it).
+- **Difficulty** (pause menu): Peaceful (no hostile mobs spawn), Easy, Normal
+  or Hard, scaling how much hostile mobs hurt you.
 - **Dying** shows a big red **NOOB!** with the cause. You drop everything
   where you died and respawn at the world spawn with full health.
 
@@ -79,30 +86,49 @@ make right now highlighted: click one to fill the grid.
 - **Hoplet:** a striped little hopper with tall ears. Quick to flee.
 - **Mossback:** a slow, moss-covered tortoise that hides in its shell when
   hit.
+- **Cow, pig and chicken** wander meadows like the other animals, each
+  dropping their own raw meat.
 - **Zombie:** comes out in the dark (at night, or in unlit caves), chases
   you, and hits hard. Zombies burn in daylight. Swords recharge between
   swings (watch the bar under the crosshair); hit while falling for a
   critical hit.
+- **Skeleton:** shoots real, gravity-arced arrows from range.
+- **Spider:** climbs straight up walls to chase you.
+- **Villagers** wander near rare villages and won't fight back. Butterflies
+  drift over flowers, fish and schools of them swim in deep water, and
+  parrots fly through jungle canopies — all purely decorative.
+- Mob spawning can be turned off entirely in the pause menu (existing
+  creatures stay).
 
 ### Weapons
 
-Weapons sit in the hotbar like any other item (all three are in the
-Creative inventory, and can be crafted in Survival). With one selected,
-right click uses it instead of placing a block. There's no ammo and no
-reloading.
+Weapons sit in the hotbar like any other item (all six are in the Creative
+inventory, and can be crafted in Survival; a new Survival game starts with
+one of each already in slots 1-6). With one selected, right click uses it
+instead of placing a block. There's no ammo and no reloading, and each
+explosive's blast size can be tuned independently in the pause menu.
 
 - **Grenade** (1 iron ingot + 2 coal): hold right click to charge the throw
   (the bar under the crosshair fills in about 1.5 s), release to throw. A
   quick click lobs it a few blocks, a full charge about 25. It bounces and
   rolls, blinks, and explodes after 5 seconds, or at once if it hits a
-  creature. The blast carves a crater (below sea level the water floods
-  in), throws debris, fire and smoke, and knocks everything back.
+  creature. The blast carves a wide, flattish crater (below sea level the
+  water floods in), throws debris, fire and smoke, and knocks everything
+  back.
 - **Pistol** (3 iron ingots + 1 plank): hitscan shots with a muzzle flash
   and recoil. Bullets spark and leave holes in blocks, and hurt and push
   back creatures.
 - **Bazooka** (8 iron ingots around a grenade): a fast rocket with a smoke
-  trail that explodes on terrain or creatures, with five times a grenade's
-  blast radius. It can hit you too: keep your distance.
+  trail that explodes on terrain or creatures. It can hit you too: keep
+  your distance.
+- **Machine gun** (iron ingots and sticks): hold right click for automatic
+  fire, with tracers and climbing recoil that settles when you let go.
+- **Sniper rifle** (iron, a diamond and a stick): right click toggles a
+  zoomed scope with an overlay; left click fires a single high-damage,
+  very-long-range shot.
+- **Airstrike designator** (iron, gold and coal): aim to trace a laser on
+  the ground, then right click to call in a delayed rain of meteors on the
+  target (and a few nearby).
 
 Explosions shake the camera and sound quieter, more muffled and later the
 farther away they are. Sand and gravel fall when the ground under them is
@@ -133,14 +159,34 @@ tiles, so you can see hills, lakes and forests to the horizon. Picking a
 preset also sets its suggested render distance (Low 12, Medium 16, High and
 Ultra 20), which you can still change with the slider.
 
+Underground, lava pools glow, light their surroundings and shimmer the air
+above them with rising embers; torches flicker like a real flame, both in
+their own glow and in the light they throw on nearby blocks.
+
+### More settings (pause menu)
+
+Also saved in your browser: field of view, mouse sensitivity, a time-of-day
+slider with a lock (freezes the day/night cycle wherever you leave it),
+difficulty, a mob-spawning toggle, and four independent volume sliders
+(master, effects, mobs, explosions).
+
 ## The world
 
-Rolling hills, beaches and lakes, with caves, ores and glowing crystals
-underground. Forests and meadows alternate: oaks with irregular crowns and
-branches, pale birch groves, dark pine woods on the hills, and rare huge old
-oaks with roots spreading over the ground. On High and Ultra the ground
-comes alive with grass, reeds along the water, ferns in the shade of trees,
-and flowers.
+Eighteen biomes blend into each other across large-scale continents,
+mountain ranges and rivers: plains, forests, birch and dark forests, taiga
+and snowy taiga, snowy plains, desert, savanna, jungle, swamp, badlands,
+mountains, beaches, rivers, and ordinary, warm and deep oceans. Forests and
+meadows vary in density with the biome: oaks with irregular crowns and
+branches, pale birch groves, dark pine woods on the hills, willows leaning
+over swamp water, and rare huge old oaks with roots spreading over the
+ground. Hanging vines drape from canopies in jungles and swamps. Warm oceans
+grow coral reefs, seagrass and kelp (seagrass and kelp grow more sparsely
+in ordinary oceans too); swamp puddles grow lily pads. Rare villages appear
+with a couple of houses, gravel paths, a farm plot and wandering villagers.
+Water flows: it spreads into craters and fills holes dug beneath it instead
+of floating. On High and Ultra the ground comes alive with dense, lush
+grass, reeds and cattails along the water, ferns in the shade of trees, and
+flowers.
 
 ## Sharing a world
 
