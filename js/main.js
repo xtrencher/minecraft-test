@@ -347,9 +347,13 @@ const DEATH_MESSAGES = {
   void: "Fell out of the world",
   grenade: "Blown up by your own grenade",
   bazooka: "Blown up by your own bazooka",
+  airstrike: "Blown up by your own airstrike",
   grenade_fall: "Sent flying by your own grenade",
   bazooka_fall: "Sent flying by your own bazooka",
+  airstrike_fall: "Sent flying by your own airstrike",
   zombie: "Killed by a zombie",
+  skeleton: "Shot by a skeleton",
+  spider: "Killed by a spider",
 };
 let lastBlastHitTime = -Infinity;
 let lastBlastSource = "grenade";

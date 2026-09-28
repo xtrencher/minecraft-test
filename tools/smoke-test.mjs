@@ -1070,7 +1070,10 @@ try {
     const boom = await waitForExplosion(prev);
     console.log(`        removed ${boom.removed} blocks, farthest ${boom.maxDist.toFixed(2)} from center, carve ${boom.carveMs.toFixed(1)} ms`);
     console.log(`        particles: ${boom.debris} debris, ${boom.smoke} smoke, ${boom.glow} fire/sparks; shake trauma ${boom.trauma.toFixed(2)}; player vy ${boom.playerVy.toFixed(1)}`);
-    assert(boom.removed > 300, `crater too small: ${boom.removed} blocks`);
+    // Craters are now flattened ellipsoids (~half the vertical reach of a
+    // sphere), so the removed-block count is naturally lower (and varies
+    // run to run with the random lumpiness) than the old spherical crater.
+    assert(boom.removed > 150, `crater too small: ${boom.removed} blocks`);
     assert(boom.maxDist > 6 && boom.maxDist < 8.2, `crater reach ${boom.maxDist.toFixed(2)} outside the expected ~7 +/- 0.6`);
     assert(boom.carveMs < 150, `carving took ${boom.carveMs.toFixed(1)} ms`);
     assert(boom.debris > 50 && boom.smoke > 30 && boom.glow > 60, "expected a big particle burst");
@@ -2064,6 +2067,89 @@ try {
     await page.waitForFunction(() => window.__voxelands.gameState === "playing", null, { timeout: 10000 });
   });
 
+  await check("skeleton: fires real arrows with gravity that damage the player from range", async () => {
+    const a = await mobArena(-90, 30);
+    const r = await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      v.player.health = 20;
+      v.player._invulnerable = 0;
+      const sk = v.mobs.spawn("skeleton", x + 0.5, y + 1, z - 6.5);
+      sk.ai.state = "idle";
+      sk.ai.timer = 999;
+      sk.attackCooldown = 0;
+      return { hpBefore: v.player.health };
+    }, a);
+    await page.waitForFunction(() => window.__voxelands.mobs.arrows.length > 0, null, { timeout: 20000, polling: 50 });
+    // Gravity integration runs every frame regardless of the archer's
+    // upward aim-compensation arc, so check velocity decay rather than net
+    // height (at short range the arrow can still be rising in an arbitrary
+    // sample window, since it's aimed to arc down onto the target).
+    const vy0 = await page.evaluate(() => window.__voxelands.mobs.arrows[0]?.vel.y ?? null);
+    await page.waitForTimeout(150);
+    const vy1 = await page.evaluate(() => window.__voxelands.mobs.arrows[0]?.vel.y ?? null);
+    if (vy0 !== null && vy1 !== null) assert(vy1 < vy0, `the arrow's vertical velocity should decay under gravity: ${vy0} -> ${vy1}`);
+    await page.waitForFunction(() => window.__voxelands.player.health < 20, null, { timeout: 15000, polling: 50 });
+    const hpAfter = await page.evaluate(() => window.__voxelands.player.health);
+    console.log(`        skeleton shot an arrow (vel.y ${vy0?.toFixed(2)} -> ${vy1?.toFixed(2)}); player health ${r.hpBefore} -> ${hpAfter}`);
+    assert(hpAfter < 20, "the skeleton's arrow should have hurt the player");
+  });
+
+  await check("spider: climbs straight up a wall while chasing the player", async () => {
+    const a = await mobArena(-90, 60);
+    const r = await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      const e = [];
+      for (let dx = -1; dx <= 1; dx++) for (let dy = 1; dy <= 8; dy++) e.push(x + dx, y + dy, z - 4, 3); // an 8-tall wall
+      v.world.setBlocks(e);
+      const sp = v.mobs.spawn("spider", x + 0.5, y + 1, z - 2.5);
+      sp.ai.state = "idle";
+      sp.ai.timer = 999;
+      v.player.position.set(x + 0.5, y + 1, z + 6.5); // on the far side of the wall
+      v.player.yaw = Math.PI;
+      v.player.pitch = 0;
+      window.__spider = sp;
+      return { y0: sp.pos.y };
+    }, a);
+    await page.waitForFunction((y0) => window.__spider.pos.y > y0 + 2, r.y0, { timeout: 30000, polling: 50 });
+    const y1 = await page.evaluate(() => window.__spider.pos.y);
+    console.log(`        spider climbed from y=${r.y0.toFixed(2)} to y=${y1.toFixed(2)}`);
+    assert(y1 > r.y0 + 2, `spider should climb the wall (only reached y=${y1.toFixed(2)})`);
+  });
+
+  await check("cow, pig and chicken spawn and behave like the other passive animals", async () => {
+    const a = await mobArena(-90, 90);
+    await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      v.mobs.spawn("cow", x + 0.5, y + 1, z + 0.5);
+      v.mobs.spawn("pig", x + 2.5, y + 1, z + 0.5);
+      v.mobs.spawn("chicken", x - 2.5, y + 1, z + 0.5);
+    }, a);
+    await page.waitForTimeout(1500);
+    const alive = await page.evaluate(() => window.__voxelands.mobs.mobs.filter((m) => !m.dead).map((m) => m.kind));
+    console.log(`        alive after 1.5s: ${alive.join(", ")}`);
+    assert(alive.includes("cow") && alive.includes("pig") && alive.includes("chicken"), `expected all three animals alive, got ${JSON.stringify(alive)}`);
+  });
+
+  await check("butterflies and fish fly/swim in place without falling under gravity", async () => {
+    const a = await mobArena(-90, -30);
+    const r = await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      const b = v.mobs.spawn("butterfly", x + 0.5, y + 3, z + 0.5);
+      const f = v.mobs.spawn("fish", x + 0.5, y + 2, z + 2.5);
+      return { by0: b.pos.y, fy0: f.pos.y };
+    }, a);
+    await page.waitForTimeout(2000);
+    const r2 = await page.evaluate(() => {
+      const v = window.__voxelands;
+      const b = v.mobs.mobs.find((m) => m.kind === "butterfly" && !m.dead);
+      const f = v.mobs.mobs.find((m) => m.kind === "fish" && !m.dead);
+      return { by1: b ? b.pos.y : null, fy1: f ? f.pos.y : null };
+    });
+    console.log(`        butterfly y ${r.by0.toFixed(2)} -> ${r2.by1 === null ? "?" : r2.by1.toFixed(2)}; fish y ${r.fy0.toFixed(2)} -> ${r2.fy1 === null ? "?" : r2.fy1.toFixed(2)}`);
+    assert(r2.by1 !== null && r2.by1 > r.by0 - 1.5, "a butterfly should not plummet under gravity");
+    assert(r2.fy1 !== null && r2.fy1 > r.fy0 - 1.5, "a fish should not plummet under gravity");
+  });
+
   await check("mob caps, despawning, daylight burning, explosion damage, creative immunity", async () => {
     const a = await mobArena(-60, 60);
     const s = await page.evaluate(({ x, y, z }) => {
@@ -2114,7 +2200,7 @@ try {
       return { hostile, passive, farGone, burned, blasted, ignored };
     }, a);
     console.log(`        after 600 spawn ticks at night: ${s.hostile} zombies, ${s.passive} animals`);
-    assert(s.hostile > 0 && s.hostile <= 10 && s.passive <= 14, `mob caps: ${JSON.stringify(s)}`);
+    assert(s.hostile > 0 && s.hostile <= 12 && s.passive <= 16, `mob caps: ${JSON.stringify(s)}`);
     assert(s.farGone && s.burned && s.blasted && s.ignored, `mob rules: ${JSON.stringify(s)}`);
   });
 

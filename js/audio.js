@@ -68,6 +68,33 @@ const VOICES = {
     death: [{ f0: 130, f1: 48, d: 1.3, v: 0.4, formants: [[440, 5, 1], [820, 6, 0.5]], vib: 0.05, breath: 0.4 }],
     attack: [{ f0: 190, f1: 140, d: 0.22, v: 0.36, formants: [[620, 4, 1], [1150, 5, 0.6]], vib: 0.02, breath: 0.5 }],
   },
+  skeleton: {
+    // A dry, rattling clatter of bone on bone.
+    idle: [{ noise: { type: "bandpass", f: 2800, q: 4, d: 0.06, v: 0.22, n: 3, spread: 0.05, jitter: 0.4 } }],
+    hurt: [{ noise: { type: "bandpass", f: 3200, q: 3, d: 0.1, v: 0.3, n: 2, spread: 0.04 } }],
+    death: [{ noise: { type: "bandpass", f: 2000, q: 2, d: 0.5, v: 0.3, n: 4, spread: 0.08 } }],
+  },
+  spider: {
+    // A wet, chittering hiss.
+    idle: [{ noise: { type: "bandpass", f: 4200, q: 5, d: 0.08, v: 0.16, n: 3, spread: 0.06, jitter: 0.5 } }],
+    hurt: [{ noise: { type: "bandpass", f: 3600, q: 3, d: 0.12, v: 0.24 } }],
+    death: [{ noise: { type: "bandpass", f: 2600, q: 2, d: 0.4, v: 0.26 } }],
+  },
+  cow: {
+    idle: [{ f0: 110, f1: 150, d: 0.7, v: 0.3, formants: [[300, 5, 1], [700, 6, 0.5]], vib: 0.04, breath: 0.15 }],
+    hurt: [{ f0: 180, f1: 130, d: 0.25, v: 0.32, formants: [[340, 5, 1]], breath: 0.25 }],
+    death: [{ f0: 140, f1: 50, d: 0.8, v: 0.32, formants: [[300, 5, 1]], breath: 0.3 }],
+  },
+  pig: {
+    idle: [{ f0: 320, f1: 260, d: 0.25, v: 0.22, formants: [[600, 6, 1]], breath: 0.35 }],
+    hurt: [{ f0: 420, f1: 300, d: 0.18, v: 0.26, formants: [[700, 6, 1]], breath: 0.4 }],
+    death: [{ f0: 350, f1: 150, d: 0.4, v: 0.26, formants: [[600, 5, 1]], breath: 0.4 }],
+  },
+  chicken: {
+    idle: [{ noise: { type: "bandpass", f: 1800, q: 5, d: 0.05, v: 0.16, n: 2, spread: 0.06, jitter: 0.5 } }],
+    hurt: [{ noise: { type: "bandpass", f: 2200, q: 4, d: 0.08, v: 0.2 } }],
+    death: [{ noise: { type: "bandpass", f: 1600, q: 3, d: 0.2, v: 0.2 } }],
+  },
 };
 
 export class Audio {

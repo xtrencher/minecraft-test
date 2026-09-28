@@ -711,10 +711,12 @@ The codebase grew from ~10,800 lines of JavaScript in 34 modules to ~15,200 line
 - [x] Villages: js/village.js (rare grid-cell placement, flattened pad, 2 houses, gravel paths, a farm plot) + wandering villager NPCs (mobs.js/mob-models.js)
 - [x] Default render distance 10 chunks (max still 100)
 
-## 4. Mobs and animals
-- [ ] Hostile: skeleton archers (real arrow projectiles w/ drop), wall-climbing spiders (zombies stay)
-- [ ] Redesigned passive animals: sheep, cows, chickens, pigs, rabbits, fish schools, butterflies, parrots
-- [ ] Mobs spawn farther away, capped count, simplified far AI
+## 4. Mobs and animals — DONE
+- [x] Hostile: skeleton archers with real gravity-affected arrow projectiles (js/mobs.js `_shootArrow`/`_updateArrows`) that damage the player; wall-climbing spiders (previous-frame `blocked` flag drives a climb velocity); zombies unchanged
+- [x] Passive animals, original designs (js/mob-models.js + js/mobs.js): fluffalo (sheep), hoplet (rabbit), mossback already existed; added cow, pig, chicken, plus butterflies over flowers, schools of fish (3-5 at once) in deep-enough water, and parrots in jungle biomes — all with dedicated box-model rigs
+- [x] Mobs spawn farther away (hostiles 28-118 blocks out, seed/ongoing passive spawns pushed out too), overall mob cap (MAX_TOTAL_MOBS=34) on top of per-category caps, simplified far AI (mobs beyond FAR_AI_DISTANCE=40 skip steering/pathing, just hop toward the player)
+- Validated via tools/check-mob-models.mjs (all 13 species build cleanly), tools/check-mobs.mjs (arrow gravity+damage, spider climbing, new animals, flyers), and 4 new permanent checks in tools/smoke-test.mjs
+- BUG fix found during validation: skeleton arrows aimed using feet-to-feet height delta while launching from the archer's eye height, so a level shot at a same-height target already cleared the player's hitbox before gravity-compensation pushed it even higher, sailing clean over the player's head; fixed to aim at the player's torso center from the archer's actual launch height
 
 ## 5. Player and settings
 - [ ] F5 camera modes (1st/3rd behind/3rd front) with visible player model

@@ -1,24 +1,48 @@
-// Mobs: three passive animals and one hostile zombie. Handles spawning
-// (animals on sunny grass, zombies in darkness: at night or in caves),
-// despawning, simple AI with obstacle-aware steering (walk toward a goal,
-// hop up 1-block steps, detour around walls, avoid water and cliffs),
-// physics against the voxel world, melee combat both ways, damage from Blast
-// Orb explosions and daylight, death animations, drops and sounds.
+// Mobs: passive animals (fluffalo/hoplet/mossback plus cows, pigs, chickens,
+// villagers, and ambient flying/swimming critters) and hostile mobs (zombies,
+// skeleton archers with real dropping arrows, wall-climbing spiders). Handles
+// spawning (animals on sunny grass, zombies/skeletons/spiders in darkness: at
+// night or in caves), despawning, simple AI with obstacle-aware steering
+// (walk toward a goal, hop up 1-block steps, detour around walls, avoid
+// water and cliffs, or climb straight up a wall), physics against the voxel
+// world, melee and ranged combat both ways, damage from explosions and
+// daylight, death animations, drops and sounds. Mobs spawn farther out than
+// a player can reach quickly (real targets at sniper range), with a total
+// mob cap and simplified, cheaper AI for anything far from the player.
 import * as THREE from "three";
 import { BLOCK, IS_SOLID, IS_LEAVES } from "./blocks.js";
 import { ITEM, meleeDamage } from "./items.js";
 import { sweepAxis, rayAabb } from "./physics.js";
 import { createMobModel } from "./mob-models.js";
-import { bindEntityLight } from "./shaders.js";
+import { createEntityMaterial, bindEntityLight } from "./shaders.js";
+import { BIOME } from "./biomes.js";
 
 const GRAVITY = -26;
-const MAX_PASSIVE = 14;
-const MAX_HOSTILE = 10;
+const MAX_PASSIVE = 16;
+const MAX_HOSTILE = 12;
 const SPAWN_INTERVAL = 0.4;
-const DESPAWN_FAR = 128; // blocks: removed at once beyond this
-const HOSTILE_LINGER = 48; // blocks: zombies this far away despawn over time
+const DESPAWN_FAR = 160; // blocks: removed at once beyond this
+const HOSTILE_LINGER = 64; // blocks: hostile mobs this far away despawn over time
 const MOB_INVULNERABLE = 0.4;
 const DEATH_TIME = 0.9;
+const FAR_AI_DISTANCE = 40; // blocks: beyond this, mobs use cheap straight-line movement (no steering)
+const ARROW_SPEED = 24;
+const ARROW_GRAVITY = -16;
+const ARROW_DAMAGE = 3;
+const ARROW_LIFE = 5;
+
+function colorGeometry(geo, colorHex) {
+  const c = new THREE.Color().setHex(colorHex, THREE.SRGBColorSpace);
+  const n = geo.getAttribute("position").count;
+  const arr = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    arr[i * 3] = c.r;
+    arr[i * 3 + 1] = c.g;
+    arr[i * 3 + 2] = c.b;
+  }
+  geo.setAttribute("color", new THREE.Float32BufferAttribute(arr, 3));
+  return geo;
+}
 
 // drops: [itemId, min, max, chance]
 export const SPECIES = {
@@ -42,6 +66,32 @@ export const SPECIES = {
     speed: 1.1, chaseSpeed: 2.9, maxDrop: 3, damage: 3, sight: 20,
     drops: [[ITEM.COAL, 0, 2, 1], [ITEM.IRON_INGOT, 1, 1, 0.08], [ITEM.APPLE, 1, 1, 0.05]],
   },
+  skeleton: {
+    name: "Skeleton", hostile: true, health: 14, r: 0.3, h: 1.95, eye: 1.7,
+    speed: 1.0, chaseSpeed: 1.6, maxDrop: 2, damage: 0, sight: 26, ranged: true,
+    shootMin: 7, shootMax: 22, shootCooldown: 1.6,
+    drops: [[ITEM.COAL, 0, 1, 0.5], [ITEM.STICK, 0, 2, 0.6]],
+  },
+  spider: {
+    name: "Spider", hostile: true, health: 16, r: 0.55, h: 0.9, eye: 0.6,
+    speed: 1.3, chaseSpeed: 2.6, maxDrop: 5, damage: 2, sight: 18, climbs: true, noBurn: true,
+    drops: [[ITEM.STICK, 0, 2, 0.3]],
+  },
+  cow: {
+    name: "Cow", hostile: false, health: 10, r: 0.5, h: 1.4, eye: 1.1,
+    speed: 1.0, fleeSpeed: 2.4, maxDrop: 2, weight: 3,
+    drops: [[ITEM.RAW_MEAT, 1, 3, 1]],
+  },
+  pig: {
+    name: "Pig", hostile: false, health: 8, r: 0.4, h: 0.9, eye: 0.7,
+    speed: 1.2, fleeSpeed: 3.2, maxDrop: 2, weight: 3,
+    drops: [[ITEM.RAW_MEAT, 1, 2, 1]],
+  },
+  chicken: {
+    name: "Chicken", hostile: false, health: 3, r: 0.25, h: 0.6, eye: 0.5,
+    speed: 1.4, fleeSpeed: 3.8, maxDrop: 1, weight: 3,
+    drops: [[ITEM.RAW_MEAT, 1, 1, 1], [ITEM.FLUFF, 0, 1, 0.2]],
+  },
   // Villagers only spawn near a generated village (see _trySpawnVillagers),
   // never as ordinary wildlife (excluded from PASSIVE_KINDS below). They
   // just idle and wander like any other passive mob; no target/chase/flee
@@ -51,10 +101,32 @@ export const SPECIES = {
     speed: 0.9, fleeSpeed: 2, maxDrop: 0, weight: 0,
     drops: [],
   },
+  // Flying/swimming ambient critters: no combat AI (see _thinkFly), spawned
+  // by their own dedicated rules (near flowers, in jungles, in water), never
+  // as ordinary grass wildlife.
+  butterfly: {
+    name: "Butterfly", hostile: false, health: 1, r: 0.12, h: 0.3, eye: 0.15,
+    speed: 1.1, maxDrop: 0, weight: 0, flies: true, homeRadius: 8,
+    drops: [],
+  },
+  parrot: {
+    name: "Parrot", hostile: false, health: 6, r: 0.25, h: 0.6, eye: 0.4,
+    speed: 1.6, maxDrop: 0, weight: 0, flies: true, homeRadius: 14,
+    drops: [],
+  },
+  fish: {
+    name: "Fish", hostile: false, health: 3, r: 0.2, h: 0.3, eye: 0.15,
+    speed: 1.0, maxDrop: 1, weight: 0, flies: true, swims: true, homeRadius: 10,
+    drops: [[ITEM.RAW_MEAT, 1, 1, 0.4]],
+  },
 };
 
-const PASSIVE_KINDS = Object.keys(SPECIES).filter((k) => !SPECIES[k].hostile && k !== "villager");
+const PASSIVE_KINDS = Object.keys(SPECIES).filter((k) => !SPECIES[k].hostile && !SPECIES[k].flies && k !== "villager");
+const HOSTILE_KINDS = Object.keys(SPECIES).filter((k) => SPECIES[k].hostile);
+const FLYER_KINDS = Object.keys(SPECIES).filter((k) => SPECIES[k].flies);
 const VILLAGERS_PER_VILLAGE = 2;
+const MAX_FLYERS = 10;
+const MAX_TOTAL_MOBS = 34;
 const VILLAGE_SEARCH_RADIUS = 40;
 
 // Seconds for a full-strength swing with the given tool.
@@ -83,6 +155,13 @@ export class MobManager {
     this.group = new THREE.Group();
     scene.add(this.group);
     this.mobs = [];
+    this.arrows = [];
+    this._arrowMat = createEntityMaterial("color");
+    this._arrowGeo = colorGeometry(new THREE.CylinderGeometry(0.025, 0.025, 0.7, 5), 0x8a6a3c);
+    this._arrowGeo.rotateX(Math.PI / 2);
+    this._arrowTipGeo = colorGeometry(new THREE.ConeGeometry(0.04, 0.14, 5), 0x555555);
+    this._arrowTipGeo.rotateX(Math.PI / 2);
+    this._arrowTipGeo.translate(0, 0, 0.42);
     this._nextId = 1;
     this._spawnTimer = 0;
     this._seeded = false;
@@ -119,6 +198,9 @@ export class MobManager {
       spec,
       model,
       pos: new THREE.Vector3(x, y, z),
+      home: { x, y, z }, // flying/swimming critters wander within homeRadius of this
+      flyTarget: null,
+      flyTimer: 0,
       vel: new THREE.Vector3(),
       knock: new THREE.Vector3(),
       move: new THREE.Vector2(),
@@ -219,24 +301,27 @@ export class MobManager {
     return PASSIVE_KINDS[0];
   }
 
-  // Zombies appear in darkness: on the surface at night, or in unlit caves.
+  // Hostile mobs appear in darkness: on the surface at night, or in unlit
+  // caves. Spawn well out (up to sniper range) so there are real targets at
+  // a distance, not just underfoot.
   _trySpawnHostile() {
     const p = this.player.position;
     const a = Math.random() * Math.PI * 2;
-    const d = 18 + Math.random() * 26;
+    const d = 28 + Math.random() * 90;
     const x = Math.floor(p.x + Math.cos(a) * d);
     const z = Math.floor(p.z + Math.sin(a) * d);
     if (!this._chunkReady(x, z)) return false;
     const top = this.world.surfaceY(x, z);
     if (top < 0) return false;
+    const kind = HOSTILE_KINDS[Math.floor(Math.random() * HOSTILE_KINDS.length)];
     // Start from the surface or from a random depth, then look for a floor.
     let y = Math.random() < 0.5 ? top + 1 : 2 + Math.floor(Math.random() * Math.max(1, top - 3));
     for (let k = 0; k < 12 && y > 1; k++, y--) {
       const below = this.world.getBlock(x, y - 1, z);
       if (!IS_SOLID[below] || IS_LEAVES[below]) continue;
-      if (!this._freeAt(x, y, z, SPECIES.zombie.h)) continue;
+      if (!this._freeAt(x, y, z, SPECIES[kind].h)) continue;
       if (this._effectiveLight(x, y, z) > 4) return false;
-      this.spawn("zombie", x + 0.5, y, z + 0.5);
+      this.spawn(kind, x + 0.5, y, z + 0.5);
       return true;
     }
     return false;
@@ -262,19 +347,56 @@ export class MobManager {
     this.spawn("villager", sx + 0.5, top + 1, sz + 0.5);
   }
 
+  // Butterflies near flowers, parrots in the jungle canopy, fish in open water.
+  _trySpawnFlyers() {
+    if (this.mobs.filter((m) => !m.dead && m.spec.flies).length >= MAX_FLYERS) return;
+    const p = this.player.position;
+    const a = Math.random() * Math.PI * 2;
+    const d = 10 + Math.random() * 36;
+    const x = Math.floor(p.x + Math.cos(a) * d);
+    const z = Math.floor(p.z + Math.sin(a) * d);
+    if (!this._chunkReady(x, z)) return;
+    const top = this.world.surfaceY(x, z);
+    if (top < 0) return;
+    const above = this.world.getBlock(x, top + 1, z);
+    if (above === BLOCK.FLOWER_RED || above === BLOCK.FLOWER_YELLOW) {
+      if (this.world.lightAt(x + 0.5, top + 2.5, z + 0.5).sky > 8) this.spawn("butterfly", x + 0.5, top + 2, z + 0.5);
+      return;
+    }
+    if (above === BLOCK.WATER) {
+      // Only in open water at least a couple of blocks deep. Fish move in
+      // small schools rather than appearing one at a time.
+      if (this.world.getBlock(x, top + 2, z) !== BLOCK.WATER) return;
+      const room = MAX_FLYERS - this.mobs.filter((m) => !m.dead && m.spec.flies).length;
+      const schoolSize = Math.min(room, 3 + Math.floor(Math.random() * 3));
+      for (let i = 0; i < schoolSize; i++) {
+        const fx = x + (i === 0 ? 0 : Math.floor(Math.random() * 5) - 2);
+        const fz = z + (i === 0 ? 0 : Math.floor(Math.random() * 5) - 2);
+        if (this.world.getBlock(fx, top + 1, fz) !== BLOCK.WATER || this.world.getBlock(fx, top + 2, fz) !== BLOCK.WATER) continue;
+        this.spawn("fish", fx + 0.5, top + 1.5, fz + 0.5);
+      }
+      return;
+    }
+    if (this.world.terrain?.biomeAt(x, z) === BIOME.JUNGLE && this.world.lightAt(x + 0.5, top + 3.5, z + 0.5).sky > 8) {
+      this.spawn("parrot", x + 0.5, top + 3, z + 0.5);
+    }
+  }
+
   _updateSpawning(dt) {
     if (!this.enabled) return;
     if (!this._seeded && this._chunkReady(this.player.position.x, this.player.position.z)) {
       // Start the world with some animals around.
       this._seeded = true;
-      for (let i = 0; i < 40 && this.countOf(false) < MAX_PASSIVE - 2; i++) this._trySpawnPassive(10, 40, MAX_PASSIVE - 2 - this.countOf(false));
+      for (let i = 0; i < 40 && this.countOf(false) < MAX_PASSIVE - 2; i++) this._trySpawnPassive(14, 50, MAX_PASSIVE - 2 - this.countOf(false));
     }
     this._spawnTimer -= dt;
     if (this._spawnTimer > 0) return;
     this._spawnTimer = SPAWN_INTERVAL;
-    if (this.countOf(false) < MAX_PASSIVE && Math.random() < 0.3) this._trySpawnPassive(24, 56);
+    if (this.mobs.length >= MAX_TOTAL_MOBS) return; // an overall cap on top of the per-category ones
+    if (this.countOf(false) < MAX_PASSIVE && Math.random() < 0.3) this._trySpawnPassive(30, 80);
     if (this.countOf(true) < MAX_HOSTILE) this._trySpawnHostile();
     this._trySpawnVillagers();
+    if (Math.random() < 0.4) this._trySpawnFlyers();
   }
 
   // ---------- Steering ----------
@@ -311,6 +433,9 @@ export class MobManager {
       const p = this._probe(m, x, z);
       if (p === "open" || (p === "water" && m.inWater)) return { x, z, jump: false };
       if (p === "step") return { x, z, jump: true };
+      // Spiders climb straight up whatever wall is in front of them instead
+      // of detouring (see the climb branch in _physics).
+      if (p === "wall" && m.spec.climbs) return { x, z, jump: false };
       return null;
     };
     if (m.ai.detour > 0) {
@@ -345,7 +470,7 @@ export class MobManager {
     return !p.dead && !p.creative;
   }
 
-  _think(m, dt) {
+  _think(m, dt, dist = 0) {
     const ai = m.ai;
     const p = this.player.position;
     const dx = p.x - m.pos.x;
@@ -364,13 +489,29 @@ export class MobManager {
       else ai.target = false;
       if (ai.target) {
         lookAtPlayer = true;
-        if (distH > 0.6) {
+        if (m.spec.ranged) {
+          // Keeps a comfortable shooting distance instead of closing to melee.
+          if (distH < m.spec.shootMin) {
+            goalX = -dx / distH;
+            goalZ = -dz / distH;
+            speed = m.spec.speed;
+          } else if (distH > m.spec.shootMax) {
+            goalX = dx / distH;
+            goalZ = dz / distH;
+            speed = m.spec.chaseSpeed;
+          }
+          if (m.stagger <= 0 && m.attackCooldown <= 0 && distH >= m.spec.shootMin * 0.6 && distH <= m.spec.shootMax * 1.3 && Math.abs(dy) < 10) {
+            this._shootArrow(m, dx, dy, dz);
+            m.attackCooldown = m.spec.shootCooldown;
+            m.attack = 0;
+          }
+        } else if (distH > 0.6) {
           goalX = dx / distH;
           goalZ = dz / distH;
           speed = m.spec.chaseSpeed;
+          // Swing at the player when in reach (not while reeling from a hit).
+          if (m.stagger <= 0 && distH < m.spec.r + 1.05 && Math.abs(dy) < 1.6 && m.attackCooldown <= 0) this._attackPlayer(m, dx / (distH || 1), dz / (distH || 1));
         }
-        // Swing at the player when in reach (not while reeling from a hit).
-        if (m.stagger <= 0 && distH < m.spec.r + 1.05 && Math.abs(dy) < 1.6 && m.attackCooldown <= 0) this._attackPlayer(m, dx / (distH || 1), dz / (distH || 1));
       }
     }
 
@@ -410,14 +551,21 @@ export class MobManager {
 
     let jump = false;
     if (speed > 0) {
-      const s = this._steer(m, goalX, goalZ);
-      if (s) {
-        goalX = s.x;
-        goalZ = s.z;
-        jump = s.jump;
+      if (dist > FAR_AI_DISTANCE) {
+        // Simplified AI far from the player: skip the per-step obstacle
+        // probing (cheap straight-line movement; physics still stops it at
+        // walls, it just won't detour or step up on its own out there).
+        jump = m.spec.hop;
       } else {
-        speed = 0;
-        if (ai.state === "wander") ai.timer = 0; // try something else
+        const s = this._steer(m, goalX, goalZ);
+        if (s) {
+          goalX = s.x;
+          goalZ = s.z;
+          jump = s.jump;
+        } else {
+          speed = 0;
+          if (ai.state === "wander") ai.timer = 0; // try something else
+        }
       }
     }
     // In water: keep paddling, and climb out onto the bank.
@@ -455,6 +603,144 @@ export class MobManager {
     return m.pos.distanceTo(this.player.position);
   }
 
+  // ---------- Ranged combat (skeleton arrows) ----------
+
+  _shootArrow(m, dx, dy, dz) {
+    // dx/dy/dz are feet-to-feet; aim from the archer's actual eye height at
+    // the player's torso center (matches the hitbox center in
+    // _arrowHitsPlayer), not at the player's feet, or a level shot from an
+    // elevated eye already clears a same-height target's hitbox before any
+    // gravity compensation is even added.
+    const vdy = dy + 0.9 - m.spec.eye;
+    const dist = Math.hypot(dx, vdy, dz) || 1;
+    const t = Math.max(0.35, dist / ARROW_SPEED);
+    // Aims a little high to help compensate for the drop over the flight.
+    const riseComp = -0.5 * ARROW_GRAVITY * t * 0.55;
+    const dir = new THREE.Vector3(dx, vdy + riseComp, dz).normalize();
+    const start = m.pos.clone();
+    start.y += m.spec.eye;
+    start.addScaledVector(dir, m.spec.r + 0.3);
+    const mesh = new THREE.Group();
+    mesh.add(new THREE.Mesh(this._arrowGeo, this._arrowMat), new THREE.Mesh(this._arrowTipGeo, this._arrowMat));
+    this.group.add(mesh);
+    const a = { pos: start, vel: dir.multiplyScalar(ARROW_SPEED), mesh, age: 0, light: { sky: 15, block: 0 } };
+    bindEntityLight(mesh, () => a.light);
+    mesh.position.copy(start);
+    this.arrows.push(a);
+    this.audio.playSwing?.();
+  }
+
+  // Whether the player's body is hit somewhere along the arrow's step this
+  // frame; returns the distance along the step, or null.
+  _arrowHitsPlayer(pos, dir, maxDist) {
+    if (this.player.dead || this.player.creative) return null;
+    const p = this.player.position;
+    const samples = 4;
+    for (let s = 1; s <= samples; s++) {
+      const t = (maxDist * s) / samples;
+      const x = pos.x + dir.x * t;
+      const y = pos.y + dir.y * t;
+      const z = pos.z + dir.z * t;
+      if (Math.abs(x - p.x) < 0.35 && Math.abs(z - p.z) < 0.35 && y > p.y - 0.1 && y < p.y + 1.9) return t;
+    }
+    return null;
+  }
+
+  _updateArrows(dt) {
+    const w = this.world;
+    for (let i = this.arrows.length - 1; i >= 0; i--) {
+      const a = this.arrows[i];
+      a.age += dt;
+      a.vel.y += ARROW_GRAVITY * dt;
+      const step = a.vel.clone().multiplyScalar(dt);
+      const len = step.length() || 0.0001;
+      const dir = step.clone().divideScalar(len);
+      const blockHit = w.raycast(a.pos, dir, len, { solidOnly: true });
+      const playerT = this._arrowHitsPlayer(a.pos, dir, blockHit ? blockHit.distance : len);
+      if (playerT !== null) {
+        this.player.damage(ARROW_DAMAGE, "skeleton");
+        this.player.applyImpulse(this._tmp.set(dir.x * 4, 2, dir.z * 4));
+        this.group.remove(a.mesh);
+        this.arrows.splice(i, 1);
+        continue;
+      }
+      if (blockHit) {
+        this.group.remove(a.mesh);
+        this.arrows.splice(i, 1);
+        continue;
+      }
+      a.pos.add(step);
+      a.mesh.position.copy(a.pos);
+      a.mesh.lookAt(a.pos.x + dir.x, a.pos.y + dir.y, a.pos.z + dir.z);
+      a.mesh.rotateY(Math.PI);
+      a.light = w.lightAt(a.pos.x, a.pos.y, a.pos.z);
+      if (a.age > ARROW_LIFE || a.pos.y < -20) {
+        this.group.remove(a.mesh);
+        this.arrows.splice(i, 1);
+      }
+    }
+  }
+
+  // ---------- Flying/swimming critters ----------
+
+  // Butterflies, parrots and fish: no combat, just a gentle drift between
+  // random points within homeRadius of where they spawned. Cheap by design
+  // (no steering/probing): if a chosen target turns out to be inside solid
+  // ground, the physics sweep just stops it and a new target is picked.
+  _thinkFly(m, dt) {
+    const spec = m.spec;
+    m.flyTimer -= dt;
+    if (!m.flyTarget || m.flyTimer <= 0 || m.blocked) {
+      const r = spec.homeRadius;
+      const a = Math.random() * Math.PI * 2;
+      const d = Math.random() * r;
+      m.flyTarget = {
+        x: m.home.x + Math.cos(a) * d,
+        y: spec.swims ? m.home.y + (Math.random() - 0.5) * Math.min(3, r * 0.4) : m.home.y + 1 + Math.random() * 3,
+        z: m.home.z + Math.sin(a) * d,
+      };
+      m.flyTimer = 2 + Math.random() * 3;
+    }
+    const dx = m.flyTarget.x - m.pos.x;
+    const dy = m.flyTarget.y - m.pos.y;
+    const dz = m.flyTarget.z - m.pos.z;
+    const dist = Math.hypot(dx, dy, dz) || 1;
+    const speed = dist > 0.4 ? spec.speed : 0;
+    m.yaw += angleDiff(Math.atan2(dx, dz), m.yaw) * Math.min(1, dt * 2);
+    m.headYaw = 0;
+    m.headPitch = 0;
+    return { x: dx / dist, y: dy / dist, z: dz / dist, speed };
+  }
+
+  _physicsFly(m, dt, want) {
+    const w = this.world;
+    const spec = m.spec;
+    const k = Math.min(1, dt * 2.5);
+    m.vel.x += (want.x * want.speed - m.vel.x) * k;
+    m.vel.y += (want.y * want.speed - m.vel.y) * k;
+    m.vel.z += (want.z * want.speed - m.vel.z) * k;
+    const ax = m.vel.x * dt;
+    const dx = sweepAxis(w, m.pos, spec.r, spec.h, "x", ax);
+    m.pos.x += dx;
+    const ay = m.vel.y * dt;
+    const dy = sweepAxis(w, m.pos, spec.r, spec.h, "y", ay);
+    m.pos.y += dy;
+    const az = m.vel.z * dt;
+    const dz = sweepAxis(w, m.pos, spec.r, spec.h, "z", az);
+    m.pos.z += dz;
+    m.blocked = Math.abs(dx - ax) > 1e-6 || Math.abs(dy - ay) > 1e-6 || Math.abs(dz - az) > 1e-6;
+    m.onGround = false;
+    m.inWater = w.getBlock(Math.floor(m.pos.x), Math.floor(m.pos.y), Math.floor(m.pos.z)) === BLOCK.WATER;
+    // A fish stranded out of water heads home (its spawn point, in water) fast.
+    if (spec.swims && !m.inWater) {
+      m.flyTarget = { x: m.home.x, y: m.home.y, z: m.home.z };
+      m.flyTimer = Math.max(m.flyTimer, 0.5);
+    }
+    const speed = Math.hypot(m.vel.x, m.vel.z);
+    m.walk = Math.min(1, speed / 2);
+    m.walkPhase += dt * 3;
+  }
+
   // ---------- Physics ----------
 
   _physics(m, dt, want) {
@@ -479,6 +765,11 @@ export class MobManager {
     if (m.inWater) {
       m.vel.y += (waterBody ? 16 : -12) * dt;
       m.vel.y = THREE.MathUtils.clamp(m.vel.y, -3, 2.4);
+    } else if (spec.climbs && m.blocked && speed > 0 && !m.onGround) {
+      // Pressed against a wall while trying to move: climb it instead of
+      // falling (m.blocked is last frame's result, so this lags one frame
+      // behind actually touching the wall, close enough for a spider).
+      m.vel.y = 3.4;
     } else {
       m.vel.y = Math.max(m.vel.y + GRAVITY * dt, -40);
     }
@@ -732,6 +1023,7 @@ export class MobManager {
   update(dt) {
     this.time += dt;
     this._updateSpawning(dt);
+    this._updateArrows(dt);
     const p = this.player.position;
     const daylight = this.sky.daylight;
 
@@ -760,10 +1052,15 @@ export class MobManager {
           this._remove(i);
           continue;
         }
-        const want = this._think(m, dt);
-        this._physics(m, dt, want);
-        this._sounds(m, dt);
-        this._daylight(m, dt, daylight);
+        if (m.spec.flies) {
+          const want = this._thinkFly(m, dt);
+          this._physicsFly(m, dt, want);
+        } else {
+          const want = this._think(m, dt, dist);
+          this._physics(m, dt, want);
+          this._sounds(m, dt);
+          this._daylight(m, dt, daylight);
+        }
       }
       const l = this.world.lightAt(m.pos.x, m.pos.y + m.spec.h * 0.6, m.pos.z);
       m.light.sky = l.sky;
@@ -783,7 +1080,7 @@ export class MobManager {
 
   // Zombies burn in direct daylight.
   _daylight(m, dt, daylight) {
-    m.burning = m.spec.hostile && daylight > 0.6 && m.light.sky >= 13 && !m.inWater;
+    m.burning = m.spec.hostile && !m.spec.noBurn && daylight > 0.6 && m.light.sky >= 13 && !m.inWater;
     if (!m.burning) return;
     m.burnTimer += dt;
     if (m.burnTimer >= 1) {
