@@ -704,12 +704,12 @@ The codebase grew from ~10,800 lines of JavaScript in 34 modules to ~15,200 line
 - [x] BUG: floating water after explosions (js/watersim.js reacts to edits and flows down/into holes)
 - [x] Source + flowing water blocks that spread/fall, fill craters, throttled updates (budgeted per frame, MAX_FLOW_DISTANCE=4)
 
-## 3. World generation
-- [ ] Full biome set with smooth blending + realistic scale
-- [ ] Variable forest density (open/sparse/dense)
-- [ ] Warm ocean coral reefs, seagrass, kelp
-- [ ] Villages: houses, paths, farms, walking villagers
-- [ ] Default render distance 10 chunks (keep max)
+## 3. World generation — DONE
+- [x] Full biome set (js/biomes.js: temperature/moisture climate fields + height/mountain/river) with organic (noise-contour) blending and large-scale continents/mountain ranges/rivers (js/terrain.js `_terrainInfo`)
+- [x] Variable forest density (open/sparse/dense noise field, true zero in open meadows, per-biome multipliers)
+- [x] Warm ocean coral reefs, seagrass, kelp (new blocks + placement in terrain.js)
+- [x] Villages: js/village.js (rare grid-cell placement, flattened pad, 2 houses, gravel paths, a farm plot) + wandering villager NPCs (mobs.js/mob-models.js)
+- [x] Default render distance 10 chunks (max still 100)
 
 ## 4. Mobs and animals
 - [ ] Hostile: skeleton archers (real arrow projectiles w/ drop), wall-climbing spiders (zombies stay)

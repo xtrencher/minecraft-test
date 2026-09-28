@@ -224,7 +224,7 @@ export class World {
       if (c.meshed) this.editRemeshQueue.add(c);
     }
     if (recordEdit && this.onEdit) this.onEdit();
-    for (const fn of this.changeListeners) fn(changed);
+    for (const fn of this.changeListeners) fn(changed, { recordEdit });
     return changed.length / 3;
   }
 

@@ -42,9 +42,20 @@ export const SPECIES = {
     speed: 1.1, chaseSpeed: 2.9, maxDrop: 3, damage: 3, sight: 20,
     drops: [[ITEM.COAL, 0, 2, 1], [ITEM.IRON_INGOT, 1, 1, 0.08], [ITEM.APPLE, 1, 1, 0.05]],
   },
+  // Villagers only spawn near a generated village (see _trySpawnVillagers),
+  // never as ordinary wildlife (excluded from PASSIVE_KINDS below). They
+  // just idle and wander like any other passive mob; no target/chase/flee
+  // logic runs since they have no `sight`.
+  villager: {
+    name: "Villager", hostile: false, health: 10, r: 0.3, h: 1.85, eye: 1.6,
+    speed: 0.9, fleeSpeed: 2, maxDrop: 0, weight: 0,
+    drops: [],
+  },
 };
 
-const PASSIVE_KINDS = Object.keys(SPECIES).filter((k) => !SPECIES[k].hostile);
+const PASSIVE_KINDS = Object.keys(SPECIES).filter((k) => !SPECIES[k].hostile && k !== "villager");
+const VILLAGERS_PER_VILLAGE = 2;
+const VILLAGE_SEARCH_RADIUS = 40;
 
 // Seconds for a full-strength swing with the given tool.
 function attackCooldown(tool) {
@@ -231,6 +242,26 @@ export class MobManager {
     return false;
   }
 
+  // If the player is near a generated village, keep it populated with a
+  // couple of villagers (walking around, original design, no combat AI).
+  _trySpawnVillagers() {
+    const villages = this.world.terrain?.villages;
+    if (!villages) return;
+    const p = this.player.position;
+    const village = villages.nearestVillage(p.x, p.z, VILLAGE_SEARCH_RADIUS);
+    if (!village) return;
+    const nearby = this.mobs.filter((m) => !m.dead && m.kind === "villager" && Math.hypot(m.pos.x - village.x, m.pos.z - village.z) < 20).length;
+    if (nearby >= VILLAGERS_PER_VILLAGE) return;
+    const ang = Math.random() * Math.PI * 2;
+    const d = 3 + Math.random() * 8;
+    const sx = Math.floor(village.x + Math.cos(ang) * d);
+    const sz = Math.floor(village.z + Math.sin(ang) * d);
+    if (!this._chunkReady(sx, sz)) return;
+    const top = this.world.surfaceY(sx, sz);
+    if (top < 0 || !this._freeAt(sx, top + 1, sz, SPECIES.villager.h)) return;
+    this.spawn("villager", sx + 0.5, top + 1, sz + 0.5);
+  }
+
   _updateSpawning(dt) {
     if (!this.enabled) return;
     if (!this._seeded && this._chunkReady(this.player.position.x, this.player.position.z)) {
@@ -243,6 +274,7 @@ export class MobManager {
     this._spawnTimer = SPAWN_INTERVAL;
     if (this.countOf(false) < MAX_PASSIVE && Math.random() < 0.3) this._trySpawnPassive(24, 56);
     if (this.countOf(true) < MAX_HOSTILE) this._trySpawnHostile();
+    this._trySpawnVillagers();
   }
 
   // ---------- Steering ----------

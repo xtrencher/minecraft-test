@@ -36,7 +36,7 @@ export class WaterSim {
     this.active = new Set(); // "x,y,z" keys due for a tick
     this.meta = new Map(); // "x,y,z" -> { level, parent: [x,y,z] } for sim-made flow cells
     this.processed = 0; // cells ticked (stats / tests)
-    world.changeListeners.push((changed) => this._onEdit(changed));
+    world.changeListeners.push((changed, opts) => this._onEdit(changed, opts));
   }
 
   get activeCount() {
@@ -49,7 +49,11 @@ export class WaterSim {
 
   // A changed cell may expose water to a new hole (beside or below it), or
   // be a water cell itself (placed, or laid bare by a removed neighbor).
-  _onEdit(changed) {
+  // recordEdit: false means the batch is out-of-band scaffolding (test
+  // arenas, world setup), not a real player/explosion edit, so water leaves
+  // it alone.
+  _onEdit(changed, { recordEdit = true } = {}) {
+    if (!recordEdit) return;
     for (let i = 0; i < changed.length; i += 3) {
       const x = changed[i];
       const y = changed[i + 1];

@@ -494,7 +494,60 @@ const ZOMBIE = {
   },
 };
 
-export const MODELS = { fluffalo: FLUFFALO, hoplet: HOPLET, mossback: MOSSBACK, zombie: ZOMBIE };
+const VILLAGER = {
+  parts: [
+    { name: "legL", size: [4, 11, 4], pivot: [-2, 11, 0], from: [-2, -11, -2] },
+    { name: "legR", size: [4, 11, 4], pivot: [2, 11, 0], from: [-2, -11, -2] },
+    { name: "body", size: [8, 11, 5], pivot: [0, 11, 0], from: [-4, 0, -2.5] },
+    { name: "head", size: [7, 7, 7], pivot: [0, 22, 0], from: [-3.5, 0, -3.5], parent: "body" },
+    { name: "nose", size: [2, 2, 2], pivot: [0, 26, 4.5], from: [-1, -1, 0], parent: "head", rigid: true },
+    { name: "armL", size: [3, 10, 3], pivot: [-5.5, 21, 0], from: [-1.5, -9, -1.5], parent: "body" },
+    { name: "armR", size: [3, 10, 3], pivot: [5.5, 21, 0], from: [-1.5, -9, -1.5], parent: "body" },
+  ],
+  paint(s) {
+    const skin = hex(0xd9a066);
+    const robe = hex(0x8a6a3c);
+    const robeDark = hex(0x6a4f2b);
+    const trim = hex(0xb9925a);
+    const pants = hex(0x4a4438);
+    const cloth = (x, y, seed, base) => grain(base, x, y, seed, 0.1);
+    s.part("head", (f, x, y, w, h) => {
+      let c = grain(skin, x, y, 91, 0.08);
+      if (f === "top") c = grain(mix(skin, hex(0x3a2a1c), 0.5), x, y, 92, 0.15); // hair
+      if (f === "front") {
+        if (y >= 2 && y < 4 && (x === 1 || x === w - 2)) c = [30, 24, 20]; // eyes
+        if (y === 5) c = shade(c, 0.85); // mouth shadow line
+      }
+      return c;
+    });
+    s.part("nose", () => hex(0xc98f57));
+    s.part("body", (f, x, y, w, h) => {
+      if (f === "front" && y < 3 && x >= 2 && x < 6) return grain(trim, x, y, 93, 0.1); // collar
+      let c = cloth(x, y, 94, robe);
+      if ((x + y) % 7 === 0) c = cloth(x, y, 95, robeDark);
+      if (f === "front" && y >= h - 3) c = grain(trim, x, y, 96, 0.1); // hem band
+      return c;
+    });
+    for (const arm of ["armL", "armR"]) {
+      s.part(arm, (f, x, y, w, h) => (y >= h - 2 || f === "bottom" ? grain(skin, x, y, 97, 0.08) : cloth(x, y, 98, robe)));
+    }
+    for (const leg of ["legL", "legR"]) {
+      s.part(leg, (f, x, y, w, h) => grain(pants, x, y, 99, 0.1));
+    }
+  },
+  animate(p, st) {
+    const swing = Math.sin(st.walkPhase) * 0.55 * st.walk;
+    p.legL.rotation.x = swing;
+    p.legR.rotation.x = -swing;
+    p.armL.rotation.x = -swing * 0.6;
+    p.armR.rotation.x = swing * 0.6;
+    p.body.rotation.z = Math.sin(st.walkPhase * 0.5) * 0.04 * st.walk;
+    p.head.rotation.y = st.headYaw;
+    p.head.rotation.x = -st.headPitch;
+  },
+};
+
+export const MODELS = { fluffalo: FLUFFALO, hoplet: HOPLET, mossback: MOSSBACK, zombie: ZOMBIE, villager: VILLAGER };
 
 // Shared per species: skin texture, material and part geometries.
 const built = new Map();

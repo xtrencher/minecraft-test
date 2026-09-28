@@ -64,7 +64,7 @@ const scene = new THREE.Scene();
 // ---------- Settings ----------
 // Chunks. Beyond each preset's detail distance, terrain is drawn as
 // simplified level-of-detail tiles (see lod.js).
-const DEFAULT_RENDER_DISTANCE = 20;
+const DEFAULT_RENDER_DISTANCE = 10;
 const MIN_RENDER_DISTANCE = 2;
 const MAX_RENDER_DISTANCE = 100;
 const settings = loadSettings();
