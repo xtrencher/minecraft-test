@@ -684,3 +684,44 @@ The codebase grew from ~10,800 lines of JavaScript in 34 modules to ~15,200 line
   - boxes for distant tree crowns.
 
   Each was much cheaper and close enough for the look.
+
+## Round 3 follow-up: a blank sky-blue screen at startup — DONE
+
+**Report.** After Round 3, starting the game showed only a plain sky-blue page: no menu, no error.
+
+**What that screen is.** It's the page's background colour. Every panel starts hidden until the game's script shows the start menu, so either the script never got that far (an error, or a file that failed to load), or it did but the page never got to show the result.
+
+**What I checked.**
+- **Real server, random worlds:** a fresh clone of the pushed branch, served by the same `serve` that `start.sh` and `start.bat` run, started every time in headless Chromium with no errors. That included random worlds; every earlier test had used seed 42.
+- **Same code as players get:** the tests use the same three.js version as the pinned CDN copy (0.160.0). `serve` sends content-hash ETags, so browsers re-check every file and don't mix stale files with new ones.
+- **A startup timeline showed the likely cause.** The game's script finished after 0.9 s, but the page couldn't show anything until the GPU had finished the first frame, and on Ultra that includes compiling every shader. That took 3.9 s here (0.7 s on Low), and the sky-blue background was all there was to see in the meantime.
+- **Why it can be much worse elsewhere:** Phases 4 and 5 made the High and Ultra shaders much bigger (soft shadows over three cascades, parallax, reflections, light shafts). Compiling large shaders can be far slower on some systems, notably Windows, where browsers translate WebGL shaders for Direct3D. A first frame that takes too long can also make the graphics driver reset. Either way the result is exactly that screen, possibly for good.
+- **Limits:** I couldn't reproduce the reporting machine (the sandbox only has a software renderer). So the fix addresses this most likely cause, and makes any other cause show up on the page.
+
+**The fix.**
+1. **The menu first.**
+   - The page shows a **Loading…** panel from its very first paint.
+   - The start menu goes up before any heavy GPU work. The shaders then compile in the background where the browser can (`KHR_parallel_shader_compile`), while the world streams in.
+   - The Play button says **Preparing graphics…** until the shaders are ready, and only then is the world drawn. Switching presets works the same way.
+   - On Ultra here, the menu now shows after 0.6 s instead of 4.8 s.
+2. **Graphics on the start menu.** The Graphics setting is on the start menu too, and a hint suggests a lower one if preparing takes more than 12 s.
+3. **Safe start.**
+   - The game remembers whether the last start got as far as drawing the world. If it didn't (the tab hung, or the driver gave up), the next start lowers the preset a step and says so.
+   - If the browser loses the WebGL context mid-game, the game saves, lowers the setting and asks for a reload.
+   - `?graphics=low` (or `medium`, `high`, `ultra`) in the address picks a setting.
+4. **Errors on the page.** Until the game has started, any failure is shown with what to try, instead of a blank page:
+   - **Opened as a file:** use `start.bat` or `./start.sh`.
+   - **A game file couldn't load:** offline, or the three.js CDN is blocked.
+   - **Mismatched files after an update:** reload with Ctrl+Shift+R (Cmd+Shift+R on a Mac).
+   - **Any other script error:** the error text is shown.
+   - **WebGL didn't start:** turn on hardware acceleration, update the browser and drivers, and restart the browser after a driver crash.
+
+**Also fixed.** `normalizePreset` accepted any name that exists on a plain object (such as `constructor`).
+
+**Testing.** Four new smoke checks, each in a fresh browser profile:
+- **Startup order:** the loading panel paints at once, and the start menu comes up before the world is drawn, with Play waiting for the shaders. `?graphics=low` starts on Low.
+- **Safe start:** after a start that never showed the world, the next one starts on High with a notice.
+- **Error messages:** opened as a file, a missing file, mismatched files and no WebGL each show the right message.
+- **Lost context:** losing the WebGL context saves the player, lowers the setting (Medium to Low) and shows the reload panel.
+
+**57 smoke checks and 32 unit tests pass with zero console errors.**

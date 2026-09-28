@@ -162,6 +162,29 @@ export function saveSettings(settings) {
   }
 }
 
+// How the last start went: { preset, ok }. ok stays false until the world
+// has been drawn at that graphics preset, so a start that hung or crashed the
+// graphics driver (typically while compiling shaders) is seen by the next
+// one, which then steps the preset down (see main.js).
+export function loadBootRecord() {
+  try {
+    const raw = localStorage.getItem(`${PREFIX}boot`);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    return data && typeof data === "object" && typeof data.preset === "string" ? data : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+export function saveBootRecord(record) {
+  try {
+    localStorage.setItem(`${PREFIX}boot`, JSON.stringify(record));
+  } catch (err) {
+    // Storage unavailable: nothing to remember between starts.
+  }
+}
+
 // Player state per world: game mode, position, view, health, breath,
 // inventory, selected slot and time of day. Small JSON; saved alongside edits.
 export function playerKey(seed) {

@@ -357,6 +357,28 @@ export class PostFX {
     this.renderer.render(this.fsScene, this.fsCamera);
   }
 
+  // Compiles the shaders of the passes the current configuration uses,
+  // without drawing (in the background where the browser can; see
+  // prepareGraphics in main.js). Each is compiled for the target it draws
+  // into, which decides its output format. `compile(scene, camera)` starts
+  // compiling a scene's shaders and returns a promise. Resolves when they're
+  // ready.
+  compileAsync(compile) {
+    const r = this.renderer;
+    const prev = r.getRenderTarget();
+    const passes = [[this.compositeMat, null]];
+    if (this.bloomLevels > 0) passes.push([this.prefilterMat, this.bloomRTs[0]], [this.downMat, this.bloomRTs[1]], [this.upMat, this.bloomRTs[0]]);
+    if (this.godRays) passes.push([this.raysMat, this.raysRT], [this.uwRaysMat, this.raysRT]);
+    const jobs = [];
+    for (const [material, target] of passes) {
+      this.fsMesh.material = material;
+      r.setRenderTarget(target);
+      jobs.push(compile(this.fsScene, this.fsCamera));
+    }
+    r.setRenderTarget(prev);
+    return Promise.all(jobs);
+  }
+
   // Renders `scene` through the pipeline to the screen. `overlay` (optional)
   // is { scene, camera } drawn on top with a cleared depth buffer (e.g. a
   // held item). `params`: exposure, sunWorldPos (Vector3), sunColor.

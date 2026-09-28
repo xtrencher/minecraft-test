@@ -1952,6 +1952,163 @@ try {
     assert(now.inv === savedPlayer.inv && now.selected === savedPlayer.selected, `inventory changed across reload: ${now.inv} vs ${savedPlayer.inv}`);
     assert(Math.hypot(now.x - savedPlayer.x, now.z - savedPlayer.z) < 0.01, "position not restored");
   });
+
+  // --- Startup (each in a fresh browser profile, so storage starts empty
+  // and the errors provoked here don't count against the main page) ---
+  const freshPage = async (init) => {
+    const ctx = await browser.newContext({ viewport: { width: 960, height: 600 } });
+    const p = await ctx.newPage();
+    await p.route("https://cdn.jsdelivr.net/npm/three@0.160.0/**", (route) => {
+      const rel = new URL(route.request().url()).pathname.replace("/npm/three@0.160.0/", "");
+      route.fulfill({ path: path.join(path.join(__dirname, "node_modules", "three"), rel), contentType: "text/javascript" });
+    });
+    const errs = [];
+    p.on("pageerror", (e) => errs.push(e.message));
+    p.on("console", (m) => {
+      if (m.type() === "error") errs.push(m.text());
+    });
+    if (init) await init(p, ctx);
+    return { p, ctx, errs };
+  };
+  const bootPanel = (p) =>
+    p.evaluate(() => ({
+      shown: !document.getElementById("boot").classList.contains("hidden"),
+      error: !document.getElementById("boot-error").classList.contains("hidden"),
+      title: document.getElementById("boot-error-title").textContent,
+      help: document.getElementById("boot-error-help").textContent,
+      detail: document.getElementById("boot-error-detail").textContent,
+    }));
+  const waitReady = (p) => p.waitForFunction(() => window.__voxelands?.graphicsReady && document.getElementById("boot").classList.contains("hidden"), null, { timeout: 120000, polling: 100 });
+
+  await check("startup: a loading panel, then the start menu before the shaders; Play waits for them; ?graphics= picks the preset", async () => {
+    const { p, ctx, errs } = await freshPage(async (p) => {
+      await p.addInitScript(() => {
+        // When the loading panel gives way to the start menu, are the world's
+        // shaders still being prepared (nothing drawn yet)?
+        window.__startup = {};
+        new MutationObserver(() => {
+          const boot = document.getElementById("boot");
+          if (boot && boot.classList.contains("hidden") && !("readyAtMenu" in window.__startup)) {
+            window.__startup.readyAtMenu = window.__voxelands?.graphicsReady;
+            window.__startup.playAtMenu = { text: document.getElementById("play-btn").textContent, disabled: document.getElementById("play-btn").disabled };
+          }
+        }).observe(document, { subtree: true, attributes: true, attributeFilter: ["class"] });
+        new PerformanceObserver((list) => {
+          for (const e of list.getEntries()) if (e.name === "first-contentful-paint") window.__startup.fcp = e.startTime;
+        }).observe({ type: "paint", buffered: true });
+      });
+    });
+    await p.goto(`http://localhost:${PORT}/index.html?seed=${SEED}`, { waitUntil: "load" });
+    await waitReady(p);
+    await p.waitForFunction(() => JSON.parse(localStorage.getItem("voxelands_v1_boot") || "{}").ok === true, null, { timeout: 120000, polling: 200 });
+    const s = await p.evaluate(() => ({
+      ...window.__startup,
+      preset: window.__voxelands.graphics,
+      play: { text: document.getElementById("play-btn").textContent, disabled: document.getElementById("play-btn").disabled },
+      boot: JSON.parse(localStorage.getItem("voxelands_v1_boot")),
+      startSelect: document.getElementById("start-graphics-preset").value,
+    }));
+    console.log(`        first paint (loading panel) at ${s.fcp?.toFixed(0)} ms; start menu up while shaders prepare: ${s.readyAtMenu === false}, Play then ${JSON.stringify(s.playAtMenu)}, now ${JSON.stringify(s.play)}; boot record ${JSON.stringify(s.boot)}`);
+    assert(s.fcp > 0, "the page should paint (the loading panel) right away");
+    assert(s.readyAtMenu === false && s.playAtMenu.disabled && /Preparing/.test(s.playAtMenu.text), `the start menu should come up before the world is drawn, with Play waiting: ${JSON.stringify(s)}`);
+    assert(!s.play.disabled && s.play.text === "Click to Play", `Play should be ready once the shaders are: ${JSON.stringify(s.play)}`);
+    assert(s.preset === "ultra" && s.startSelect === "ultra" && s.boot.preset === "ultra", `default start: ${JSON.stringify(s)}`);
+    await p.goto(`http://localhost:${PORT}/index.html?seed=${SEED}&graphics=low`, { waitUntil: "load" });
+    await waitReady(p);
+    const low = await p.evaluate(() => ({ preset: window.__voxelands.graphics, saved: JSON.parse(localStorage.getItem("voxelands_v1_settings")).graphics }));
+    assert(low.preset === "low" && low.saved === "low", `?graphics=low should start on Low and keep it: ${JSON.stringify(low)}`);
+    assert(errs.length === 0, `errors: ${errs.join(" | ")}`);
+    await ctx.close();
+  });
+
+  await check("startup: after a start that never showed the world, the next one lowers the graphics a step and says so", async () => {
+    const { p, ctx, errs } = await freshPage(async (p) => {
+      await p.addInitScript(() => {
+        if (sessionStorage.getItem("primed")) return;
+        sessionStorage.setItem("primed", "1");
+        localStorage.setItem("voxelands_v1_settings", JSON.stringify({ graphics: "ultra" }));
+        localStorage.setItem("voxelands_v1_boot", JSON.stringify({ preset: "ultra", ok: false }));
+      });
+    });
+    await p.goto(`http://localhost:${PORT}/index.html?seed=${SEED}`, { waitUntil: "load" });
+    await waitReady(p);
+    await p.waitForFunction(() => JSON.parse(localStorage.getItem("voxelands_v1_boot") || "{}").ok === true, null, { timeout: 120000, polling: 200 });
+    const s = await p.evaluate(() => ({
+      preset: window.__voxelands.graphics,
+      notice: document.getElementById("start-notice").textContent,
+      boot: JSON.parse(localStorage.getItem("voxelands_v1_boot")),
+    }));
+    console.log(`        ${JSON.stringify(s)}`);
+    assert(s.preset === "high" && /lowered to High/.test(s.notice), `expected High with a notice: ${JSON.stringify(s)}`);
+    assert(s.boot.preset === "high" && s.boot.ok === true, `the boot record should now say High works: ${JSON.stringify(s.boot)}`);
+    assert(errs.length === 0, `errors: ${errs.join(" | ")}`);
+    await ctx.close();
+  });
+
+  await check("startup errors show on the page with what to try: opened as a file, a missing file, mismatched files, no WebGL", async () => {
+    const cases = [
+      { name: "file", url: `file://${path.join(ROOT, "index.html")}`, title: /web server/, help: /start\.bat/ },
+      { name: "missing file", url: `http://localhost:${PORT}/index.html?seed=${SEED}`, route: ["**/js/trees.js", (r) => r.fulfill({ status: 404, body: "not found" })], title: /couldn't be loaded/, help: /online/ },
+      {
+        name: "mismatched files",
+        url: `http://localhost:${PORT}/index.html?seed=${SEED}`,
+        route: ["**/js/motes.js", (r) => r.fulfill({ contentType: "text/javascript", body: "export const somethingElse = 1;" })],
+        title: /failed to start/,
+        help: /Ctrl\+Shift\+R/,
+        detail: /UnderwaterMotes/,
+      },
+      {
+        name: "no WebGL",
+        url: `http://localhost:${PORT}/index.html?seed=${SEED}`,
+        init: () => {
+          const getContext = HTMLCanvasElement.prototype.getContext;
+          HTMLCanvasElement.prototype.getContext = function (type, ...rest) {
+            return /webgl/.test(type) ? null : getContext.call(this, type, ...rest);
+          };
+        },
+        title: /WebGL couldn't start/,
+        help: /hardware acceleration/,
+      },
+    ];
+    for (const c of cases) {
+      const { p, ctx } = await freshPage(async (p) => {
+        if (c.route) await p.route(c.route[0], c.route[1]);
+        if (c.init) await p.addInitScript(c.init);
+      });
+      await p.goto(c.url, { waitUntil: "load" });
+      await p.waitForFunction(() => !document.getElementById("boot-error").classList.contains("hidden"), null, { timeout: 60000, polling: 100 });
+      const b = await bootPanel(p);
+      console.log(`        ${c.name}: "${b.title}" (${b.detail.split("\n")[0].slice(0, 90)})`);
+      assert(b.shown && c.title.test(b.title) && c.help.test(b.help), `${c.name}: ${JSON.stringify(b)}`);
+      if (c.detail) assert(c.detail.test(b.detail), `${c.name}: the error itself should be shown: ${b.detail}`);
+      await ctx.close();
+    }
+  });
+
+  await check("a lost graphics context saves, lowers the graphics a step and asks for a reload", async () => {
+    const { p, ctx } = await freshPage(async (p) => {
+      await p.addInitScript(() => {
+        if (!sessionStorage.getItem("primed")) {
+          sessionStorage.setItem("primed", "1");
+          localStorage.setItem("voxelands_v1_settings", JSON.stringify({ graphics: "medium" }));
+        }
+      });
+    });
+    await p.goto(`http://localhost:${PORT}/index.html?seed=${SEED}`, { waitUntil: "load" });
+    await waitReady(p);
+    await p.evaluate(() => document.getElementById("game-canvas").getContext("webgl2").getExtension("WEBGL_lose_context").loseContext());
+    await p.waitForFunction(() => !document.getElementById("gpu-lost").classList.contains("hidden"), null, { timeout: 30000, polling: 100 });
+    const s = await p.evaluate(() => ({
+      label: document.getElementById("gpu-lost-preset").textContent,
+      saved: JSON.parse(localStorage.getItem("voxelands_v1_settings")).graphics,
+      boot: JSON.parse(localStorage.getItem("voxelands_v1_boot")),
+      player: !!localStorage.getItem("voxelands_v1_player_42"),
+    }));
+    console.log(`        ${JSON.stringify(s)}`);
+    assert(s.label === "Low" && s.saved === "low" && s.boot.preset === "low" && s.boot.ok, `expected Low for the next start: ${JSON.stringify(s)}`);
+    assert(s.player, "the player should be saved");
+    await ctx.close();
+  });
 } finally {
   await browser.close();
   server.close();

@@ -28,6 +28,8 @@ export class UI {
     this.copyLinkBtn = document.getElementById("copy-link-btn");
     this.graphicsSelect = document.getElementById("graphics-preset");
     this.graphicsHintEl = document.getElementById("graphics-hint");
+    this.startGraphicsSelect = document.getElementById("start-graphics-preset");
+    this.startNoticeEl = document.getElementById("start-notice");
     this.modeSelect = document.getElementById("mode-select");
     this.modeHintEl = document.getElementById("mode-hint");
     this.pauseModeSelect = document.getElementById("pause-mode-select");
@@ -57,6 +59,23 @@ export class UI {
 
   showHud(show) {
     this.hudEl.classList.toggle("hidden", !show);
+  }
+
+  // While the graphics are being prepared (shaders compiling, see main.js),
+  // Play and Resume wait for them.
+  setPreparing(preparing) {
+    for (const [btn, label] of [
+      [this.playBtn, "Click to Play"],
+      [this.resumeBtn, "Resume"],
+    ]) {
+      btn.disabled = preparing;
+      btn.textContent = preparing ? "Preparing graphics\u2026" : label;
+    }
+  }
+
+  // A line under the start menu's graphics choice ("" hides it).
+  setStartNotice(text) {
+    this.startNoticeEl.textContent = text;
   }
 
   showStartMenu(seed) {

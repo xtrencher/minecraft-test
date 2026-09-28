@@ -183,6 +183,26 @@
   }
   #seed-display span { color: #ffd76b; }
   .menu-buttons { display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
+  .btn:disabled, .btn:disabled:hover { background: #555; cursor: wait; }
+  a.btn { text-decoration: none; }
+  #start-notice:not(:empty) { color: #ffd76b; opacity: 0.95; margin-top: 0; }
+
+  /* --- Startup: loading message, or what went wrong (see the script at the end) --- */
+  #boot { z-index: 200; background: rgba(10,14,20,0.55); }
+  #boot-error p { font-size: 13px; line-height: 1.55; opacity: 0.92; margin: 0 0 12px 0; }
+  #boot-error p a { color: #ffd76b; }
+  #boot-error pre {
+    font-size: 11px;
+    line-height: 1.4;
+    background: rgba(0,0,0,0.35);
+    padding: 8px 10px;
+    border-radius: 4px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 26vh;
+    overflow-y: auto;
+    margin: 0 0 4px 0;
+  }
 
   /* --- HUD --- */
   #attack-charge {
@@ -452,6 +472,24 @@
     <button class="btn" id="respawn-btn">Respawn</button>
   </div>
 
+  <!-- Until the game has started: a loading message, or what went wrong and
+       what to try (filled in by the script at the end of the page). -->
+  <div id="boot" class="overlay">
+    <div class="panel">
+      <h1>Voxelands</h1>
+      <div id="boot-status" class="subtitle">Loading&hellip;</div>
+      <div id="boot-error" class="hidden">
+        <h2 id="boot-error-title"></h2>
+        <p id="boot-error-help"></p>
+        <pre id="boot-error-detail"></pre>
+        <div class="menu-buttons">
+          <button class="btn" id="boot-reload">Reload</button>
+          <a class="btn secondary" id="boot-low" href="?graphics=low">Start with Low graphics</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="start-menu" class="overlay hidden">
     <div class="panel">
       <h1>Voxelands</h1>
@@ -473,6 +511,16 @@
         </select>
       </div>
       <div id="mode-hint" class="hint"></div>
+      <div class="row">
+        <label for="start-graphics-preset">Graphics</label>
+        <select id="start-graphics-preset">
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+          <option value="ultra">Ultra</option>
+        </select>
+      </div>
+      <div id="start-notice" class="hint"></div>
       <div id="seed-display">Seed: <span id="seed-value">-</span></div>
       <div class="menu-buttons">
         <button class="btn" id="play-btn">Click to Play</button>
@@ -533,6 +581,22 @@
     </div>
   </div>
 
+  <div id="gpu-lost" class="overlay hidden">
+    <div class="panel">
+      <h2>The graphics card stopped responding</h2>
+      <p style="font-size:14px; line-height:1.5; opacity:0.9;">
+        The browser lost its connection to the graphics card (the WebGL
+        context was lost), usually because drawing a frame took too long.
+        Your world is saved. The graphics setting is lowered to
+        <b id="gpu-lost-preset">High</b> for the next start: reload to go on
+        playing.
+      </p>
+      <div class="menu-buttons">
+        <button class="btn" id="gpu-lost-reload">Reload</button>
+      </div>
+    </div>
+  </div>
+
   <div id="mobile-block" class="overlay hidden">
     <div class="panel">
       <h2>Keyboard &amp; Mouse Required</h2>
@@ -544,6 +608,66 @@
     </div>
   </div>
 
+  <script>
+    // Startup safety net. Until js/main.js reports that the game has started
+    // (__voxelandsBoot.done()), an error is shown on the page with what to
+    // try, instead of leaving it blank: the page opened as a file, a game
+    // file that failed to load, a script error, or WebGL not starting.
+    (function () {
+      var boot = { started: false, failed: false };
+      window.__voxelandsBoot = boot;
+      function $(id) { return document.getElementById(id); }
+      var GENERAL = "Reload the page to try again. If it keeps happening, start with Low graphics (below), update your browser, and look in the browser's console (F12) for details.";
+      var MIXED = "Parts of the game don't match, most likely because the browser mixed old cached files with new ones after an update. Reload with <b>Ctrl+Shift+R</b> (<b>Cmd+Shift+R</b> on a Mac).";
+      var low = new URL(location.href);
+      low.searchParams.set("graphics", "low");
+      $("boot-low").href = low.href;
+      $("boot-reload").onclick = function () { location.reload(); };
+      // title and help are fixed strings from the game (help may hold markup);
+      // detail is shown as plain text.
+      boot.fail = function (title, help, detail) {
+        if (boot.started || boot.failed) return;
+        boot.failed = true;
+        $("boot").classList.remove("hidden");
+        $("boot-status").classList.add("hidden");
+        $("boot-error").classList.remove("hidden");
+        $("boot-error-title").textContent = title;
+        $("boot-error-help").innerHTML = help || GENERAL;
+        $("boot-error-detail").textContent = detail || "";
+        $("boot-error-detail").classList.toggle("hidden", !detail);
+      };
+      boot.status = function (text) {
+        if (!boot.failed) $("boot-status").textContent = text;
+      };
+      boot.done = function () {
+        boot.started = true;
+        $("boot").classList.add("hidden");
+      };
+      boot.loadFailed = function () {
+        boot.fail(
+          "A game file couldn't be loaded",
+          "Check that you're online (the 3D engine, three.js, comes from cdn.jsdelivr.net) and that the game is served by its web server (<b>start.bat</b> or <b>./start.sh</b>), then reload. If you just updated the game, reload with <b>Ctrl+Shift+R</b> (<b>Cmd+Shift+R</b> on a Mac)."
+        );
+      };
+      if (location.protocol === "file:") {
+        boot.fail(
+          "Open the game through its web server",
+          "Browsers don't run this game straight from a file. In the game folder, run <b>start.bat</b> (Windows) or <b>./start.sh</b> (macOS/Linux), then open the address it prints (usually http://localhost:5173)."
+        );
+        $("boot-low").classList.add("hidden");
+      }
+      window.addEventListener("error", function (e) {
+        var detail = (e.error && e.error.stack) || e.message || String(e);
+        boot.fail("The game failed to start", /does not provide an export named|Importing a module script failed|dynamically imported module/i.test(detail) ? MIXED : GENERAL, detail);
+      });
+      window.addEventListener("unhandledrejection", function (e) {
+        var r = e.reason;
+        // Refused pointer locks, blocked audio and the like aren't startup failures.
+        if (r && /^(NotAllowedError|AbortError|NotSupportedError|SecurityError)$/.test(r.name)) return;
+        boot.fail("The game failed to start", GENERAL, (r && (r.stack || r.message)) || String(r));
+      });
+    })();
+  </script>
   <script type="importmap">
   {
     "imports": {
@@ -551,6 +675,6 @@
     }
   }
   </script>
-  <script type="module" src="./js/main.js"></script>
+  <script type="module" src="./js/main.js" onerror="__voxelandsBoot.loadFailed()"></script>
 </body>
 </html>

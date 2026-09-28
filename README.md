@@ -110,7 +110,7 @@ blown away.
 
 ## Graphics
 
-The pause menu has a **Graphics** setting, saved in your browser:
+The start and pause menus have a **Graphics** setting, saved in your browser:
 
 - **Low:** no shadows or post-processing. For weak laptops.
 - **Medium:** sun shadows and bloom.
@@ -177,6 +177,30 @@ start.bat
 Either script starts a local server and prints a URL (typically
 `http://localhost:5173`). Open it in your browser.
 
+## If the game doesn't start
+
+The page shows **Loading…** until the game is running, and if something goes
+wrong it says what and what to try. The most common causes:
+
+- **Opened as a file:** double-clicking `index.html` doesn't work, because
+  browsers don't run the game's modules from `file://` pages. Use `start.bat`
+  or `./start.sh`.
+- **Offline:** the 3D engine (three.js) loads from `cdn.jsdelivr.net`.
+- **Just updated:** reload with `Ctrl+Shift+R` (`Cmd+Shift+R` on a Mac) so
+  the browser doesn't mix old cached files with new ones.
+- **Slow first start:** while the shaders compile, the Play button says
+  **Preparing graphics…**. On some computers (Windows especially) High and
+  Ultra can take a while the first time. If it's too slow, pick a lower
+  **Graphics** setting right on the start menu.
+- **Graphics card trouble:** if a start never gets as far as showing the
+  world, the next start lowers the graphics a step (the start menu says so).
+  If the browser loses the graphics card mid-game, the game saves, lowers the
+  setting and asks you to reload. To pick a setting from the address bar,
+  add `?graphics=low` (or `medium`, `high`, `ultra`).
+- **"WebGL couldn't start":** turn on hardware acceleration in the browser's
+  settings, update the browser and graphics driver, and restart the browser:
+  after a graphics driver crash, browsers keep WebGL off for a while.
+
 ## Deploying
 
 This is a static site: the folder can be hosted as is, including on GitHub
@@ -199,7 +223,9 @@ variable):
   bazooka, falling sand, mining and pickup, crafting through the inventory
   screens, eating, fall and drowning damage, the death screen, zombies
   chasing and fighting, the water, shadows, plants and atmosphere on Ultra,
-  and saving and reloading. It fails on any console error.
+  saving and reloading, and startup (the menu before the shaders, the error
+  messages, recovering from graphics trouble). It fails on any console
+  error.
 
 ## Tech notes
 

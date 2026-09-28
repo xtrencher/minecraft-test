@@ -5,10 +5,10 @@ import { UI, isMobileDevice } from "./ui.js";
 import { BLOCK, BLOCK_INFO, HOTBAR } from "./blocks.js";
 import { Audio } from "./audio.js";
 import { Sky } from "./sky.js";
-import { loadEdits, saveEdits, loadSettings, saveSettings, loadPlayer, savePlayer } from "./storage.js";
+import { loadEdits, saveEdits, loadSettings, saveSettings, loadPlayer, savePlayer, loadBootRecord, saveBootRecord } from "./storage.js";
 import { EffectsSystem } from "./effects.js";
 import { PostFX } from "./postfx.js";
-import { PRESETS, applyPreset, normalizePreset } from "./graphics.js";
+import { PRESETS, PRESET_ORDER, applyPreset, normalizePreset, lowerPreset } from "./graphics.js";
 import { worldUniforms } from "./shaders.js";
 import { Inventory, HOTBAR_SIZE, makeStack } from "./inventory.js";
 import { itemInfo } from "./items.js";
@@ -40,19 +40,47 @@ function parseSeedFromURL() {
 
 const SEED = parseSeedFromURL();
 
+// ---------- Startup ----------
+// index.html shows a loading message until the game has started, and any
+// error before that (see __voxelandsBoot there).
+function bootDone() {
+  window.__voxelandsBoot?.done();
+}
+function bootFail(title, help, detail) {
+  window.__voxelandsBoot?.fail(title, help, detail);
+}
+
 // ---------- Mobile guard ----------
 if (isMobileDevice()) {
+  bootDone();
   document.getElementById("mobile-block").classList.remove("hidden");
   throw new Error("Voxelands: mobile device detected, game not started.");
 }
 
 // ---------- Renderer / scene / camera ----------
 const canvas = document.getElementById("game-canvas");
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance" });
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance" });
+} catch (err) {
+  bootFail(
+    "WebGL couldn't start",
+    "The browser couldn't set up WebGL for the 3D view. Check that hardware acceleration is turned on in the browser's settings, update the browser and the graphics driver, then restart the browser completely: after a graphics driver crash, browsers keep WebGL turned off for a while.",
+    String(err?.message || err)
+  );
+  throw err;
+}
 if (!renderer.capabilities.isWebGL2) {
+  bootDone();
   document.getElementById("webgl-block").classList.remove("hidden");
   throw new Error("Voxelands: WebGL 2 is required.");
 }
+// The graphics driver can drop the WebGL context (a frame that took far too
+// long, a driver crash); nothing can be drawn after that (see onGraphicsLost).
+canvas.addEventListener("webglcontextlost", (e) => {
+  e.preventDefault();
+  onGraphicsLost();
+});
 renderer.setSize(window.innerWidth, window.innerHeight);
 // Used only when post-processing is off (Low preset); otherwise the
 // composite pass tone-maps with the same ACES curve.
@@ -75,7 +103,20 @@ function clampRenderDistance(value) {
 }
 
 let renderDistance = clampRenderDistance(settings.renderDistance ?? DEFAULT_RENDER_DISTANCE);
-let graphicsPreset = normalizePreset(settings.graphics);
+// ?graphics=low|medium|high|ultra picks the graphics preset (and keeps it),
+// e.g. to get going again on a computer that struggles with the default.
+const urlGraphics = new URLSearchParams(window.location.search).get("graphics");
+const urlPreset = PRESET_ORDER.includes(urlGraphics) ? urlGraphics : null;
+let graphicsPreset = normalizePreset(urlPreset ?? settings.graphics);
+// Safe start: if the last start never got as far as drawing the world at
+// this preset (the tab hung, or the graphics driver gave up, typically while
+// compiling the shaders of a heavy preset), this one steps down a level.
+let startNotice = "";
+const lastBoot = loadBootRecord();
+if (!urlPreset && lastBoot && lastBoot.ok === false && lastBoot.preset === graphicsPreset && lowerPreset(graphicsPreset) !== graphicsPreset) {
+  graphicsPreset = lowerPreset(graphicsPreset);
+  startNotice = `The last start didn't get as far as showing the world, so graphics were lowered to ${PRESETS[graphicsPreset].label}.`;
+}
 
 // Built-in three.js materials (debris, particles) use this fog; the world's
 // own shaders use the shared uniforms in shaders.js (same distances).
@@ -465,9 +506,89 @@ function setGraphics(name, { adoptRenderDistance = false } = {}) {
   world.setMeshOptions({ fancyLeaves: preset.fancyLeaves });
   if (adoptRenderDistance) setRenderDistance(preset.renderDistance);
   ui.graphicsSelect.value = graphicsPreset;
+  ui.startGraphicsSelect.value = graphicsPreset;
   ui.graphicsHintEl.textContent = describePreset(graphicsPreset);
   settings.graphics = graphicsPreset;
   saveSettings(settings);
+  prepareGraphics();
+}
+
+// ---------- Shader preparation ----------
+// Compiling the shaders can take a long time on some systems (High and Ultra
+// especially, and e.g. on Windows, where browsers translate them for
+// Direct3D). Drawn straight away, the first frame would compile them all at
+// once, and the page would show nothing, not even the start menu, until that
+// was done (or the graphics driver gave up). So the menu goes up first, the
+// shaders compile in the background (KHR_parallel_shader_compile, where the
+// browser has it) while the world streams in, and the world is drawn once
+// they're ready. The same happens after switching presets.
+let graphicsReady = false;
+let framesSinceReady = 0;
+let prepareToken = 0;
+const PREPARE_SLOW_MS = 12000; // then suggest a lower preset
+const PREPARE_TIMEOUT_MS = 120000; // then draw anyway (shaders compile on first use)
+// Stand-ins for the world materials that may have nothing in the scene yet
+// (distant tiles arrive from a worker, water and leaves may not be near).
+const shaderStandIns = new THREE.Group();
+{
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(new Float32Array(9), 3));
+  for (const m of [world.materials.opaque, world.materials.cutout, world.materials.water, lod.material, grass.material]) {
+    shaderStandIns.add(new THREE.Mesh(g, m));
+  }
+}
+
+const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()));
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Starts compiling the shaders of everything in `root`, for the render
+// target currently set (it decides their output format). With parallel
+// compilation the promise resolves once they're ready without ever blocking
+// the page; without it, they compile in order and the first draw waits for
+// whatever isn't done yet.
+function compileScene(root, cam) {
+  if (renderer.extensions.has("KHR_parallel_shader_compile")) return renderer.compileAsync(root, cam);
+  renderer.compile(root, cam);
+  return Promise.resolve();
+}
+
+// Compiles the shaders this preset draws with, for the targets they draw
+// into. Resolves when they're ready.
+function compileShaders() {
+  const post = PRESETS[graphicsPreset].post;
+  const prev = renderer.getRenderTarget();
+  renderer.setRenderTarget(post ? postfx.sceneRT : null);
+  scene.add(shaderStandIns);
+  const jobs = [compileScene(scene, camera), compileScene(held.scene, held.camera)];
+  scene.remove(shaderStandIns);
+  renderer.setRenderTarget(prev);
+  if (post) jobs.push(postfx.compileAsync(compileScene));
+  return Promise.all(jobs);
+}
+
+async function prepareGraphics() {
+  const token = ++prepareToken;
+  graphicsReady = false;
+  ui.setPreparing(true);
+  saveBootRecord({ preset: graphicsPreset, ok: false }); // until the world has been drawn
+  // Let the menu reach the screen before any heavy GPU work.
+  await nextFrame();
+  await nextFrame();
+  if (token !== prepareToken || graphicsLost) return;
+  const slow = setTimeout(() => {
+    ui.setStartNotice(`${startNotice ? `${startNotice} ` : ""}Preparing the graphics is taking a while; on a slower computer, pick a lower setting.`);
+  }, PREPARE_SLOW_MS);
+  try {
+    await Promise.race([compileShaders(), delay(PREPARE_TIMEOUT_MS)]);
+  } catch (err) {
+    console.warn("Voxelands: shader warm-up failed, compiling on first use instead", err);
+  }
+  clearTimeout(slow);
+  if (token !== prepareToken || graphicsLost) return;
+  ui.setStartNotice(startNotice);
+  ui.setPreparing(false);
+  graphicsReady = true;
+  framesSinceReady = 0;
 }
 
 function describePreset(name) {
@@ -496,11 +617,31 @@ function setRenderDistance(value) {
 
 setGraphics(graphicsPreset);
 
-ui.graphicsSelect.addEventListener("change", () => {
-  // Picking a preset also applies its suggested render distance; the slider
-  // can still be changed afterwards.
-  setGraphics(ui.graphicsSelect.value, { adoptRenderDistance: true });
-});
+// Picking a preset (in the pause or the start menu) also applies its
+// suggested render distance; the slider can still be changed afterwards.
+for (const select of [ui.graphicsSelect, ui.startGraphicsSelect]) {
+  select.addEventListener("change", () => setGraphics(select.value, { adoptRenderDistance: true }));
+}
+
+// ---------- Lost graphics device ----------
+// After the WebGL context is lost nothing can be drawn: save, step the
+// graphics preset down for the next start, and ask for a reload.
+let graphicsLost = false;
+function onGraphicsLost() {
+  if (graphicsLost) return;
+  graphicsLost = true;
+  graphicsReady = false;
+  const lower = lowerPreset(graphicsPreset);
+  settings.graphics = lower;
+  saveSettings(settings);
+  saveBootRecord({ preset: lower, ok: true }); // already stepped down: don't again
+  playerDirty = true;
+  flushSave();
+  if (document.pointerLockElement) document.exitPointerLock();
+  document.getElementById("gpu-lost-preset").textContent = PRESETS[lower].label;
+  document.getElementById("gpu-lost").classList.remove("hidden");
+}
+document.getElementById("gpu-lost-reload").addEventListener("click", () => location.reload());
 
 // ---------- Game state / pointer lock ----------
 // "start": title menu. "playing": pointer locked, in control. "paused":
@@ -823,6 +964,9 @@ window.__voxelands = {
   get deathCause() {
     return deathCause;
   },
+  get graphicsReady() {
+    return graphicsReady;
+  },
 };
 
 // ---------- Main loop ----------
@@ -876,7 +1020,14 @@ function animate() {
   held.update(dt, player, heldLight, camera, interaction.eating);
 
   ui.updateFps(frameTime); // real frame time, so slow frames aren't hidden by the clamp
-  renderFrame();
+  if (graphicsReady) {
+    renderFrame();
+    // A few frames in, the GPU has finished drawing the first ones: this
+    // preset works here (see the safe start above).
+    if (++framesSinceReady === 3) saveBootRecord({ preset: graphicsPreset, ok: true });
+  }
 }
 
 animate();
+ui.setStartNotice(startNotice);
+bootDone();
