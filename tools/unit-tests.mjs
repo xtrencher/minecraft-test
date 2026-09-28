@@ -834,5 +834,124 @@ console.log("\nDistant terrain (lod-mesher.js)");
   });
 }
 
+console.log("\nFlowing water (watersim.js)");
+{
+  const { WaterSim, MAX_FLOW_DISTANCE } = await import("../js/watersim.js");
+  const { BLOCK } = await import("../js/blocks.js");
+
+  // A minimal stand-in for World: a sparse block map plus the same
+  // getChunk/getBlock/setBlock/changeListeners contract WaterSim relies on.
+  class FakeWorld {
+    constructor() {
+      this.blocks = new Map();
+      this.loaded = new Set();
+      this.changeListeners = [];
+    }
+    k(x, y, z) {
+      return `${x},${y},${z}`;
+    }
+    load(cx, cz) {
+      this.loaded.add(`${cx},${cz}`);
+    }
+    getChunk(cx, cz) {
+      return this.loaded.has(`${cx},${cz}`) || undefined;
+    }
+    getBlock(x, y, z) {
+      return this.blocks.get(this.k(x, y, z)) ?? BLOCK.AIR;
+    }
+    setBlock(x, y, z, id) {
+      const key = this.k(x, y, z);
+      if (this.blocks.get(key) === id) return false;
+      this.blocks.set(key, id);
+      const changed = [x, y, z];
+      for (const fn of this.changeListeners) fn(changed);
+      return true;
+    }
+  }
+  const floor = (w, x0, x1, y, z0, z1) => {
+    for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) w.setBlock(x, y, z, BLOCK.STONE);
+  };
+  const loadArea = (w, x0, x1, z0, z1) => {
+    for (let x = (x0 >> 4) - 1; x <= (x1 >> 4) + 1; x++) for (let z = (z0 >> 4) - 1; z <= (z1 >> 4) + 1; z++) w.load(x, z);
+  };
+  const drain = (sim, max = 2000) => {
+    let steps = 0;
+    while (sim.activeCount > 0 && steps++ < max) sim.update(9999);
+    return steps;
+  };
+
+  await test("water falls to fill a hole dug beneath it, instead of floating", () => {
+    const w = new FakeWorld();
+    loadArea(w, -5, 5, -5, 5);
+    floor(w, -3, 3, 10, -3, 3);
+    w.setBlock(0, 11, 0, BLOCK.WATER); // resting on the floor
+    const sim = new WaterSim(w);
+    // Dig a 3-deep hole under the water (as an explosion would), then let it react.
+    w.setBlock(0, 10, 0, BLOCK.AIR);
+    w.setBlock(0, 9, 0, BLOCK.AIR);
+    w.setBlock(0, 8, 0, BLOCK.AIR);
+    drain(sim);
+    assert.equal(w.getBlock(0, 11, 0), BLOCK.WATER, "the original water should still be there");
+    assert.equal(w.getBlock(0, 10, 0), BLOCK.WATER, "water should fall into the hole below it");
+    assert.equal(w.getBlock(0, 9, 0), BLOCK.WATER);
+    assert.equal(w.getBlock(0, 8, 0), BLOCK.WATER, "water should reach the bottom of the hole");
+  });
+
+  await test("water spreads sideways from a source up to a limited distance, and no farther", () => {
+    const w = new FakeWorld();
+    loadArea(w, -2, 20, -2, 2);
+    floor(w, -1, 20, 10, -1, 1);
+    w.setBlock(0, 11, 0, BLOCK.WATER);
+    const sim = new WaterSim(w);
+    sim.active.add(sim._key(0, 11, 0)); // wake it manually: it was placed before the sim existed
+    drain(sim);
+    for (let x = 1; x <= MAX_FLOW_DISTANCE; x++) assert.equal(w.getBlock(x, 11, 0), BLOCK.WATER, `should have reached x=${x}`);
+    assert.equal(w.getBlock(MAX_FLOW_DISTANCE + 1, 11, 0), BLOCK.AIR, "flow should stop at its maximum distance");
+  });
+
+  await test("a flow dries up once its source is removed", () => {
+    const w = new FakeWorld();
+    loadArea(w, -2, 8, -2, 2);
+    floor(w, -1, 8, 10, -1, 1);
+    w.setBlock(0, 11, 0, BLOCK.WATER);
+    const sim = new WaterSim(w);
+    sim.active.add(sim._key(0, 11, 0));
+    drain(sim);
+    assert.equal(w.getBlock(2, 11, 0), BLOCK.WATER, "sanity: the flow should have spread first");
+    w.setBlock(0, 11, 0, BLOCK.AIR); // remove the source
+    drain(sim);
+    for (let x = 0; x <= MAX_FLOW_DISTANCE; x++) assert.equal(w.getBlock(x, 11, 0), BLOCK.AIR, `x=${x} should have dried up`);
+  });
+
+  await test("original terrain water never dries up on its own (an untouched lake stays full)", () => {
+    const w = new FakeWorld();
+    loadArea(w, -2, 2, -2, 2);
+    floor(w, -1, 1, 10, -1, 1);
+    w.setBlock(0, 11, 0, BLOCK.WATER);
+    const sim = new WaterSim(w);
+    // Wake it without any real edit nearby (as a neighboring, unrelated dig might).
+    sim.active.add(sim._key(0, 11, 0));
+    drain(sim);
+    assert.equal(w.getBlock(0, 11, 0), BLOCK.WATER, "an original water block with solid support should never dry up");
+  });
+
+  await test("update() only processes a bounded number of cells per call (throttled)", () => {
+    const w = new FakeWorld();
+    loadArea(w, -2, 30, -2, 2);
+    floor(w, -1, 30, 10, -1, 1);
+    w.setBlock(0, 11, 0, BLOCK.WATER);
+    const sim = new WaterSim(w);
+    sim.active.add(sim._key(0, 11, 0));
+    let calls = 0;
+    while (sim.activeCount > 0 && calls < 50) {
+      const before = sim.processed;
+      sim.update(1); // a budget of exactly one cell per call
+      assert.ok(sim.processed - before <= 1, "a budget of 1 should tick at most one cell per call");
+      calls++;
+    }
+    assert.ok(calls > 1, `spreading across several cells should take more than one throttled call (took ${calls})`);
+  });
+}
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 process.exit(failed > 0 ? 1 : 0);

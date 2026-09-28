@@ -260,6 +260,50 @@
     opacity: 0;
     z-index: 9;
   }
+  #scope-overlay {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 11;
+    display: none;
+  }
+  #scope-overlay.visible { display: block; }
+  #scope-overlay::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(circle at center, transparent 0, transparent 29.5%, #000 30%),
+      linear-gradient(#000, #000);
+  }
+  #scope-overlay::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 1px;
+    height: 60vmin;
+    background: rgba(0,0,0,0.55);
+    transform: translate(-50%, -50%);
+    box-shadow: 60vmin 0 0 -0.5px rgba(0,0,0,0.55) inset;
+  }
+  #scope-crosshair {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 30vmin;
+    height: 30vmin;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    border: 1px solid rgba(20,20,20,0.7);
+  }
+  #scope-crosshair::before, #scope-crosshair::after {
+    content: "";
+    position: absolute;
+    background: rgba(20,20,20,0.8);
+  }
+  #scope-crosshair::before { left: 50%; top: 0; bottom: 0; width: 1px; transform: translateX(-50%); }
+  #scope-crosshair::after { top: 50%; left: 0; right: 0; height: 1px; transform: translateY(-50%); }
   .slot-count {
     position: absolute;
     right: 3px;
@@ -433,6 +477,7 @@
   <canvas id="game-canvas"></canvas>
 
   <div id="damage-flash"></div>
+  <div id="scope-overlay"><div id="scope-crosshair"></div></div>
   <div id="hud" class="hidden">
     <div id="crosshair"></div>
     <div id="attack-charge" class="hidden"><div></div></div>
@@ -462,6 +507,8 @@
         <b>Left Click</b> mine / attack (hold) &nbsp; <b>Right Click</b> place / use / eat<br/>
         <b>1-9 / Scroll</b> hotbar &nbsp; <b>E</b> inventory &amp; crafting &nbsp; <b>Q</b> drop item<br/>
         <b>Grenade:</b> hold Right Click to charge, release to throw &nbsp; <b>Pistol / Bazooka:</b> Right Click fires<br/>
+        <b>Machine Gun:</b> hold Right Click for auto fire &nbsp; <b>Sniper:</b> Right Click scopes, Left Click fires<br/>
+        <b>Airstrike:</b> aim the laser, Right Click to call it in<br/>
         <b>Creative:</b> double-tap Space to fly, middle click picks a block<br/>
         <b>Esc</b> pause menu
       </div>
@@ -499,6 +546,21 @@
       </div>
       <div id="graphics-hint" class="hint"></div>
       <div class="row">
+        <label>Grenade blast size</label>
+        <input type="range" id="explosion-grenade" min="0.4" max="2" step="0.05" value="1" />
+        <span id="explosion-grenade-value">1.0x</span>
+      </div>
+      <div class="row">
+        <label>Bazooka blast size</label>
+        <input type="range" id="explosion-bazooka" min="0.4" max="2" step="0.05" value="1" />
+        <span id="explosion-bazooka-value">1.0x</span>
+      </div>
+      <div class="row">
+        <label>Airstrike blast size</label>
+        <input type="range" id="explosion-airstrike" min="0.4" max="2" step="0.05" value="1" />
+        <span id="explosion-airstrike-value">1.0x</span>
+      </div>
+      <div class="row">
         <label for="pause-mode-select">Game mode</label>
         <select id="pause-mode-select">
           <option value="survival">Survival</option>
@@ -513,6 +575,8 @@
         <b>Left Click</b> mine / attack (hold) &nbsp; <b>Right Click</b> place / use / eat<br/>
         <b>1-9 / Scroll</b> hotbar &nbsp; <b>E</b> inventory &amp; crafting &nbsp; <b>Q</b> drop item<br/>
         <b>Grenade:</b> hold Right Click to charge, release to throw &nbsp; <b>Pistol / Bazooka:</b> Right Click fires<br/>
+        <b>Machine Gun:</b> hold Right Click for auto fire &nbsp; <b>Sniper:</b> Right Click scopes, Left Click fires<br/>
+        <b>Airstrike:</b> aim the laser, Right Click to call it in<br/>
         <b>Creative:</b> double-tap Space to fly, middle click picks a block
       </div>
       <div class="menu-buttons">

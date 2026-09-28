@@ -217,13 +217,14 @@ try {
     assert(cls.includes("hidden"), `start menu still visible (class="${cls}")`);
   });
 
-  await check("a new world starts in Survival with full health and an empty inventory", async () => {
+  await check("a new world starts in Survival with full health and the default weapon loadout", async () => {
     const s = await page.evaluate(() => {
       const v = window.__voxelands;
       return {
         mode: v.player.mode,
         health: v.player.health,
-        empty: v.inventory.isEmpty(),
+        hotbar: v.inventory.slots.slice(0, 9).map((s) => s?.id ?? 0),
+        rest: v.inventory.slots.slice(9).every((s) => !s),
         hearts: document.querySelectorAll("#hearts canvas").length,
         heartsVisible: !document.getElementById("hearts").classList.contains("hidden"),
         // The spawn column's top block is the ground itself, not a tree.
@@ -231,7 +232,10 @@ try {
         spawnGround: v.world.heightAt(v.spawn.x, v.spawn.z),
       };
     });
-    assert(s.mode === "survival" && s.health === 20 && s.empty, `unexpected start state ${JSON.stringify(s)}`);
+    // 1 pistol, 2 grenade, 3 bazooka, 4 machine gun, 5 airstrike designator, 6 sniper rifle.
+    assert(JSON.stringify(s.hotbar.slice(0, 6)) === JSON.stringify([287, 286, 288, 289, 291, 290]), `unexpected starting hotbar ${JSON.stringify(s.hotbar)}`);
+    assert(s.rest && s.hotbar.slice(6).every((id) => id === 0), `no other starting items expected: ${JSON.stringify(s.hotbar)}`);
+    assert(s.mode === "survival" && s.health === 20, `unexpected start state ${JSON.stringify(s)}`);
     assert(s.hearts === 10 && s.heartsVisible, `expected 10 visible hearts: ${JSON.stringify(s)}`);
     assert(s.spawnTop === s.spawnGround, `the player should start on the ground, not on a tree: ${JSON.stringify(s)}`);
   });
@@ -895,7 +899,13 @@ try {
   });
 
   await check("creative: instant break, place from the hotbar, scroll, flight toggle; the Blast Orb and F key are gone", async () => {
-    await page.evaluate(() => window.__voxelands.setMode("creative"));
+    await page.evaluate(() => {
+      const v = window.__voxelands;
+      v.setMode("creative");
+      // A new game's hotbar starts with weapons (slots 0-5); put stone in
+      // slot 2 for this test regardless of what's there already.
+      v.inventory.slots[2] = { id: 3, count: 64 };
+    });
     const site = await setupArena(page, 12, 12);
     const target = [site.x, site.y + 1, site.z - 2];
     await page.evaluate(([x, y, z]) => window.__voxelands.world.setBlock(x, y, z, 1), target);
@@ -905,7 +915,6 @@ try {
     await page.mouse.up({ button: "left" });
     const broken = await page.evaluate(([x, y, z]) => window.__voxelands.world.getBlock(x, y, z), target);
     assert(broken === 0, `creative left click should break the block instantly (block is ${broken})`);
-    // The creative hotbar starts with the building blocks; slot 3 is stone.
     await page.keyboard.press("Digit3");
     const sel = await page.evaluate(() => window.__voxelands.inventory.selectedStack);
     assert(sel && sel.id === 3, `slot 3 should hold stone: ${JSON.stringify(sel)}`);
@@ -993,6 +1002,9 @@ try {
       inv.slots[0] = { id: 286, count: 1 }; // grenade
       inv.slots[1] = { id: 287, count: 1 }; // pistol
       inv.slots[2] = { id: 288, count: 1 }; // bazooka
+      inv.slots[3] = { id: 289, count: 1 }; // machine gun
+      inv.slots[4] = { id: 290, count: 1 }; // sniper rifle
+      inv.slots[5] = { id: 291, count: 1 }; // airstrike designator
     });
 
   await check("grenades: hold to charge (bar shown), quick click lobs short, full charge throws far; they bounce, 5 s fuse", async () => {
@@ -1163,7 +1175,7 @@ try {
     assert(placed === 0, "right-click with a pistol must not place a block");
   });
 
-  await check("bazooka: a fast, nearly flat rocket with a smoke trail and a blast 5x a grenade's", async () => {
+  await check("bazooka: a fast, nearly flat rocket with a smoke trail and a blast a third of its old size", async () => {
     const a = await runway(-110, 0);
     await giveWeapons();
     await page.keyboard.press("Digit3");
@@ -1192,8 +1204,189 @@ try {
     await page.waitForFunction(() => window.__voxelands.world.editRemeshQueue.size === 0, null, { timeout: 60000 });
     console.log(`        rocket: ${fly.speed.toFixed(0)} blocks/s, vertical ${fly.vy.toFixed(2)}; blast radius ${boom.radius}: removed ${boom.removed}, reach ${boom.maxDist.toFixed(1)}, carve ${boom.carveMs.toFixed(0)} ms, ${r.falling} falling blocks`);
     assert(fly.speed > 60 && Math.abs(fly.vy) < 5 && fly.smoke > smoke0, "the rocket should fly fast and nearly straight, trailing smoke");
-    assert(boom.source === "bazooka" && boom.radius === 35 && boom.maxDist > 28 && boom.maxDist < 38, `bazooka blast should be ~35 blocks: ${JSON.stringify(boom)}`);
+    // A third of the old 5x-grenade size ((7*5)/3 ~= 11.67), and roughly 2x
+    // wider than deep now (a flattened ellipsoid, not a sphere).
+    assert(boom.source === "bazooka" && boom.radius > 11 && boom.radius < 12.3 && boom.maxDist > 9 && boom.maxDist < 13.5, `bazooka blast should be ~11.7 blocks: ${JSON.stringify(boom)}`);
     assert(r.falling <= 64, "falling blocks must stay capped");
+  });
+
+  await check("machine gun: holding right click fires automatically with tracers and climbing recoil that settles on release", async () => {
+    const a = await runway(-40, -160);
+    await giveWeapons();
+    await page.keyboard.press("Digit4"); // slot 3: machine gun
+    await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      v.world.setBlocks([x - 1, y + 1, z - 6, 3, x, y + 1, z - 6, 3, x + 1, y + 1, z - 6, 3]); // a wall to shoot
+      v.player.pitch = 0;
+      v.player.yaw = 0;
+    }, a);
+    await page.waitForTimeout(300);
+    const before = await page.evaluate(() => ({ shots: window.__voxelands.weapons.shots, recoil: window.__voxelands.player.recoil }));
+    await page.mouse.down({ button: "right" });
+    // Software rendering can be very slow (a handful of frames/second) and
+    // the simulation step is clamped per frame, so wait for real shot counts
+    // (bounded by simulated time, not a fixed wall-clock delay).
+    await page.waitForFunction((n) => window.__voxelands.weapons.shots >= n + 5, before.shots, { timeout: 120000, polling: 16 });
+    const during = await page.evaluate(() => ({
+      shots: window.__voxelands.weapons.shots,
+      recoil: window.__voxelands.player.recoil,
+      firing: window.__voxelands.weapons._mgFiring,
+      tracers: window.__voxelands.weapons._tracers.filter((t) => t.line.visible).length,
+    }));
+    await page.mouse.up({ button: "right" });
+    await page.waitForTimeout(30);
+    const after = await page.evaluate(() => ({ shots: window.__voxelands.weapons.shots, firing: window.__voxelands.weapons._mgFiring }));
+    const shotsAtRelease = after.shots;
+    await page.waitForTimeout(800);
+    const settledInfo = await page.evaluate(() => ({ recoil: window.__voxelands.player.recoil, shots: window.__voxelands.weapons.shots }));
+    const settled = settledInfo.recoil;
+    console.log(`        ${during.shots - before.shots} auto shots while held, recoil climbed to ${during.recoil.toFixed(2)}, settled to ${settled.toFixed(2)}`);
+    assert(during.shots - before.shots >= 5, `holding the trigger should fire several automatic shots (got ${during.shots - before.shots})`);
+    assert(during.firing && !after.firing, "releasing the button should stop the automatic fire");
+    assert(settledInfo.shots === shotsAtRelease, "no more shots should fire after releasing the button");
+    assert(during.recoil > before.recoil + 0.03, "sustained automatic fire should climb the camera recoil");
+    assert(settled < during.recoil, "recoil should settle back down once firing stops");
+    assert(during.tracers > 0, "shots should leave a visible tracer");
+  });
+
+  await check("sniper rifle: right click toggles a zoomed scope with an overlay; left click fires a high-damage, long-range shot", async () => {
+    const a = await runway(-40, -220);
+    await giveWeapons();
+    await page.keyboard.press("Digit5"); // slot 4: sniper rifle
+    await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      v.player.pitch = 0;
+      v.player.yaw = 0;
+    }, a);
+    await page.waitForTimeout(150);
+    const before = await page.evaluate(() => ({ fov: window.__voxelands.camera.fov, scoped: window.__voxelands.weapons.scoped }));
+    await page.mouse.down({ button: "right" });
+    await page.mouse.up({ button: "right" });
+    await page.waitForFunction(() => window.__voxelands.camera.fov < 30, null, { timeout: 5000, polling: 16 });
+    const scoped = await page.evaluate(() => ({
+      fov: window.__voxelands.camera.fov,
+      scoped: window.__voxelands.weapons.scoped,
+      overlay: document.getElementById("scope-overlay").classList.contains("visible"),
+      crosshairHidden: document.getElementById("crosshair").style.visibility === "hidden",
+    }));
+    console.log(`        scoped FOV ${scoped.fov.toFixed(0)} (was ${before.fov.toFixed(0)})`);
+    assert(!before.scoped && scoped.scoped && scoped.fov < 30 && scoped.overlay && scoped.crosshairHidden, `right click should scope in: ${JSON.stringify(scoped)}`);
+    // A long wall, far enough down the runway to be well beyond ordinary reach.
+    await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      v.world.setBlocks([x, y + 1, z - 45, 3]);
+      const eye = v.player.getEyePosition();
+      const [tx, ty, tz] = [x + 0.5, y + 1.5, z - 45 + 0.5];
+      v.player.yaw = Math.atan2(-(tx - eye.x), -(tz - eye.z));
+      v.player.pitch = Math.atan2(ty - eye.y, Math.hypot(tx - eye.x, tz - eye.z));
+    }, a);
+    await page.waitForTimeout(50);
+    const res = await page.evaluate(() => window.__voxelands.weapons.fireSniper());
+    console.log(`        sniper shot: ${JSON.stringify(res)}`);
+    assert(res.type === "block" && res.distance > 40, `a sniper shot should hit the distant wall: ${JSON.stringify(res)}`);
+    // Toggling the scope again turns it off.
+    await page.mouse.down({ button: "right" });
+    await page.mouse.up({ button: "right" });
+    await page.waitForFunction(() => !window.__voxelands.weapons.scoped, null, { timeout: 5000 });
+    // Damage: shoot a zombie in the dark.
+    const r = await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      v.sky.setSunAngle(Math.PI * 1.5);
+      const zb = v.mobs.spawn("zombie", x + 0.5, y + 1, z - 6.5);
+      zb.ai.state = "idle";
+      zb.ai.timer = 999;
+      window.__zb = zb;
+      const eye = v.player.getEyePosition();
+      v.player.yaw = Math.atan2(-(zb.pos.x - eye.x), -(zb.pos.z - eye.z));
+      v.player.pitch = Math.atan2(zb.pos.y + 1.2 - eye.y, Math.hypot(zb.pos.x - eye.x, zb.pos.z - eye.z));
+      return v.weapons.fireSniper();
+    }, a);
+    const zb = await page.evaluate(() => ({ hp: window.__zb.health, dead: window.__zb.dead }));
+    console.log(`        sniper hit a zombie: ${JSON.stringify(r)}, health now ${zb.hp}, dead: ${zb.dead}`);
+    // 22 damage vs. a zombie's 20 health: a one-shot kill.
+    assert(r.type === "mob" && zb.hp <= 0, `a sniper shot should deal heavy (one-shot) damage: ${JSON.stringify(zb)}`);
+    await page.evaluate(() => {
+      window.__voxelands.mobs.clear();
+      window.__voxelands.sky.setSunAngle(Math.PI * 0.4);
+    });
+  });
+
+  await check("airstrike designator: a laser follows the aim point; firing rains meteors on the target after a delay", async () => {
+    const a = await runway(160, -40);
+    await giveWeapons();
+    await page.keyboard.press("Digit6"); // slot 5: airstrike designator
+    await page.evaluate(({ x, y, z }) => {
+      const v = window.__voxelands;
+      v.player.pitch = -0.5;
+      v.player.yaw = 0;
+    }, a);
+    await page.waitForTimeout(150);
+    const laser = await page.evaluate(() => ({ visible: window.__voxelands.weapons._laser.visible, dot: window.__voxelands.weapons._laserDot.position }));
+    assert(laser.visible, "the laser sight should show while the designator is held");
+    const prevCount = await page.evaluate(() => window.__voxelands.effects.explosionCount);
+    const t0 = await page.evaluate(() => window.__voxelands.uniforms.uTime.value);
+    await page.mouse.down({ button: "right" });
+    await page.mouse.up({ button: "right" });
+    const noLaserOnOtherWeapon = await page.evaluate(() => {
+      window.__voxelands.inventory.selected = 1; // switch to grenade
+      return true;
+    });
+    await page.waitForTimeout(50);
+    const laserGone = await page.evaluate(() => !window.__voxelands.weapons._laser.visible);
+    assert(noLaserOnOtherWeapon && laserGone, "the laser should hide once another item is selected");
+    await page.evaluate(() => (window.__voxelands.inventory.selected = 5)); // back to the designator (harmless once already fired)
+    // AIRSTRIKE_DELAY is 5 simulated seconds; software rendering can run at a
+    // handful of frames/second with a clamped simulation step per frame, so
+    // this can take a while in real time (see other charge/fuse waits above).
+    await waitForExplosion(prevCount, 150000);
+    const t1 = await page.evaluate(() => window.__voxelands.uniforms.uTime.value);
+    // Let the rest of the meteor rain land.
+    await page.waitForFunction(() => window.__voxelands.weapons.meteors.length === 0 && window.__voxelands.weapons.airstrikes.length === 0, null, { timeout: 90000, polling: 50 });
+    const after = await page.evaluate(() => window.__voxelands.effects.explosionCount);
+    console.log(`        first meteor landed ${(t1 - t0).toFixed(1)}s after firing; ${after - prevCount} meteor blasts total`);
+    assert(t1 - t0 > 4.5, "meteors should start landing only after the delay");
+    assert(after - prevCount >= 5, `expected several meteor impacts, got ${after - prevCount}`);
+  });
+
+  await check("BUG fix: hitscan and projectiles hit terrain far beyond loaded chunks, and the explosion is stored until that chunk loads", async () => {
+    const p = await page.evaluate(() => {
+      const v = window.__voxelands;
+      const x = Math.floor(v.spawn.x) + 5000;
+      const z = Math.floor(v.spawn.z) + 5000;
+      return { x, z, loaded: !!v.world.getChunk(x >> 4, z >> 4) };
+    });
+    assert(!p.loaded, "the target column should not be loaded yet, to exercise the long-range fallback");
+    const res = await page.evaluate(({ x, z }) => {
+      const v = window.__voxelands;
+      const origin = new v.THREE.Vector3(x + 0.5, 200, z + 0.5);
+      const dir = new v.THREE.Vector3(0, -1, 0);
+      return v.world.raycast(origin, dir, 250, { solidOnly: true });
+    }, p);
+    assert(res && res.id !== 0, `a hitscan ray should hit distant, unloaded terrain instead of passing through it: ${JSON.stringify(res)}`);
+    const h = await page.evaluate(({ x, z }) => window.__voxelands.world.heightAt(x, z), p);
+    // Measure before/after in one call (no gap for the periodic autosave to
+    // clear the dirty set in between).
+    const { before, after } = await page.evaluate(
+      ({ x, z, h }) => {
+        const v = window.__voxelands;
+        const before = v.world.dirtyEditChunks.size;
+        v.effects.explode(new v.THREE.Vector3(x + 0.5, h, z + 0.5), { radius: 7, source: "grenade" });
+        return { before, after: v.world.dirtyEditChunks.size };
+      },
+      { ...p, h }
+    );
+    assert(after > before, "an explosion beyond loaded terrain should be recorded as pending block edits");
+    // Streaming that area in should apply the deferred crater.
+    const applied = await page.evaluate(
+      ({ x, z, h }) => {
+        const v = window.__voxelands;
+        v.world.prepareArea(x, z, 1);
+        return v.world.getBlock(x, h, z);
+      },
+      { ...p, h }
+    );
+    console.log(`        distant heightfield hit id ${res.id} at y=${res.block[1]}; crater block after streaming in: ${applied}`);
+    assert(applied === 0, `the deferred crater should apply once the chunk streams in (block is ${applied})`);
   });
 
   await check("explosions shake the camera less the farther away they are", async () => {
@@ -1265,6 +1458,49 @@ try {
     for (const p of result.pockets.slice(0, 5)) console.log(`        pocket ${JSON.stringify(p)}`);
     assert(result.removed > 50, "expected the sea floor to be carved");
     assert(result.pockets.length === 0, `${result.pockets.length} air cells left touching water below sea level`);
+  });
+
+  await check("water physics: a hole dug under still water fills in on its own instead of leaving it floating", async () => {
+    const site = await setupArena(page, -12, 40, 50);
+    const a = await page.evaluate(({ x, y, z }) => {
+      const { world } = window.__voxelands;
+      const edits = [];
+      // A tiny walled basin so the water can't spread sideways, only down
+      // through the hole this test digs straight under it.
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          if (dx === 0 && dz === 0) continue;
+          edits.push(x + dx, y + 1, z + dz, 3); // stone walls
+        }
+      }
+      edits.push(x, y + 1, z, 5); // water resting on the platform floor
+      world.setBlocks(edits);
+      return { x, y, z };
+    }, site);
+    await page.waitForTimeout(150);
+    const before = await page.evaluate(() => window.__voxelands.waterSim.activeCount);
+    await page.evaluate(({ x, y, z }) => {
+      const { world } = window.__voxelands;
+      world.setBlocks([x, y, z, 0, x, y - 1, z, 0, x, y - 2, z, 0]); // dig straight down through the floor
+    }, a);
+    const woken = await page.evaluate(() => window.__voxelands.waterSim.activeCount);
+    assert(woken > before, "digging under the water should wake it");
+    await page.waitForFunction(() => window.__voxelands.waterSim.activeCount === 0, null, { timeout: 30000, polling: 50 });
+    const r = await page.evaluate(
+      ({ x, y, z }) => {
+        const { world } = window.__voxelands;
+        return {
+          original: world.getBlock(x, y + 1, z),
+          hole1: world.getBlock(x, y, z),
+          hole2: world.getBlock(x, y - 1, z),
+          bottom: world.getBlock(x, y - 2, z),
+        };
+      },
+      a
+    );
+    console.log(`        after settling: ${JSON.stringify(r)}`);
+    assert(r.original === 5, "the original water should still be there");
+    assert(r.hole1 === 5 && r.hole2 === 5 && r.bottom === 5, `water should fall all the way down the hole instead of leaving it floating: ${JSON.stringify(r)}`);
   });
 
   // --- Loose blocks and sounds ---

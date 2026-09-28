@@ -684,3 +684,42 @@ The codebase grew from ~10,800 lines of JavaScript in 34 modules to ~15,200 line
   - boxes for distant tree crowns.
 
   Each was much cheaper and close enough for the look.
+
+---
+
+# Round 4, Part A checklist
+
+## 1. Weapons — DONE
+- [x] Default hotbar in a new game: 1 pistol, 2 grenade, 3 bazooka, 4 machine gun, 5 airstrike designator, 6 sniper rifle
+- [x] Explosions carve wide, flatter craters (horizontal ellipsoid ~2x wider than deep)
+- [x] Reduce bazooka explosion to 1/3 of current size
+- [x] Settings: explosion-size slider per weapon (pause menu)
+- [x] Machine gun: hold RMB auto fire, tracers, recoil climb
+- [x] Sniper rifle: scope zoom + overlay, high damage, very long range
+- [x] Airstrike: laser-aim, fire, 5s delay, meteor rain on target + random spots
+- [x] BUG: long-range hitscan/projectiles hit LOD/distant terrain via a heightfield fallback in World.raycast; deferred explosions stored via World.queueEdit and applied when chunks load
+- [x] Keep no reload / unlimited ammo
+
+## 2. Water physics — DONE
+- [x] BUG: floating water after explosions (js/watersim.js reacts to edits and flows down/into holes)
+- [x] Source + flowing water blocks that spread/fall, fill craters, throttled updates (budgeted per frame, MAX_FLOW_DISTANCE=4)
+
+## 3. World generation
+- [ ] Full biome set with smooth blending + realistic scale
+- [ ] Variable forest density (open/sparse/dense)
+- [ ] Warm ocean coral reefs, seagrass, kelp
+- [ ] Villages: houses, paths, farms, walking villagers
+- [ ] Default render distance 10 chunks (keep max)
+
+## 4. Mobs and animals
+- [ ] Hostile: skeleton archers (real arrow projectiles w/ drop), wall-climbing spiders (zombies stay)
+- [ ] Redesigned passive animals: sheep, cows, chickens, pigs, rabbits, fish schools, butterflies, parrots
+- [ ] Mobs spawn farther away, capped count, simplified far AI
+
+## 5. Player and settings
+- [ ] F5 camera modes (1st/3rd behind/3rd front) with visible player model
+- [ ] F1 hide HUD, F3 debug overlay
+- [ ] Time-of-day slider + lock
+- [ ] Full settings menu (graphics toggles, render distance, FOV, sensitivity, volume per category, explosion sizes, mob spawning toggle, difficulty, time of day), persisted in localStorage
+
+(tick items as completed; commit after each numbered group)

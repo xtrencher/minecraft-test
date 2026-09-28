@@ -12,9 +12,16 @@ import { DebrisPool, BillboardPool } from "./particles.js";
 import { shakeFalloff } from "./falloff.js";
 
 export const GRENADE_RADIUS = 7;
-export const BAZOOKA_RADIUS = GRENADE_RADIUS * 5;
+// Was 5x a grenade's radius; reduced to a third of that size.
+export const BAZOOKA_RADIUS = (GRENADE_RADIUS * 5) / 3;
+export const AIRSTRIKE_METEOR_RADIUS = GRENADE_RADIUS * 1.3;
 const MAX_BLAST_RADIUS = 40; // hard cap on the carve radius (cost grows with r^3)
 const MAX_FLOOD_CELLS = 12000; // bound on how much water one blast can let in
+// Craters are wide, flat ellipsoids (roughly this many times wider than
+// deep) rather than spheres, closer to how a real blast digs into the ground.
+const CRATER_VERTICAL_SCALE = 2;
+// Per-weapon explosion-size multipliers, changed live from the settings menu.
+export const explosionScale = { grenade: 1, bazooka: 1, airstrike: 1 };
 
 // A lumpy crater shape: the blast radius varies smoothly with direction (a
 // few random low-frequency waves over the sphere of directions). Because the
@@ -136,22 +143,26 @@ export class EffectsSystem {
     };
   }
 
-  // Removes blocks in a lumpy sphere around `center` (never bedrock; water
-  // absorbs the blast) in one batched edit; returns the removed blocks as a
-  // flat [x, y, z, id, ...] array.
+  // Removes blocks in a lumpy, flattened ellipsoid around `center` (never
+  // bedrock; water absorbs the blast) in one batched edit; returns the
+  // removed blocks as a flat [x, y, z, id, ...] array. Columns whose chunk
+  // isn't loaded yet (a very long-range shot into distant/LOD terrain) are
+  // carved approximately against the deterministic height map instead, and
+  // queued as block edits that apply automatically once that chunk loads.
   _carve(center, radius) {
     const world = this.world;
     const lumpiness = Math.max(0.75, radius * 0.1);
     const r = Math.min(radius, MAX_BLAST_RADIUS) - lumpiness;
     const shape = makeCraterShape(lumpiness);
     const reach = Math.ceil(r + lumpiness);
+    const vReach = Math.ceil(reach / CRATER_VERTICAL_SCALE);
     const bx = Math.floor(center.x);
     const by = Math.floor(center.y);
     const bz = Math.floor(center.z);
     const removed = [];
     const edits = [];
-    const y0 = Math.max(0, by - reach);
-    const y1 = Math.min(WORLD_HEIGHT - 1, by + reach);
+    const y0 = Math.max(0, by - vReach);
+    const y1 = Math.min(WORLD_HEIGHT - 1, by + vReach);
     const maxR2 = (r + lumpiness) * (r + lumpiness);
     for (let x = bx - reach; x <= bx + reach; x++) {
       for (let z = bz - reach; z <= bz + reach; z++) {
@@ -160,21 +171,29 @@ export class EffectsSystem {
         const h2 = ox * ox + oz * oz;
         if (h2 > maxR2) continue;
         // Read the column straight from its chunk (this loop visits up to
-        // ~300k cells for a bazooka blast).
+        // ~300k cells for a bazooka blast); fall back to the height map for
+        // terrain that hasn't generated yet.
         const chunk = world.getChunk(x >> 4, z >> 4);
-        if (!chunk) continue;
-        const blocks = chunk.blocks;
+        const blocks = chunk ? chunk.blocks : null;
         const col = ((z & 15) << 4) | (x & 15);
+        const surfaceY = blocks ? 0 : world.heightAt(x, z);
         for (let y = y0; y <= y1; y++) {
-          const id = blocks[(y << 8) | col];
-          if (id === BLOCK.AIR || id === BLOCK.WATER || id === BLOCK.BEDROCK) continue;
-          const oy = y + 0.5 - center.y;
+          let id;
+          if (blocks) {
+            id = blocks[(y << 8) | col];
+            if (id === BLOCK.AIR || id === BLOCK.WATER || id === BLOCK.BEDROCK) continue;
+          } else {
+            if (y < 2 || y > surfaceY) continue; // approximate: solid ground below the surface, never bedrock
+            id = y >= surfaceY - 3 ? BLOCK.GRASS : BLOCK.STONE;
+          }
+          const oy = (y + 0.5 - center.y) * CRATER_VERTICAL_SCALE;
           const d2 = h2 + oy * oy;
           if (d2 > maxR2) continue;
           const d = Math.sqrt(d2);
           if (d > 0.5 && d > r + shape(ox / d, oy / d, oz / d)) continue;
           removed.push(x, y, z, id);
-          edits.push(x, y, z, BLOCK.AIR);
+          if (blocks) edits.push(x, y, z, BLOCK.AIR);
+          else world.queueEdit(x, y, z, BLOCK.AIR);
         }
       }
     }
@@ -224,8 +243,10 @@ export class EffectsSystem {
     world.setBlocks(edits);
   }
 
-  // Blows up at `position`. source: "grenade" | "bazooka" (for death messages).
+  // Blows up at `position`. source: "grenade" | "bazooka" | "airstrike" (for
+  // death messages and the per-weapon explosion-size setting).
   explode(position, { radius = GRENADE_RADIUS, source = "grenade" } = {}) {
+    radius *= explosionScale[source] ?? 1;
     const t0 = performance.now();
     const removed = this._carve(position, radius);
     this.floodInto(removed);

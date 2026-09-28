@@ -77,6 +77,9 @@ export class Player {
     this._lastWTime = -10;
     this._footstepDistance = 0;
     this.fov = BASE_FOV;
+    this.zoomFov = null; // set by a scoped weapon to override the normal FOV
+    this.zoomSensMul = 1; // mouse-look multiplier while zoomed (sniper scope)
+    this.mouseSensitivity = 1; // user setting multiplier
 
     this.enabled = false;
     this.onFlightToggle = null;
@@ -143,7 +146,7 @@ export class Player {
 
   _onMouseMove(e) {
     if (!this.locked || this.dead) return;
-    const sensitivity = 0.0022;
+    const sensitivity = 0.0022 * this.mouseSensitivity * this.zoomSensMul;
     this.yaw -= e.movementX * sensitivity;
     this.pitch -= e.movementY * sensitivity;
     const limit = Math.PI / 2 - 0.01;
@@ -399,7 +402,7 @@ export class Player {
     // Camera: sneaking lowers the eyes; sprinting widens the field of view.
     const eyeTarget = this.sneaking ? SNEAK_EYE_DROP : 0;
     this._eyeOffset += (eyeTarget - this._eyeOffset) * Math.min(1, dt * 12);
-    const fovTarget = BASE_FOV + (this.sprinting ? 9 : 0) + (this.flying && this.sprinting ? 6 : 0);
+    const fovTarget = this.zoomFov != null ? this.zoomFov : BASE_FOV + (this.sprinting ? 9 : 0) + (this.flying && this.sprinting ? 6 : 0);
     this.fov += (fovTarget - this.fov) * Math.min(1, dt * 8);
     if (Math.abs(this.camera.fov - this.fov) > 0.01) {
       this.camera.fov = this.fov;

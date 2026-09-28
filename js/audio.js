@@ -293,6 +293,26 @@ export class Audio {
     this._hit({ type: "lowpass", f: 1400, fEnd: 300, q: 0.7, d: 0.35, v: 0.12, attack: 0.01 }, 0.02);
   }
 
+  // Machine gun: a lighter, quicker crack for rapid automatic fire.
+  playMachineGun() {
+    this._hit({ type: "highpass", f: 2400, q: 0.7, d: 0.02, v: 0.4, attack: 0.001 });
+    this._hit({ type: "bandpass", f: 1100, q: 1, d: 0.05, v: 0.42, attack: 0.001 });
+    this._hit({ type: "lowpass", f: 220, q: 1, d: 0.07, v: 0.32, attack: 0.001 });
+  }
+
+  // Sniper rifle: a deep, sharp crack with a long, rolling tail.
+  playSniperShot() {
+    this._hit({ type: "highpass", f: 3200, q: 0.6, d: 0.04, v: 0.7, attack: 0.001 });
+    this._hit({ type: "bandpass", f: 700, q: 0.9, d: 0.16, v: 0.62, attack: 0.001 });
+    this._hit({ type: "lowpass", f: 130, q: 1, d: 0.4, v: 0.5, attack: 0.002 });
+    this._hit({ type: "lowpass", f: 1200, fEnd: 250, q: 0.6, d: 0.6, v: 0.14, attack: 0.02 }, 0.03);
+  }
+
+  // Airstrike designator: a rising electronic lock-on beep.
+  playLockOn() {
+    this._hit({ type: "bandpass", f: 900, fEnd: 1800, q: 3, d: 0.15, v: 0.25, attack: 0.005 });
+  }
+
   // A bullet hitting a block `distance` blocks away: a small sharp tick.
   playRicochet(distance = 0) {
     this._hit({ type: "bandpass", f: 2900, q: 7, d: 0.05, v: 0.14 / (1 + distance / 10), jitter: 0.3 }, Math.min(distance / 343, 0.5));

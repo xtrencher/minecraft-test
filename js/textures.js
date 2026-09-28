@@ -175,6 +175,9 @@ const P = {
   pineBark: [0x2a1a12, 0x3b251a, 0x4d3122, 0x5f3d2a, 0x724a33, 0x86583c].map(hex),
   pineRings: [0x9a6d45, 0xab7c50, 0xba8a5c].map(hex),
   pineNeedles: [0x0f2f25, 0x16402f, 0x1e5139, 0x286244, 0x357350, 0x44845c].map(hex),
+  snow: [0xc7d3d8, 0xd7e1e4, 0xe4ecee, 0xeff5f6, 0xfbfdfd].map(hex),
+  terracotta: [0x8a3f2a, 0xa8522f, 0xbf6a3a, 0xd68f4e, 0xe8b06a, 0xc46b3f, 0x9c4a2c].map(hex),
+  cactus: [0x1f5c2e, 0x2c7a3c, 0x3a944c, 0x49ac5c].map(hex),
 };
 
 // ---------- Painters ----------
@@ -796,6 +799,106 @@ function paintWool(t) {
   });
 }
 
+function paintSnowTop(t) {
+  t.forEach((x, y) => {
+    const f = t.fbm(x, y, 5, 3) * 0.3 + t.rand() * 0.2 + 0.65;
+    t.set(x, y, ramp(P.snow, f));
+  });
+  for (let i = 0; i < 14; i++) t.set(Math.floor(t.rand() * TEX), Math.floor(t.rand() * TEX), P.snow[P.snow.length - 1]);
+  for (let i = 0; i < 10; i++) t.set(Math.floor(t.rand() * TEX), Math.floor(t.rand() * TEX), scaleRgb(P.snow[0], 0.92));
+}
+
+function paintSnowSide(t) {
+  paintDirt(t, 4);
+  for (let x = 0; x < TEX; x++) {
+    const depth = 7 + Math.floor(t.noise(x, 0, 8, 6) * 4);
+    for (let y = 0; y < depth; y++) {
+      const f = t.fbm(x, y, 4, 2, 11) * 0.25 + t.rand() * 0.15 + 0.68;
+      t.set(x, y, ramp(P.snow, f));
+    }
+    t.set(x, depth, hex(0xb9c8ce)); // shaded lip
+    t.shade(x, depth + 1, 0.72);
+  }
+}
+
+function paintTerracotta(t) {
+  t.forEach((x, y) => {
+    const band = Math.floor((y + t.fbm(x, y, 8, 2) * 3) / 3);
+    const base = P.terracotta[((band % P.terracotta.length) + P.terracotta.length) % P.terracotta.length];
+    const f = 0.85 + t.rand() * 0.28 + (t.fbm(x, y, 4, 3) - 0.5) * 0.15;
+    t.set(x, y, scaleRgb(base, f));
+  });
+}
+
+function paintCactusSide(t) {
+  t.forEach((x, y) => {
+    const ridge = Math.abs(((x + 16) % 8) - 4) < 1.4 ? -0.16 : 0;
+    const f = t.fbm(x, y, 4, 3) * 0.35 + t.rand() * 0.18 + 0.55 + ridge;
+    t.set(x, y, ramp(P.cactus, f));
+  });
+  for (let i = 0; i < 16; i++) {
+    const x = Math.floor(t.rand() * TEX);
+    const y = Math.floor(t.rand() * TEX);
+    if (x % 8 < 2) t.set(x, y, hex(0xd8cf9a));
+  }
+}
+
+function paintCactusTop(t) {
+  t.forEach((x, y) => t.set(x, y, ramp(P.cactus, 0.58 + t.rand() * 0.22)));
+}
+
+function paintDeadBush(t) {
+  t.forEach((x, y) => t.set(x, y, [0, 0, 0], 0));
+  const r = makeRand(t.seed + 7);
+  for (let i = 0; i < 26; i++) {
+    let x = 10 + r() * 12;
+    let y = 30 - r() * 2;
+    let a = (r() - 0.5) * 1.6;
+    const len = 6 + Math.floor(r() *10);
+    for (let k = 0; k < len; k++) {
+      t.set(Math.floor(x), Math.floor(y), mixRgb(hex(0x5a3d22), hex(0x8a6238), k / len));
+      x += Math.sin(a) * 1.1;
+      y -= 1;
+      a += (r() - 0.5) * 0.5;
+      if (y < 0) break;
+    }
+  }
+}
+
+function paintCoral(t) {
+  const hues = [0xff6f91, 0xff9a56, 0xffd166, 0x9b5de5, 0x4cc9f0, 0xf72585].map(hex);
+  const vor = t.voronoi(22, 3);
+  t.forEach((x, y) => {
+    const v = vor(x, y);
+    const c = hues[v.cell % hues.length];
+    const f = Math.min(1.3, 0.78 + (v.d2 - v.d1) * 0.06 + t.rand() * 0.14);
+    t.set(x, y, scaleRgb(c, f));
+  });
+}
+
+function paintSeagrass(t) {
+  t.forEach((x, y) => t.set(x, y, [0, 0, 0], 0));
+  const r = makeRand(t.seed + 9);
+  for (let i = 0; i < 3; i++) {
+    let x = 7 + i * 8 + r() * 5;
+    const h = 16 + Math.floor(r() * 12);
+    for (let k = 0; k < h; k++) {
+      const y = TEX - 1 - k;
+      t.set(Math.floor(x), y, mixRgb(hex(0x0f5c34), hex(0x3fae6a), k / h));
+      x += Math.sin(k * 0.5) * 0.3;
+    }
+  }
+}
+
+function paintKelp(t) {
+  t.forEach((x, y) => t.set(x, y, [0, 0, 0], 0));
+  for (let y = 0; y < TEX; y++) {
+    const x = 16 + Math.sin(y * 0.4) * 3;
+    t.set(Math.round(x), y, mixRgb(hex(0x2a4a1e), hex(0x5a8a3a), y / TEX));
+    t.set(Math.round(x) + 1, y, scaleRgb(hex(0x3a6a2a), 0.8));
+  }
+}
+
 const PAINTERS = {
   grass_top: paintGrassTop,
   grass_side: paintGrassSide,
@@ -831,6 +934,15 @@ const PAINTERS = {
   pine_side: paintPineBark,
   pine_top: paintPineTop,
   pine_leaves: paintPineNeedles,
+  snow_top: paintSnowTop,
+  snow_side: paintSnowSide,
+  terracotta: paintTerracotta,
+  cactus_side: paintCactusSide,
+  cactus_top: paintCactusTop,
+  dead_bush: paintDeadBush,
+  coral: paintCoral,
+  seagrass: paintSeagrass,
+  kelp: paintKelp,
 };
 
 export function paintTile(name) {

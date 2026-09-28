@@ -34,6 +34,9 @@ export const ITEM = Object.freeze({
   GRENADE: 286,
   PISTOL: 287,
   BAZOOKA: 288,
+  MACHINE_GUN: 289,
+  SNIPER_RIFLE: 290,
+  AIRSTRIKE: 291,
 });
 
 // Tool materials: tier (what they can harvest), mining speed multiplier,
@@ -62,6 +65,9 @@ const ITEM_DEFS = {
   [ITEM.GRENADE]: { name: "Grenade", icon: "grenade", stack: 1, weapon: { kind: "grenade" } },
   [ITEM.PISTOL]: { name: "Pistol", icon: "pistol", stack: 1, weapon: { kind: "pistol" } },
   [ITEM.BAZOOKA]: { name: "Bazooka", icon: "bazooka", stack: 1, weapon: { kind: "bazooka" } },
+  [ITEM.MACHINE_GUN]: { name: "Machine Gun", icon: "machinegun", stack: 1, weapon: { kind: "machinegun" } },
+  [ITEM.SNIPER_RIFLE]: { name: "Sniper Rifle", icon: "sniper", stack: 1, weapon: { kind: "sniper" } },
+  [ITEM.AIRSTRIKE]: { name: "Airstrike Designator", icon: "airstrike", stack: 1, weapon: { kind: "airstrike" } },
 };
 
 const TOOL_KINDS = [
@@ -177,5 +183,9 @@ export const CREATIVE_ITEMS = [
   ITEM.WOOD_PICKAXE, ITEM.STONE_PICKAXE, ITEM.IRON_PICKAXE, ITEM.DIAMOND_PICKAXE,
   ITEM.WOOD_AXE, ITEM.STONE_AXE, ITEM.IRON_AXE, ITEM.DIAMOND_AXE,
   ITEM.WOOD_SHOVEL, ITEM.STONE_SHOVEL, ITEM.IRON_SHOVEL, ITEM.DIAMOND_SHOVEL,
-  ITEM.GRENADE, ITEM.PISTOL, ITEM.BAZOOKA,
+  ITEM.GRENADE, ITEM.PISTOL, ITEM.BAZOOKA, ITEM.MACHINE_GUN, ITEM.SNIPER_RIFLE, ITEM.AIRSTRIKE,
 ];
+
+// Slots 0-5 of a brand new game's hotbar (both modes): a full loadout so a
+// new player has every weapon to try immediately.
+export const STARTING_WEAPONS = [ITEM.PISTOL, ITEM.GRENADE, ITEM.BAZOOKA, ITEM.MACHINE_GUN, ITEM.AIRSTRIKE, ITEM.SNIPER_RIFLE];

@@ -130,10 +130,25 @@ export class HeldItem {
         this.mesh.position.set(0.3, -0.24, -0.72);
         this.mesh.rotation.set(0.0, 0.05, 0);
         this.kind = "gun";
+      } else if (model.gun === "machinegun") {
+        this.mesh.scale.setScalar(0.62);
+        this.mesh.position.set(0.26, -0.22, -0.55);
+        this.mesh.rotation.set(0.02, 0.04, 0);
+        this.kind = "gun";
+      } else if (model.gun === "sniper") {
+        this.mesh.scale.setScalar(0.6);
+        this.mesh.position.set(0.25, -0.23, -0.6);
+        this.mesh.rotation.set(0.0, 0.06, 0);
+        this.kind = "gun";
       } else if (itemInfo(id)?.weapon?.kind === "grenade") {
         this.mesh.scale.setScalar(0.22);
         this.mesh.position.set(0.34, -0.26, -0.6);
         this.mesh.rotation.set(0.1, -0.5, 0.1);
+        this.kind = "item";
+      } else if (itemInfo(id)?.weapon?.kind === "airstrike") {
+        this.mesh.scale.setScalar(0.4);
+        this.mesh.position.set(0.36, -0.28, -0.58);
+        this.mesh.rotation.set(0.1, -0.7, 0.15);
         this.kind = "item";
       } else {
         this.mesh.scale.setScalar(0.42);

@@ -11,7 +11,7 @@ import { PostFX } from "./postfx.js";
 import { PRESETS, applyPreset, normalizePreset } from "./graphics.js";
 import { worldUniforms } from "./shaders.js";
 import { Inventory, HOTBAR_SIZE, makeStack } from "./inventory.js";
-import { itemInfo } from "./items.js";
+import { itemInfo, STARTING_WEAPONS } from "./items.js";
 import { IconCache } from "./slot-view.js";
 import { Hud } from "./hud.js";
 import { InventoryScreen } from "./inventory-ui.js";
@@ -21,9 +21,10 @@ import { Interaction } from "./interaction.js";
 import { MobManager } from "./mobs.js";
 import { isUnderwater, surfaceHeight } from "./water.js";
 import { FallingBlocks } from "./falling.js";
+import { WaterSim } from "./watersim.js";
 import { WeaponSystem } from "./weapons.js";
 import { BulletHoles } from "./decals.js";
-import { GRENADE_RADIUS } from "./effects.js";
+import { GRENADE_RADIUS, explosionScale } from "./effects.js";
 import { LodSystem } from "./lod.js";
 import { GrassField } from "./grass.js";
 import { UnderwaterMotes } from "./motes.js";
@@ -76,6 +77,10 @@ function clampRenderDistance(value) {
 
 let renderDistance = clampRenderDistance(settings.renderDistance ?? DEFAULT_RENDER_DISTANCE);
 let graphicsPreset = normalizePreset(settings.graphics);
+
+// Per-weapon explosion-size multipliers (pause menu sliders), persisted.
+settings.explosionScale = { grenade: 1, bazooka: 1, airstrike: 1, ...settings.explosionScale };
+Object.assign(explosionScale, settings.explosionScale);
 
 // Built-in three.js materials (debris, particles) use this fog; the world's
 // own shaders use the shared uniforms in shaders.js (same distances).
@@ -186,6 +191,18 @@ ui.renderDistanceInput.value = String(renderDistance);
 ui.renderDistanceValueEl.textContent = String(renderDistance);
 ui.graphicsSelect.value = graphicsPreset;
 
+for (const kind of ["grenade", "bazooka", "airstrike"]) {
+  ui.explosionInputs[kind].value = String(explosionScale[kind]);
+  ui.explosionValueEls[kind].textContent = `${explosionScale[kind].toFixed(2)}x`;
+  ui.explosionInputs[kind].addEventListener("input", () => {
+    const v = Math.max(0.4, Math.min(2, Number(ui.explosionInputs[kind].value) || 1));
+    explosionScale[kind] = v;
+    settings.explosionScale[kind] = v;
+    ui.explosionValueEls[kind].textContent = `${v.toFixed(2)}x`;
+    saveSettings(settings);
+  });
+}
+
 const player = new Player(camera, world, canvas);
 const inventory = new Inventory();
 const audio = new Audio();
@@ -200,8 +217,9 @@ const interaction = new Interaction({ scene, world, player, inventory, entities,
 const invScreen = new InventoryScreen({ icons, inventory, audio });
 const mobs = new MobManager({ scene, world, player, entities, audio, effects, sky });
 const falling = new FallingBlocks(scene, world);
+const waterSim = new WaterSim(world);
 const decals = new BulletHoles(scene, world);
-const weapons = new WeaponSystem({ scene, world, player, effects, audio, mobs, held, decals });
+const weapons = new WeaponSystem({ scene, world, player, effects, audio, mobs, held, decals, inventory });
 interaction.weapons = weapons;
 interaction.combat = mobs;
 
@@ -209,6 +227,15 @@ interaction.combat = mobs;
 function fillCreativeHotbar() {
   HOTBAR.forEach((id, i) => {
     if (i < HOTBAR_SIZE && !inventory.slots[i]) inventory.slots[i] = makeStack(id, 64);
+  });
+}
+
+// A brand new game (either mode) starts with a full weapon loadout in slots
+// 1-6: pistol, grenade, bazooka, machine gun, airstrike designator, sniper
+// rifle. Always wins those slots (called once, right as a new game starts).
+function fillStartingWeapons() {
+  STARTING_WEAPONS.forEach((id, i) => {
+    if (i < HOTBAR_SIZE) inventory.slots[i] = makeStack(id, 1);
   });
 }
 
@@ -529,6 +556,7 @@ function showPause() {
 ui.playBtn.addEventListener("click", () => {
   audio.ensureStarted();
   setMode(ui.modeSelect.value);
+  if (newWorld) fillStartingWeapons();
   markInventoryChanged();
   requestLock();
 });
@@ -750,6 +778,7 @@ window.__voxelands = {
   invScreen,
   mobs,
   falling,
+  waterSim,
   weapons,
   decals,
   audio,
@@ -847,6 +876,7 @@ function animate() {
     entities.update(dt, player);
     mobs.update(dt);
     falling.update(dt);
+    waterSim.update();
     // A drawn throw is dropped if the grenade leaves the hand (thrown away, swapped).
     if (weapons.charging && itemInfo(inventory.selectedStack?.id)?.weapon?.kind !== "grenade") weapons.cancel();
     weapons.update(dt);
@@ -872,6 +902,7 @@ function animate() {
   hud.update(dt, player);
   hud.setAttackCharge(gameState === "playing" ? mobs.charge(interaction.tool) : 1);
   hud.setThrowCharge(gameState === "playing" ? weapons.charge : 0);
+  ui.setScoped(gameState === "playing" && weapons.scoped);
   held.setItem(inventory.selectedStack?.id ?? 0); // follows the selected slot (no-op when unchanged)
   held.update(dt, player, heldLight, camera, interaction.eating);
 
