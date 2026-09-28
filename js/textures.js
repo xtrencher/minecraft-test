@@ -178,6 +178,10 @@ const P = {
   snow: [0xc7d3d8, 0xd7e1e4, 0xe4ecee, 0xeff5f6, 0xfbfdfd].map(hex),
   terracotta: [0x8a3f2a, 0xa8522f, 0xbf6a3a, 0xd68f4e, 0xe8b06a, 0xc46b3f, 0x9c4a2c].map(hex),
   cactus: [0x1f5c2e, 0x2c7a3c, 0x3a944c, 0x49ac5c].map(hex),
+  lava: [0x4a0e02, 0x8f1e04, 0xd94a0a, 0xf5811a, 0xffb238, 0xfff0a0].map(hex),
+  willowBark: [0x4a463c, 0x5c574a, 0x6d6758, 0x7c7566, 0x8c8474].map(hex),
+  willowLeaves: [0x4a6e3a, 0x5c8347, 0x6f9756, 0x84ab68, 0x9bbd7d, 0xb2cf94].map(hex),
+  lilyPad: [0x1c5c24, 0x2c7a34, 0x3f9442, 0x57a852].map(hex),
 };
 
 // ---------- Painters ----------
@@ -234,19 +238,26 @@ function paintGrassTop(t) {
     t.set(x, y, P.grass[0]);
     if (t.rand() < 0.5) t.set(x + 1, y, P.grass[1]);
   }
-  // Blades: short vertical strokes, lighter at the tip.
-  for (let i = 0; i < 110; i++) {
+  // Blades: short vertical strokes, lighter at the tip. Two passes (a
+  // coarser one, then finer infill) for a denser, lusher carpet than a
+  // single scattershot pass gives.
+  for (let i = 0; i < 170; i++) {
     const x = Math.floor(t.rand() * TEX);
     const y = Math.floor(t.rand() * TEX);
-    const len = 2 + Math.floor(t.rand() * 2);
-    const light = t.rand() < 0.55;
+    const len = 2 + Math.floor(t.rand() * 3);
+    const light = t.rand() < 0.6;
     for (let k = 0; k < len; k++) {
       const shadeIdx = light ? 4 + (k === 0 ? 2 : 1) : 1 + (k === 0 ? 1 : 0);
       t.set(x, y + k, P.grass[Math.min(P.grass.length - 1, shadeIdx)]);
     }
   }
+  for (let i = 0; i < 90; i++) {
+    const x = Math.floor(t.rand() * TEX);
+    const y = Math.floor(t.rand() * TEX);
+    t.set(x, y, P.grass[Math.min(P.grass.length - 1, 3 + Math.floor(t.rand() * 3))]);
+  }
   // A few tiny yellow-green sun flecks.
-  for (let i = 0; i < 10; i++) t.set(Math.floor(t.rand() * TEX), Math.floor(t.rand() * TEX), hex(0xa3d66a));
+  for (let i = 0; i < 16; i++) t.set(Math.floor(t.rand() * TEX), Math.floor(t.rand() * TEX), hex(0xa3d66a));
 }
 
 function paintGrassSide(t) {
@@ -301,6 +312,20 @@ function paintStone(t, salt = 0) {
   });
   // Mica specks that catch the light.
   for (let i = 0; i < 7; i++) t.set(Math.floor(t.rand() * TEX), Math.floor(t.rand() * TEX), hex(0xc4c6cf));
+  // Damp patches: a cool, slightly glossy tint (the relief map's roughness
+  // reads brightness, so these also come out glossier underground).
+  const damp = hex(0x2a3a46);
+  for (let i = 0; i < 3; i++) {
+    const cx = t.rand() * TEX;
+    const cy = t.rand() * TEX;
+    const r = 3 + t.rand() * 4;
+    t.forEach((x, y) => {
+      const d = Math.hypot(x - cx, y - cy);
+      if (d > r) return;
+      const k = (1 - d / r) * (0.5 + t.rand() * 0.4) * 0.4;
+      t.set(x, y, mixRgb(t.get(x, y), damp, k));
+    });
+  }
 }
 
 function paintCobblestone(t) {
@@ -865,6 +890,35 @@ function paintDeadBush(t) {
   }
 }
 
+// Cracked, cooled crust in dark cells with bright molten cracks glowing
+// between them (opposite of paintLumen's dark-edge crystal look), plus a
+// few bubbling bright pockets.
+function paintLava(t) {
+  const vor = t.voronoi(11, 6);
+  t.forEach((x, y) => {
+    const v = vor(x, y);
+    const edge = v.d2 - v.d1;
+    if (edge < 1.15) {
+      const heat = clamp01(1 - edge / 1.15);
+      t.set(x, y, ramp(P.lava, 0.55 + heat * 0.45));
+      return;
+    }
+    const f = 0.04 + t.rand() * 0.12 + t.fbm(x, y, 6, 2) * 0.08;
+    t.set(x, y, ramp(P.lava, f));
+  });
+  for (let i = 0; i < 5; i++) {
+    const cx = Math.floor(t.rand() * TEX);
+    const cy = Math.floor(t.rand() * TEX);
+    const r = 1 + Math.floor(t.rand() * 2);
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (dx * dx + dy * dy > r * r) continue;
+        t.set(cx + dx, cy + dy, ramp(P.lava, 0.72 + t.rand() * 0.28));
+      }
+    }
+  }
+}
+
 function paintCoral(t) {
   const hues = [0xff6f91, 0xff9a56, 0xffd166, 0x9b5de5, 0x4cc9f0, 0xf72585].map(hex);
   const vor = t.voronoi(22, 3);
@@ -874,6 +928,31 @@ function paintCoral(t) {
     const f = Math.min(1.3, 0.78 + (v.d2 - v.d1) * 0.06 + t.rand() * 0.14);
     t.set(x, y, scaleRgb(c, f));
   });
+}
+
+// A branching reef fan (cross plant, not a solid cube like CORAL): a few
+// forking stalks fanning up from the base, in one bright reef hue.
+function paintCoralFan(t) {
+  t.forEach((x, y) => t.set(x, y, [0, 0, 0], 0));
+  const hues = [hex(0xff6f91), hex(0xff9a56), hex(0x9b5de5), hex(0x4cc9f0), hex(0xf72585)];
+  const hue = hues[Math.floor(strSeed(`fan${t.seed}`) % hues.length)];
+  const r = makeRand(t.seed + 21);
+  const branch = (x0, y0, a, len, gen) => {
+    let x = x0;
+    let y = y0;
+    for (let k = 0; k < len; k++) {
+      t.set(Math.round(x), Math.round(y), scaleRgb(hue, 0.75 + (y0 - y) / TEX));
+      x += Math.sin(a) * 1.0;
+      y -= 1;
+      a += (r() - 0.5) * 0.5;
+      if (y < 1) break;
+    }
+    if (gen > 0) {
+      branch(x, y, a - 0.6, len * 0.6, gen - 1);
+      branch(x, y, a + 0.6, len * 0.6, gen - 1);
+    }
+  };
+  for (let i = 0; i < 3; i++) branch(10 + i * 6 + r() * 3, TEX - 2, (r() - 0.5) * 0.6, 10 + r() * 6, 2);
 }
 
 function paintSeagrass(t) {
@@ -897,6 +976,69 @@ function paintKelp(t) {
     t.set(Math.round(x), y, mixRgb(hex(0x2a4a1e), hex(0x5a8a3a), y / TEX));
     t.set(Math.round(x) + 1, y, scaleRgb(hex(0x3a6a2a), 0.8));
   }
+}
+
+// Willow bark: grey-brown and deeply furrowed (cooler and rougher than oak).
+function paintWillowBark(t) {
+  t.forEach((x, y) => {
+    const f = t.fbm(x, y, 4, 2, 6) * 0.6 + t.rand() * 0.3 + t.noise(x, y, 3, 4) * 0.2;
+    t.set(x, y, ramp(P.willowBark, f));
+  });
+  for (let i = 0; i < 9; i++) {
+    let x = Math.floor(t.rand() * TEX);
+    for (let y = 0; y < TEX; y++) {
+      t.set(x, y, scaleRgb(P.willowBark[0], 0.72));
+      if (t.rand() < 0.35) x += t.rand() < 0.5 ? 1 : -1;
+    }
+  }
+}
+
+function paintWillowTop(t) {
+  const c = (TEX - 1) / 2;
+  t.forEach((x, y) => {
+    const r = Math.hypot(x - c, y - c) + t.fbm(x, y, 4, 2, 8) * 2;
+    const ring = (r / 2) % 1;
+    const col = ring < 0.3 ? scaleRgb(P.willowBark[1], 0.8) : ramp(P.willowBark, 0.35 + t.rand() * 0.35);
+    t.set(x, y, col);
+  });
+}
+
+// Hanging vine/liana: a few wandering, tapering strands with small leaflets.
+function paintVine(t) {
+  t.forEach((x, y) => t.set(x, y, [0, 0, 0], 0));
+  const r = makeRand(t.seed + 13);
+  for (let i = 0; i < 5; i++) {
+    let x = 3 + i * 6 + r() * 4;
+    const h = 16 + Math.floor(r() * 15);
+    for (let k = 0; k < h && k < TEX; k++) {
+      const y = k;
+      const c = mixRgb(hex(0x2a5a24), hex(0x5c9a48), k / h);
+      const px = Math.round(x);
+      t.set(px, y, c);
+      if (r() < 0.4 && k > 2) t.set(px + (r() < 0.5 ? 1 : -1), y, scaleRgb(c, 0.82));
+      x += Math.sin(k * 0.35 + i * 1.7) * 0.35;
+    }
+  }
+}
+
+// A round pad floating flat on the water, with a wedge notch and radiating veins.
+function paintLilyPad(t) {
+  t.forEach((x, y) => t.set(x, y, [0, 0, 0], 0));
+  const c = (TEX - 1) / 2;
+  const notchAngle = 0.7;
+  t.forEach((x, y) => {
+    const dx = x - c;
+    const dy = y - c;
+    const d = Math.hypot(dx, dy);
+    if (d > 15.3) return;
+    const ang = Math.atan2(dy, dx);
+    if (d > 7 && Math.abs(((ang - notchAngle + Math.PI) % (2 * Math.PI)) - Math.PI) < 0.32) return;
+    let f = 0.5 + t.fbm(x, y, 4, 2, 9) * 0.35 - (d / 15.3) * 0.12;
+    let col = ramp(P.lilyPad, clamp01(f));
+    const veinPhase = ((ang + Math.PI) % (Math.PI / 4)) - Math.PI / 8;
+    if (d > 2 && Math.abs(veinPhase) < 0.045) col = scaleRgb(col, 0.72);
+    t.set(x, y, col);
+  });
 }
 
 const PAINTERS = {
@@ -941,8 +1083,15 @@ const PAINTERS = {
   cactus_top: paintCactusTop,
   dead_bush: paintDeadBush,
   coral: paintCoral,
+  coral_fan: paintCoralFan,
   seagrass: paintSeagrass,
   kelp: paintKelp,
+  willow_side: paintWillowBark,
+  willow_top: paintWillowTop,
+  willow_leaves: (t) => paintFoliage(t, P.willowLeaves, 130, 0.3),
+  vine: paintVine,
+  lily_pad: paintLilyPad,
+  lava: paintLava,
 };
 
 export function paintTile(name) {
@@ -993,6 +1142,11 @@ const RELIEF = {
   pine_side: [3.4, 0.9, 1],
   pine_top: [1.6, 0.8, 1],
   pine_leaves: [2.0, 0.55, 1],
+  willow_side: [2.4, 0.85, 1],
+  willow_top: [1.6, 0.8, 1],
+  willow_leaves: [2.0, 0.5, 1],
+  lily_pad: [1.2, 0.4, 1],
+  lava: [2.2, 0.3, 1],
 };
 
 function luminance(p, i) {

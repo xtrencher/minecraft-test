@@ -70,6 +70,7 @@ const SELECTION = {
   [SHAPE.CUBE]: [0, 0, 0, 1, 1, 1],
   [SHAPE.CROSS]: [0.15, 0, 0.15, 0.85, 0.8, 0.85],
   [SHAPE.TORCH]: [6 / 16, 0, 6 / 16, 10 / 16, 11 / 16, 10 / 16],
+  [SHAPE.PAD]: [0.08, 0.85, 0.08, 0.92, 1, 0.92],
 };
 
 export function selectionBox(id) {

@@ -125,7 +125,9 @@ vec3 applyFog(vec3 color, vec3 worldPos) {
     vec3 dir = d / max(dist, 0.001);
     vec3 murk = uWaterFogColor * (0.75 + 1.6 * smoothstep(-0.3, 0.95, dir.y));
     murk += uWaterFogColor * vec3(1.2, 1.6, 1.3) * pow(max(dot(dir, uLightDir), 0.0), 6.0) * 2.0 * smoothstep(-0.05, 0.1, uLightDir.y);
-    return mix(color, murk, 1.0 - exp(-dist * 0.085));
+    // Extinction rate: low enough to still read as water, not a wall of murk
+    // a few blocks out (light rays and water tint elsewhere are unaffected).
+    return mix(color, murk, 1.0 - exp(-dist * 0.035));
   }
   vec3 dir = d / max(dist, 0.001);
   float edge = smoothstep(uFog.x, uFog.y, dist);
@@ -150,6 +152,14 @@ vec3 applyFog(vec3 color, vec3 worldPos) {
 float skyCurve(float l) { return pow(l, 1.7); }
 // Classic voxel-game light curve: bright near the source, falling off fast.
 float torchCurve(float l) { return l / (4.0 - 3.0 * l); }
+// A gentle, non-repeating flicker (sum of unrelated frequencies) applied to
+// every torch/lava/lumen-lit surface: every block light source in this game
+// is a flame or molten rock, so one shared flicker reads as their warm light
+// unsteadily dancing, at a fraction of the cost of animating light
+// propagation per source.
+float torchFlicker() {
+  return 0.92 + 0.05 * sin(uTime * 9.1) + 0.03 * sin(uTime * 21.7 + 1.3) + 0.02 * sin(uTime * 4.6 + 4.1);
+}
 
 // How much the shadow map can be trusted here: 1 well inside the shadow
 // camera's frustum, fading to 0 at its edges and beyond (and 0 when there
@@ -188,8 +198,10 @@ vec3 worldLighting(vec3 N, float sky, float blk, float ao, float shadow) {
   // isn't darker, it's only darker in the shade.
   vec3 direct = uLightColor * ndl * sunVisibility(sky, shadow);
   vec3 hemi = mix(uAmbientGround, uAmbientSky, N.y * 0.5 + 0.5);
-  float aoF = 0.32 + 0.68 * ao;
-  vec3 indirect = (hemi * skyCurve(sky) + uTorchColor * torchCurve(blk) + vec3(0.006, 0.007, 0.01)) * aoF;
+  // A deeper floor than before: caves and nooks read as properly dark and
+  // atmospheric instead of gently shaded (direct sunlight is untouched above).
+  float aoF = 0.2 + 0.8 * ao;
+  vec3 indirect = (hemi * skyCurve(sky) + uTorchColor * torchCurve(blk) * torchFlicker() + vec3(0.006, 0.007, 0.01)) * aoF;
   // Slight per-axis shading so walls in full shade still read as distinct faces.
   return (direct + indirect) * (1.0 - abs(N.x) * 0.07);
 }
@@ -408,21 +420,28 @@ vec2 parallaxUv(vec3 uvw, vec3 vts, float depthScale) {
   float steps = mix(28.0, 10.0, clamp(vts.z, 0.0, 1.0));
   float layer = 1.0 / steps;
   vec2 delta = vts.xy / max(vts.z, 0.2) * depthScale * layer;
-  vec2 uv = uvw.xy;
+  // Each block face's texture fills its whole tile (0-1) with no continuation
+  // beyond it, so a step that wanders past the edge must not wrap onto the
+  // opposite edge of the same tile (RepeatWrapping) — that samples the wrong
+  // texel *and* the wrong normal, which reads as a dark seam that curves
+  // along the grazing angle (worst at the bottom of a block seen from above,
+  // e.g. looking down through water). Clamping just inside the tile instead
+  // flattens the parallax right at the silhouette, which is invisible.
+  vec2 uv = clamp(uvw.xy, vec2(0.001), vec2(0.999));
   float cur = 0.0;
   float depth = 1.0 - textureLod(uRelief, vec3(uv, uvw.z), 0.0).b;
   for (int i = 0; i < 28; i++) {
     if (float(i) >= steps || cur >= depth) break;
-    uv -= delta;
+    uv = clamp(uv - delta, vec2(0.001), vec2(0.999));
     cur += layer;
     depth = 1.0 - textureLod(uRelief, vec3(uv, uvw.z), 0.0).b;
   }
   // Refine between the last two steps.
-  vec2 prev = uv + delta;
+  vec2 prev = clamp(uv + delta, vec2(0.001), vec2(0.999));
   float after = depth - cur;
   float before = (1.0 - textureLod(uRelief, vec3(prev, uvw.z), 0.0).b) - (cur - layer);
   float w = clamp(after / (after - before + 1e-5), 0.0, 1.0);
-  return mix(uv, prev, w);
+  return clamp(mix(uv, prev, w), vec2(0.001), vec2(0.999));
 }
 #endif
 
@@ -500,9 +519,11 @@ void main() {
     color += albedo * vec3(1.0, 1.05, 0.7) * uLightColor * through * sunVisibility(vLight.x, shadow) * 0.85;
   }
   if ((flags & 2) != 0) {
-    // Glowing blocks: their bright texels emit light (HDR, picked up by bloom).
+    // Glowing blocks: their bright texels emit light (HDR, picked up by
+    // bloom). Torches (FLICKER) also pulse their own flame brightness.
     float lum = max(albedo.r, max(albedo.g, albedo.b));
-    color = mix(color, albedo * uEmissiveBoost, smoothstep(0.3, 0.85, lum));
+    float boost = uEmissiveBoost * ((flags & 32) != 0 ? torchFlicker() : 1.0);
+    color = mix(color, albedo * boost, smoothstep(0.3, 0.85, lum));
   }
   if ((flags & 8) != 0 && uCaustics > 0.0) {
     float c = caustics(vWorldPos.xz * 0.6 + vWorldPos.y * 0.2, uTime * 0.7);
@@ -1082,9 +1103,17 @@ void main() {
     vec2 p = cameraPosition.xz + dir.xz * t;
     vec2 q = p * 0.0028 + vec2(uTime * 0.006, uTime * 0.0021);
     float n = cloudFbm(q);
-    float cover = smoothstep(1.0 - uCloudCoverage, 1.0 - uCloudCoverage + 0.28, n);
+    // A crisp base silhouette (narrow transition band) with a little extra
+    // fine-detail erosion at the edge, for a punchy, volumetric-looking cloud
+    // rather than a soft haze — and gaps between them stay clean, so sun rays
+    // shine through distinctly.
+    float edge = smoothstep(1.0 - uCloudCoverage, 1.0 - uCloudCoverage + 0.08, n);
+    // Cheap single-octave erosion (not a full cloudFbm) so the crisper edges
+    // don't cost noticeably more than the old soft ones.
+    float detail = vnoise(q * 8.6 + 5.0) * 0.5 + vnoise(q * 17.1 - 3.0) * 0.5;
+    float cover = clamp(edge - (1.0 - detail) * 0.22 * edge, 0.0, 1.0);
     float n2 = cloudFbm(q + normalize(uSunDir.xz + 1e-4) * 0.035);
-    float lit = clamp(0.55 + (n - n2) * 4.0, 0.0, 1.0);
+    float lit = clamp(0.5 + (n - n2) * 6.0, 0.0, 1.0);
     vec3 cloudCol = mix(uCloudShade, uCloudLit, lit);
     // Silver lining near the sun.
     cloudCol += uSunGlowColor * pow(max(mu, 0.0), 12.0) * 0.6 * (1.0 - cover);

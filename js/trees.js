@@ -21,15 +21,15 @@ import { BLOCK } from "./blocks.js";
 import { CHUNK_SIZE, WORLD_HEIGHT, SEA_LEVEL } from "./constants.js";
 import { BIOME } from "./biomes.js";
 
-export const TREE = Object.freeze({ OAK: 1, BIRCH: 2, PINE: 3, OLD_OAK: 4 });
-export const TREE_NAMES = { 1: "oak", 2: "birch", 3: "pine", 4: "old oak" };
+export const TREE = Object.freeze({ OAK: 1, BIRCH: 2, PINE: 3, OLD_OAK: 4, WILLOW: 5 });
+export const TREE_NAMES = { 1: "oak", 2: "birch", 3: "pine", 4: "old oak", 5: "willow" };
 // No block of a tree is farther than this from its root column.
 export const TREE_REACH = 9;
 
 const PLACE_SALT = 0x2c1b3c6d;
 const KIND_SALT = 0x297a2d39;
 const MAX_DENSITY = 0.026;
-const SPACING = { 1: 2, 2: 2, 3: 2, 4: 5 };
+const SPACING = { 1: 2, 2: 2, 3: 2, 4: 5, 5: 3 };
 
 // Biomes with no trees at all.
 const NO_TREE_BIOMES = new Set([BIOME.DESERT, BIOME.BADLANDS, BIOME.SNOWY_PLAINS, BIOME.MOUNTAINS, BIOME.BEACH, BIOME.OCEAN, BIOME.WARM_OCEAN, BIOME.DEEP_OCEAN, BIOME.RIVER]);
@@ -47,10 +47,10 @@ const BIOME_DENSITY = {
   [BIOME.PLAINS]: 0.4,
   [BIOME.SAVANNA]: 0.14,
 };
-const LOG = { 1: BLOCK.WOOD, 2: BLOCK.BIRCH_LOG, 3: BLOCK.PINE_LOG, 4: BLOCK.WOOD };
-const LEAF = { 1: BLOCK.LEAVES, 2: BLOCK.BIRCH_LEAVES, 3: BLOCK.PINE_LEAVES, 4: BLOCK.LEAVES };
+const LOG = { 1: BLOCK.WOOD, 2: BLOCK.BIRCH_LOG, 3: BLOCK.PINE_LOG, 4: BLOCK.WOOD, 5: BLOCK.WILLOW_LOG };
+const LEAF = { 1: BLOCK.LEAVES, 2: BLOCK.BIRCH_LEAVES, 3: BLOCK.PINE_LEAVES, 4: BLOCK.LEAVES, 5: BLOCK.WILLOW_LEAVES };
 // Branches and roots show bark all round (no sawn-off rings).
-const BARK = { 1: BLOCK.OAK_BARK, 2: BLOCK.BIRCH_LOG, 3: BLOCK.PINE_LOG, 4: BLOCK.OAK_BARK };
+const BARK = { 1: BLOCK.OAK_BARK, 2: BLOCK.BIRCH_LOG, 3: BLOCK.PINE_LOG, 4: BLOCK.OAK_BARK, 5: BLOCK.WILLOW_LOG };
 
 // Small integer hash in [0, 1) for per-voxel jitter.
 function hash3(seed, x, y, z) {
@@ -94,9 +94,10 @@ export class TreeGrower {
     let species = TREE.OAK;
     if (biome === BIOME.TAIGA || biome === BIOME.SNOWY_TAIGA) species = TREE.PINE;
     else if (biome === BIOME.BIRCH_FOREST) species = TREE.BIRCH;
+    else if (biome === BIOME.SWAMP) species = TREE.WILLOW;
     else if (biome === BIOME.DARK_FOREST && k < 0.22) species = TREE.OLD_OAK;
     else if ((biome === BIOME.FOREST || biome === BIOME.PLAINS) && forest > 0.28 && k < 0.12) species = TREE.OLD_OAK;
-    return { r, species, h };
+    return { r, species, h, biome };
   }
 
   // The tree rooted in column (wx, wz): { x, z, h, species, log, leaf } or null.
@@ -125,7 +126,7 @@ export class TreeGrower {
           }
         }
       }
-      if (clear) root = { x: wx, z: wz, h: c.h, species: c.species, log: LOG[c.species], bark: BARK[c.species], leaf: LEAF[c.species] };
+      if (clear) root = { x: wx, z: wz, h: c.h, species: c.species, biome: c.biome, log: LOG[c.species], bark: BARK[c.species], leaf: LEAF[c.species] };
     }
     if (this._roots.size > 20000) this._roots.clear();
     this._roots.set(key, root);
@@ -198,6 +199,16 @@ export class TreeGrower {
         }
       }
       out.push(0, T, 0, leaf, 0, T + 1, 0, leaf, 0, T + 2, 0, leaf);
+    } else if (root.species === TREE.WILLOW) {
+      // A short, gently leaning trunk under a broad, drooping crown.
+      const T = 5 + Math.floor(rand() * 2);
+      trunkTop = T;
+      const lean = rand() < 0.5 ? 1 : -1;
+      for (let y = 0; y < T; y++) out.push(Math.round((y / (T - 1)) * lean), y, 0, log);
+      const topX = lean;
+      const r = 2.7 + rand() * 0.8;
+      blobs.push({ x: topX, y: T - 0.5, z: 0, rx: r, ry: 1.7 + rand() * 0.4, rz: r });
+      blobs.push({ x: topX, y: T + 0.7, z: 0, rx: r * 0.65, ry: 1.2, rz: r * 0.65 });
     } else {
       // Old oak: a 2x2 trunk, roots, crooked branches, a huge crown.
       const T = 7 + Math.floor(rand() * 3);
@@ -266,6 +277,34 @@ export class TreeGrower {
             if (e > 0.6 && hash3(jitterSeed ^ 0x3a5, x, y, z) < 0.1) continue;
             out.push(x, y, z, leaf);
           }
+        }
+      }
+      if (root.species === TREE.WILLOW) {
+        // Weeping strands: leaves draping from the crown's edge toward the water.
+        const strands = 12 + Math.floor(rand() * 8);
+        const crown = blobs[0];
+        for (let i = 0; i < strands; i++) {
+          const a = rand() * Math.PI * 2;
+          const d = (0.55 + rand() * 0.45) * crown.rx;
+          const sx = Math.round(crown.x + Math.cos(a) * d);
+          const sz = Math.round(crown.z + Math.sin(a) * d);
+          const sy0 = Math.round(crown.y);
+          const len = 2 + Math.floor(rand() * 4);
+          for (let k = 1; k <= len; k++) out.push(sx, sy0 - k, sz, leaf);
+        }
+      }
+      if ((root.biome === BIOME.JUNGLE || root.biome === BIOME.SWAMP) && root.species !== TREE.WILLOW) {
+        // Hanging vines/lianas under jungle and swamp canopies.
+        const vines = 3 + Math.floor(rand() * 4);
+        for (let i = 0; i < vines; i++) {
+          const b = blobs[Math.floor(rand() * blobs.length)];
+          const a = rand() * Math.PI * 2;
+          const d = rand() * b.rx;
+          const vx = Math.round(b.x + Math.cos(a) * d);
+          const vz = Math.round(b.z + Math.sin(a) * d);
+          const vy0 = Math.round(b.y - b.ry * 0.5);
+          const len = 2 + Math.floor(rand() * 4);
+          for (let k = 1; k <= len; k++) out.push(vx, vy0 - k, vz, BLOCK.VINE);
         }
       }
     }
@@ -353,5 +392,8 @@ export class TreeGrower {
 }
 
 function isLeafOrPlant(id) {
-  return id === BLOCK.LEAVES || id === BLOCK.BIRCH_LEAVES || id === BLOCK.PINE_LEAVES || id === BLOCK.TALL_GRASS || id === BLOCK.FLOWER_RED || id === BLOCK.FLOWER_YELLOW;
+  return (
+    id === BLOCK.LEAVES || id === BLOCK.BIRCH_LEAVES || id === BLOCK.PINE_LEAVES || id === BLOCK.WILLOW_LEAVES ||
+    id === BLOCK.TALL_GRASS || id === BLOCK.FLOWER_RED || id === BLOCK.FLOWER_YELLOW || id === BLOCK.VINE
+  );
 }

@@ -15,6 +15,7 @@ const PLANT_SALT = 0x5bd1e995;
 const SWAMP_SALT = 0x7a2f19c3;
 const DESERT_SALT = 0x1e5f9b4a;
 const REEF_SALT = 0x3c8de061;
+const LAVA_MAX_Y = 10; // lava only pools this deep or lower
 
 // Large-scale shape of the world: big continents (vs. big oceans), broad
 // mountain ranges (a masked, ridged field so ranges are localized rather
@@ -238,6 +239,7 @@ export class TerrainGenerator {
     }
 
     this._carveCaves(blocks, baseX, baseZ, hAt);
+    this._placeLava(blocks, baseX, baseZ);
     this._placeVeins(blocks, chunk.cx, chunk.cz);
     this._placeCrystals(blocks, baseX, baseZ);
 
@@ -272,13 +274,16 @@ export class TerrainGenerator {
           } else if (r < 0.012) {
             blocks[above] = BLOCK.DEAD_BUSH;
           }
-        } else if (blocks[ground] === BLOCK.SAND && blocks[above] === BLOCK.WATER && biomeAt(lx, lz) === BIOME.WARM_OCEAN) {
+        } else if (blocks[ground] === BLOCK.SAND && blocks[above] === BLOCK.WATER && (biomeAt(lx, lz) === BIOME.WARM_OCEAN || biomeAt(lx, lz) === BIOME.OCEAN)) {
+          const warm = biomeAt(lx, lz) === BIOME.WARM_OCEAN;
           const r = hash2(this.seed ^ REEF_SALT, wx, wz);
-          if (r < 0.05) {
+          if (warm && r < 0.03) {
             blocks[above] = BLOCK.CORAL;
-          } else if (r < 0.11) {
+          } else if (warm && r < 0.05) {
+            blocks[above] = BLOCK.CORAL_FAN;
+          } else if (r < (warm ? 0.11 : 0.05)) {
             blocks[above] = BLOCK.SEAGRASS;
-          } else if (r < 0.16) {
+          } else if (r < (warm ? 0.16 : 0.09)) {
             const kh = 2 + Math.floor(hash2(this.seed ^ REEF_SALT ^ 0x91, wx, wz) * 3);
             for (let k = 0; k < kh; k++) {
               const cell = idx(lx, h + 1 + k, lz);
@@ -286,6 +291,9 @@ export class TerrainGenerator {
               blocks[cell] = BLOCK.KELP;
             }
           }
+        } else if (blocks[ground] === BLOCK.DIRT && blocks[above] === BLOCK.WATER && biomeAt(lx, lz) === BIOME.SWAMP) {
+          // Lily pads on the swamp's shallow puddles.
+          if (hash2(this.seed ^ REEF_SALT ^ 0x5c1, wx, wz) < 0.35) blocks[above] = BLOCK.LILY_PAD;
         }
       }
     }
@@ -350,6 +358,27 @@ export class TerrainGenerator {
           let carve = a * a + b * b < w2;
           if (!carve && y < 34) carve = sample(C, lx, y, lz) > CAVERN_THRESHOLD + Math.max(0, y - 20) * 0.012;
           if (carve) blocks[i] = BLOCK.AIR;
+        }
+      }
+    }
+  }
+
+  // Lava pools on the floor of deep caves (never above LAVA_MAX_Y, and only
+  // where the cell below is solid ground, so it settles in low pockets
+  // rather than hanging in open air).
+  _placeLava(blocks, baseX, baseZ) {
+    const S = CHUNK_SIZE;
+    for (let lz = 0; lz < S; lz++) {
+      for (let lx = 0; lx < S; lx++) {
+        const wx = baseX + lx;
+        const wz = baseZ + lz;
+        for (let y = 2; y <= LAVA_MAX_Y; y++) {
+          const i = (y * S + lz) * S + lx;
+          if (blocks[i] !== BLOCK.AIR) continue;
+          const below = blocks[i - S * S];
+          if (below === BLOCK.AIR || below === BLOCK.WATER) continue;
+          const n = this.noise.perlin3(wx * 0.05 + 41.2, y * 0.09 - 7.4, wz * 0.05 + 18.6);
+          if (n > 0.5 - (LAVA_MAX_Y - y) * 0.035) blocks[i] = BLOCK.LAVA;
         }
       }
     }

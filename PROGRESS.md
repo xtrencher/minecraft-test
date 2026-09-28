@@ -731,3 +731,54 @@ The codebase grew from ~10,800 lines of JavaScript in 34 modules to ~15,200 line
 (tick items as completed; commit after each numbered group)
 
 R4 PART A COMPLETE
+
+---
+
+# Round 4, Part B checklist
+
+## 1. Bugs — DONE
+- [x] Unify Ultra's grass (was mixing a flat pixel-art cross sprite with smooth 3D blades)
+- [x] Find and fix the dark curved shading on lower block edges/faces
+- [x] Underwater gets dark too quickly — increase visibility distance, keep the light rays and color
+- On High/Ultra, grass.js's own dense 3D tufts and flowers already cover ground-cover spots; the mesher now skips drawing the flat pixel-art `tall_grass`/flower cross underneath them (`meshOptions.hideGroundPlants`, gated per graphics preset), so a field reads as one consistent look instead of two clashing styles. grass.js's spot-finder now treats a ground-cover block overhead the same as bare air, so its tufts fill in seamlessly (mining the block invalidates the mesh cache as usual and the tuft disappears with it).
+- Root cause of the lighting bug: Ultra's parallax occlusion mapping (`parallaxUv` in js/shaders.js) could step a texture lookup past a tile's edge; with the atlas's `RepeatWrapping`, that samples the *opposite* edge of the same tile for both the albedo and the normal map, which reads as a dark seam that curves with the view angle — worst on the underside of blocks seen from above (e.g. looking down through water). Fixed by clamping the marched UV to stay just inside the tile, which flattens the parallax right at the silhouette instead of wrapping.
+- Underwater visibility: the murk-mix extinction rate in `applyFog` dropped from ~12 blocks to ~29 blocks of characteristic visibility (still murky, not clear); the separate light-shaft falloff in postfx.js (an intentionally different, shorter falloff for the god-ray shafts) is untouched.
+- Also deepened the ambient-occlusion floor (`aoF` in `worldLighting`) so nooks and caves read as properly dark rather than gently shaded; direct sunlight is unaffected (verified by the existing "AO never dims direct sunlight" unit test).
+
+## 2. Vegetation — DONE
+- [x] Dense, lush, varied-height/shade pixel-art grass with wind sway; grass block top texture matches
+- [x] Water plants: reeds/cattails, lily pads, seagrass/kelp
+- [x] Better leaf textures, hanging vines/lianas, willow trees near water, larger organic canopies
+- grass.js's tuft/flower system already did most of this (dense instanced 3D blades of varying height and tint, reeds/cattails along shores, ferns, wind sway); grass_top and tall_grass got a second, denser pass of blade strokes for a lusher look.
+- New: a willow tree species (js/trees.js), grown in swamp biomes, with a leaning trunk and weeping strands draping from the crown; hanging vines/lianas grow under swamp and jungle canopies (new `BLOCK.VINE`, a loose drape rather than a wall strip). New `BLOCK.LILY_PAD` (a new mesher shape, `SHAPE.PAD`: a single rotated, jittered quad resting on the surface) grows on the swamp's existing shallow puddles. Seagrass/kelp now also grow (more sparsely) in ordinary (not just warm) oceans.
+- New willow_side/top/leaves, vine and lily_pad procedural textures in js/textures.js, painted in the same pixel-art style as the rest of the atlas (palette ramps, fbm/voronoi structure, no smooth gradients).
+
+## 3. Water (major focus) — DONE
+- [x] Reflections, refraction, depth-based color/absorption, caustics, shoreline foam, Fresnel, sun glints, underwater light rays/particles/from-below view
+- [x] Wave normals vary with a prevailing wind direction
+- All of the major water features (screen-space reflections on Ultra/sky reflection elsewhere, screen-space refraction with depth-based Beer-Lambert absorption, bottom caustics, shoreline foam from shallow path length, Fresnel, a sharp+broad sun glint, underwater light shafts/motes/Snell's-window view from below) were already implemented in earlier rounds and remain; verified they still render (js/shaders.js waterFragment, js/postfx.js god rays, js/motes.js).
+- Added: `waterNormal`'s fine ripples now include a directional "chop" term aligned to a prevailing wind vector, so wave crests visibly stretch and travel with a consistent wind direction instead of being fully isotropic (cosmetic only — the separate CPU-side `waveHeight` used for the surface-height/underwater game logic is untouched, so buoyancy and the underwater test are unaffected).
+
+## 4. Terrain textures, caves, lava, torches — DONE
+- [x] Higher-detail sand/grass/dirt/stone/ore textures with normal/parallax/roughness
+- [x] Caves: atmosphere, strong AO, damp-looking stone
+- [x] Lava: glowing, animated-looking, lights its surroundings, bloom, heat shimmer, ember particles
+- [x] Torches: animated flame, flickering light
+- The 32×32 pixel-art atlas plus per-tile normal/height/roughness relief maps (parallax on Ultra) already existed from Round 3; grass_top got denser blades and stone got a few damp, glossier patches (cooler tint, read by the relief map as glossier underground). Deepened AO (see Bugs above) makes caves read as properly dark.
+- New `BLOCK.LAVA`: a solid, unbreakable, unselectable hazard (like water) rather than a flowing liquid, generated as pools on the floor of deep caves (`TerrainGenerator._placeLava`, noise-thresholded so it settles in low pockets, more common the deeper it is). It's a light source (emission 14, lights the cave like a giant torch) and an emissive/bloom material with a cracked-crust voronoi texture (bright molten cracks between dark cooled plates). Standing near it: a throttled proximity scan drives a screen-space heat-shimmer distortion + warm tint (js/postfx.js `uNearLava`) and spawns rising ember particles (js/effects.js's existing glow particle pool).
+- Torches (and every other emissive block) now flicker: a shared, non-repeating multi-frequency flicker multiplies the torch-light contribution to every lit surface (`torchFlicker()` in js/shaders.js) and the torch's own flame brightness (a new mesher FLAG.FLICKER bit, set only on torches so lava/lumen's own glow stays steady).
+
+## 5. Sky, coral, fish — DONE
+- [x] Sharper, more defined clouds with visible sun rays through gaps
+- [x] Better-looking coral reefs and fish
+- Clouds: a narrower coverage threshold plus a cheap single-octave edge-erosion term gives crisp, punchy silhouettes instead of a soft haze, with more shading contrast between lit and shadowed sides — gaps between clouds stay clean so existing sunbeams shine through distinctly. (Kept cheap on purpose: one extra 2-tap noise call, not a second full fbm, to avoid slowing an already fragment-heavy sky dome.)
+- New `BLOCK.CORAL_FAN`: a branching, cross-shaped reef decoration (procedurally forked stalks) alongside the existing solid coral block, for more varied-looking warm-ocean reefs.
+- Fixed a real bug: fish and butterflies were always painted with the exact same fixed hue (the "random" hue pick used an uninitialized `s.seed`, always undefined, so the hash was constant). Species can now have real per-instance color variants — `createMobModel(kind, variant)` builds and caches one skin per variant, and `MobManager.spawn` picks one at random (6 fish colors, 4 butterfly colors). Fish also got a pale countershaded belly and faint side bars instead of a flat single-tone body.
+
+## Testing
+- `node --check` on every changed file, plus tools/check-syntax.mjs's strict ES-module parse, after each change.
+- tools/unit-tests.mjs (42 tests) re-run after every group; still 42/42 (cave air %, tree species counts and the AO-never-dims-sunlight assertion were specifically re-checked since this round touches all three).
+- tools/check-mob-models.mjs (all species, including the new "player" rig, build cleanly) and a standalone Node check that paints every tile in the atlas (including all 6 new ones) without throwing and with sane opaque-pixel coverage.
+- A full tools/smoke-test.mjs browser run.
+
+(tick items as completed; commit after each numbered group)

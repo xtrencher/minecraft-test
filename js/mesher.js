@@ -23,7 +23,7 @@ import {
 } from "./blocks.js";
 
 // FOLIAGE: leaves and plants (sunlight shines through them).
-export const FLAG = Object.freeze({ WAVE: 1, EMISSIVE: 2, SURFACE: 4, UNDERWATER: 8, FOLIAGE: 16 });
+export const FLAG = Object.freeze({ WAVE: 1, EMISSIVE: 2, SURFACE: 4, UNDERWATER: 8, FOLIAGE: 16, FLICKER: 32 });
 export const WATER_SURFACE_HEIGHT = 0.875;
 
 const S = CHUNK_SIZE;
@@ -396,7 +396,7 @@ function emitTorch(b, x, y, z, id, pi) {
   const l = padLight[pi];
   const sky = (l >> 4) * 17;
   const blk = (l & 15) * 17;
-  const flags = FLAG.EMISSIVE;
+  const flags = FLAG.EMISSIVE | FLAG.FLICKER;
   for (const face of FACES) {
     const fi = face.index;
     for (let c = 0; c < 4; c++) {
@@ -423,11 +423,50 @@ function emitTorch(b, x, y, z, id, pi) {
   }
 }
 
+// Lily pad: a single flat, slightly rotated square resting right at the
+// water surface (cutout materials are double-sided, so one upward-facing
+// quad reads fine from below too, same simplification as emitCross's blades).
+const PAD_Y = 0.94;
+function emitPad(b, x, y, z, wx, wz, id, pi) {
+  const layer = FACE_TILES[id * 6 + 2];
+  const l = padLight[pi];
+  const sky = (l >> 4) * 17;
+  const blk = (l & 15) * 17;
+  const jx = (hash01(wx, y, wz) - 0.5) * 0.3;
+  const jz = (hash01(wz, y, wx) - 0.5) * 0.3;
+  const angle = hash01(wx + 5, y, wz - 5) * Math.PI * 2;
+  const ca = Math.cos(angle);
+  const sa = Math.sin(angle);
+  const r = 0.4;
+  const cx = x + 0.5 + jx;
+  const cz = z + 0.5 + jz;
+  const py = y + PAD_Y;
+  const up = 2 * 4 + 3;
+  const corners = [[-r, -r, 0, 0], [r, -r, 1, 0], [r, r, 1, 1], [-r, r, 0, 1]];
+  for (const [ox, oz, u, v] of corners) {
+    const rx = ox * ca - oz * sa;
+    const rz = ox * sa + oz * ca;
+    b.vertex(cx + rx, py, cz + rz, u, v, up, sky, blk, FLAG.FOLIAGE, layer, 0);
+  }
+  b.quad(false);
+}
+
 // neighbors: 9 chunks as described in fillPadded (center at index 4).
 // options: { fancyLeaves } (see emitLeafCards).
 // Returns { opaque, cutout, water } where each is null or a buffer set.
+// Ground-cover cross plants that grass.js redraws itself as dense 3D tufts
+// and flowers on High/Ultra (see options.hideGroundPlants below); every other
+// cross plant (seagrass, kelp, dead bush) always meshes normally.
+const GROUND_COVER = new Set([BLOCK.TALL_GRASS, BLOCK.FLOWER_RED, BLOCK.FLOWER_YELLOW]);
+
 export function meshChunk(neighbors, options = {}) {
   const fancyLeaves = !!options.fancyLeaves;
+  // High/Ultra: grass.js already draws its own pixel-art tufts and flowers
+  // over these blocks, so the flat pixel-art cross underneath is skipped —
+  // otherwise a field mixes two clashing looks (a crossed 2D sprite next to
+  // smoothly-shaded 3D blades). The block itself is untouched (still there to
+  // mine, still blocks light the same way); only its own quads are omitted.
+  const hideGroundPlants = !!options.hideGroundPlants;
   const center = neighbors[4];
   const maxY = fillPadded(neighbors);
   for (const b of Object.values(builders)) b.reset();
@@ -446,11 +485,15 @@ export function meshChunk(neighbors, options = {}) {
         const b = builders[rt];
         const shape = SHAPE_OF[id];
         if (shape === SHAPE.CROSS) {
-          emitCross(b, x, y, z, baseX + x, baseZ + z, id, pi);
+          if (!(hideGroundPlants && GROUND_COVER.has(id))) emitCross(b, x, y, z, baseX + x, baseZ + z, id, pi);
           continue;
         }
         if (shape === SHAPE.TORCH) {
           emitTorch(b, x, y, z, id, pi);
+          continue;
+        }
+        if (shape === SHAPE.PAD) {
+          emitPad(b, x, y, z, baseX + x, baseZ + z, id, pi);
           continue;
         }
 

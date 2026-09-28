@@ -167,6 +167,7 @@ uniform float uSaturation;
 uniform float uContrast;
 uniform float uVignette;
 uniform float uUnderwater;
+uniform float uNearLava;
 uniform float uDamage;
 uniform float uNight;
 uniform vec2 uResolution;
@@ -204,6 +205,12 @@ void main() {
     // Gentle refraction wobble under water.
     uv += vec2(sin(uv.y * 24.0 + uTime * 2.1), cos(uv.x * 20.0 + uTime * 1.7)) * 0.0025;
   }
+  if (uNearLava > 0.001) {
+    // Heat shimmer: faster, finer wobble than the underwater one, strongest
+    // low in the frame (rising off the lava) and fading with distance.
+    float rise = mix(1.0, 0.35, vUv.y);
+    uv += vec2(sin((uv.y + uTime * 0.15) * 90.0), cos((uv.x + uTime * 0.1) * 70.0)) * 0.0018 * uNearLava * rise;
+  }
   vec3 col = texture2D(tScene, uv).rgb;
   if (any(isnan(col)) || any(isinf(col))) col = vec3(0.0);
   #ifdef USE_BLOOM
@@ -221,6 +228,7 @@ void main() {
   // Split toning: slightly cool shadows, warm highlights.
   col *= mix(vec3(0.97, 1.0, 1.05), vec3(1.03, 1.0, 0.96), smoothstep(0.1, 0.8, luma));
   if (uUnderwater > 0.5) col = mix(col, col * vec3(0.55, 0.9, 1.05), 0.6);
+  if (uNearLava > 0.001) col = mix(col, col * vec3(1.12, 0.92, 0.8), 0.5 * uNearLava);
   // Vignette, plus a red pulse at the screen edges when hurt.
   vec2 q = vUv - 0.5;
   float v = smoothstep(0.85, 0.2, length(q * vec2(1.1, 1.0)));
@@ -293,6 +301,7 @@ export class PostFX {
       uContrast: { value: 1.06 },
       uVignette: { value: 0.35 },
       uUnderwater: { value: 0 },
+      uNearLava: { value: 0 },
       uDamage: { value: 0 },
       uNight: { value: 0 },
       uResolution: { value: new THREE.Vector2(1, 1) },
@@ -452,6 +461,7 @@ export class PostFX {
     if (params.underwater && params.underwaterColor) cu.uRaysColor.value.copy(params.underwaterColor);
     else if (params.sunColor) cu.uRaysColor.value.copy(params.sunColor);
     cu.uUnderwater.value = params.underwater ? 1 : 0;
+    cu.uNearLava.value = params.nearLava ?? 0;
     cu.uDamage.value = params.damage ?? 0;
     cu.uNight.value = params.night ?? 0;
     cu.uBloomStrength.value = params.bloomStrength ?? 0.12;

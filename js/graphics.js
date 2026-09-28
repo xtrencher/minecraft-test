@@ -26,6 +26,7 @@ export const PRESETS = {
     pom: false,
     grass: 0,
     fancyLeaves: false,
+    hideGroundPlants: false,
     water: "simple",
     mist: 0.5, // strength of the low mist over water
     raySamples: 32,
@@ -49,6 +50,7 @@ export const PRESETS = {
     pom: false,
     grass: 0,
     fancyLeaves: false,
+    hideGroundPlants: false,
     water: "simple",
     mist: 0.8, // strength of the low mist over water
     raySamples: 32,
@@ -72,6 +74,7 @@ export const PRESETS = {
     pom: false,
     grass: 1,
     fancyLeaves: true,
+    hideGroundPlants: true,
     water: "refract",
     mist: 1.0, // strength of the low mist over water
     raySamples: 48,
@@ -95,6 +98,7 @@ export const PRESETS = {
     pom: true,
     grass: 2,
     fancyLeaves: true,
+    hideGroundPlants: true,
     water: "ssr",
     mist: 1.0, // strength of the low mist over water
     raySamples: 72,

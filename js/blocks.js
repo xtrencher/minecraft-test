@@ -40,6 +40,12 @@ export const BLOCK = Object.freeze({
   CORAL: 34,
   SEAGRASS: 35,
   KELP: 36,
+  WILLOW_LOG: 37,
+  WILLOW_LEAVES: 38,
+  VINE: 39,
+  LILY_PAD: 40,
+  LAVA: 41,
+  CORAL_FAN: 42,
 });
 
 // Texture layers of the block texture array, in order. Painted procedurally
@@ -88,12 +94,19 @@ export const TILE_NAMES = [
   "coral",
   "seagrass",
   "kelp",
+  "willow_side",
+  "willow_top",
+  "willow_leaves",
+  "vine",
+  "lily_pad",
+  "lava",
+  "coral_fan",
 ];
 export const TILE = Object.freeze(Object.fromEntries(TILE_NAMES.map((name, i) => [name, i])));
 
 // Render buckets and shapes (numeric for use in hot loops).
 export const RENDER = Object.freeze({ NONE: 0, OPAQUE: 1, CUTOUT: 2, WATER: 3 });
-export const SHAPE = Object.freeze({ CUBE: 0, CROSS: 1, TORCH: 2 });
+export const SHAPE = Object.freeze({ CUBE: 0, CROSS: 1, TORCH: 2, PAD: 3 });
 
 const DEFAULTS = {
   render: RENDER.OPAQUE,
@@ -264,6 +277,79 @@ const DEFS = {
     support: "soil",
     hardness: 0,
     sound: "plant",
+  },
+  [BLOCK.WILLOW_LOG]: {
+    name: "Willow Log",
+    faces: { top: "willow_top", bottom: "willow_top", side: "willow_side" },
+    hardness: 2,
+    tool: "axe",
+    sound: "wood",
+    log: true,
+  },
+  [BLOCK.WILLOW_LEAVES]: {
+    name: "Willow Leaves",
+    faces: "willow_leaves",
+    render: RENDER.CUTOUT,
+    opaque: false,
+    lightFilter: 1,
+    wave: true,
+    hardness: 0.2,
+    sound: "grass",
+    leaves: true,
+  },
+  // Hanging vines/lianas: grown under willow and jungle canopies (trees.js),
+  // a loose drape rather than a wall-mounted strip, so a cross reads fine
+  // from any angle as it dangles in open air.
+  [BLOCK.VINE]: {
+    name: "Vines",
+    faces: "vine",
+    render: RENDER.CUTOUT,
+    shape: SHAPE.CROSS,
+    solid: false,
+    opaque: false,
+    skyPass: true,
+    wave: true,
+    hardness: 0.2,
+    sound: "plant",
+  },
+  // A flat pad resting on the water surface (see mesher.js emitPad).
+  [BLOCK.LILY_PAD]: {
+    name: "Lily Pad",
+    faces: "lily_pad",
+    render: RENDER.CUTOUT,
+    shape: SHAPE.PAD,
+    solid: false,
+    opaque: false,
+    skyPass: true,
+    hardness: 0,
+    sound: "plant",
+  },
+  // Glowing molten rock pooling at the bottom of deep caves (terrain.js
+  // _placeLava). A solid, unbreakable, unselectable hazard like water rather
+  // than a flowing liquid: its emission (14) lights the cave, and its
+  // brightest texels bloom (see the fragment shader's EMISSIVE flag).
+  [BLOCK.LAVA]: {
+    name: "Lava",
+    faces: "lava",
+    selectable: false,
+    emission: 14,
+    emissive: true,
+    hardness: -1,
+    sound: "stone",
+  },
+  // A branching reef fan (cross-shaped, unlike the solid CORAL block), for
+  // more varied-looking warm-ocean reefs.
+  [BLOCK.CORAL_FAN]: {
+    name: "Coral Fan",
+    faces: "coral_fan",
+    render: RENDER.CUTOUT,
+    shape: SHAPE.CROSS,
+    solid: false,
+    opaque: false,
+    skyPass: true,
+    support: "soil",
+    hardness: 0.5,
+    sound: "stone",
   },
 };
 

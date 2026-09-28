@@ -20,6 +20,10 @@ import { createGrassMaterial } from "./shaders.js";
 
 const REBUILD_DISTANCE = 1.5; // blocks moved before the plants are refilled
 
+// Ground-cover blocks the mesher hides on High/Ultra (mesher.js
+// hideGroundPlants); this field's own tufts and flowers replace them.
+const GROUND_COVER_IDS = new Set([BLOCK.TALL_GRASS, BLOCK.FLOWER_RED, BLOCK.FLOWER_YELLOW]);
+
 // Spot kinds (bit flags) found by the chunk scan.
 const GRASS_TOP = 1;
 const SHORE = 2;
@@ -349,7 +353,11 @@ export class GrassField {
       for (let z = 0; z < S; z++) {
         for (let x = 0; x < S; x++) {
           const i = (y * S + z) * S + x;
-          if (blocks[i + S * S] !== BLOCK.AIR) continue;
+          const above = blocks[i + S * S];
+          // Ground cover (tall grass, flowers) isn't meshed on this preset
+          // (see mesher.js hideGroundPlants): these tufts and flowers replace
+          // it, so spots under it are open for planting just like bare air.
+          if (above !== BLOCK.AIR && !GROUND_COVER_IDS.has(above)) continue;
           const id = blocks[i];
           let kind = 0;
           if (id === BLOCK.GRASS) {
