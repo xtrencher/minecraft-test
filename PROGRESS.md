@@ -685,6 +685,69 @@ The codebase grew from ~10,800 lines of JavaScript in 34 modules to ~15,200 line
 
   Each was much cheaper and close enough for the look.
 
+## Round 3 follow-up: a blank sky-blue screen at startup — DONE
+
+**Report.** After Round 3, starting the game showed only a plain sky-blue page: no menu, no error.
+
+**What that screen is.** It's the page's background colour. Every panel starts hidden until the game's script shows the start menu, so either the script never got that far (an error, or a file that failed to load), or it did but the page never got to show the result.
+
+**What I checked.**
+- **Real server, random worlds:** a fresh clone of the pushed branch, served by the same `serve` that `start.sh` and `start.bat` run, started every time in headless Chromium with no errors. That included random worlds; every earlier test had used seed 42.
+- **Same code as players get:** the tests use the same three.js version as the pinned CDN copy (0.160.0). `serve` sends content-hash ETags, so browsers re-check every file and don't mix stale files with new ones.
+- **A startup timeline showed the likely cause.** The game's script finished after 0.9 s, but the page couldn't show anything until the GPU had finished the first frame, and on Ultra that includes compiling every shader. That took 3.9 s here (0.7 s on Low), and the sky-blue background was all there was to see in the meantime.
+- **Why it can be much worse elsewhere:** Phases 4 and 5 made the High and Ultra shaders much bigger (soft shadows over three cascades, parallax, reflections, light shafts). Compiling large shaders can be far slower on some systems, notably Windows, where browsers translate WebGL shaders for Direct3D. A first frame that takes too long can also make the graphics driver reset. Either way the result is exactly that screen, possibly for good.
+- **Limits:** I couldn't reproduce the reporting machine (the sandbox only has a software renderer). So the fix addresses this most likely cause, and makes any other cause show up on the page.
+
+**The fix.**
+1. **The menu first.**
+   - The page shows a **Loading…** panel from its very first paint.
+   - The start menu goes up before any heavy GPU work. The shaders then compile in the background where the browser can (`KHR_parallel_shader_compile`), while the world streams in.
+   - The Play button says **Preparing graphics…** until the shaders are ready, and only then is the world drawn. Switching presets works the same way.
+   - On Ultra here, the menu now shows after 0.6 s instead of 4.8 s.
+2. **Graphics on the start menu.** The Graphics setting is on the start menu too, and a hint suggests a lower one if preparing takes more than 12 s.
+3. **Safe start.**
+   - The game remembers whether the last start got as far as drawing the world. If it didn't (the tab hung, or the driver gave up), the next start lowers the preset a step and says so.
+   - If the browser loses the WebGL context mid-game, the game saves, lowers the setting and asks for a reload.
+   - `?graphics=low` (or `medium`, `high`, `ultra`) in the address picks a setting.
+4. **Errors on the page.** Until the game has started, any failure is shown with what to try, instead of a blank page:
+   - **Opened as a file:** use `start.bat` or `./start.sh`.
+   - **A game file couldn't load:** offline, or the three.js CDN is blocked.
+   - **Mismatched files after an update:** reload with Ctrl+Shift+R (Cmd+Shift+R on a Mac).
+   - **Any other script error:** the error text is shown.
+   - **WebGL didn't start:** turn on hardware acceleration, update the browser and drivers, and restart the browser after a driver crash.
+
+**Also fixed.** `normalizePreset` accepted any name that exists on a plain object (such as `constructor`).
+
+**Testing.** Four new smoke checks, each in a fresh browser profile:
+- **Startup order:** the loading panel paints at once, and the start menu comes up before the world is drawn, with Play waiting for the shaders. `?graphics=low` starts on Low.
+- **Safe start:** after a start that never showed the world, the next one starts on High with a notice.
+- **Error messages:** opened as a file, a missing file, mismatched files and no WebGL each show the right message.
+- **Lost context:** losing the WebGL context saves the player, lowers the setting (Medium to Low) and shows the reload panel.
+
+**57 smoke checks and 32 unit tests pass with zero console errors.**
+
+**Merged with Round 4.** Main received Round 4 while this fix was waiting. Merging kept both sides; three things needed adapting:
+- **Individual graphics options** (Round 4) can override the preset, so an option like reflective water could keep the heavy shaders on at a lower preset. The safe start, `?graphics=` and the lost-context step-down therefore reset them too, and say so. Picking a preset on the start menu clears them, as the pause menu does.
+- **The shader warm-up** follows the resolved preset (the preset plus options), which is what the renderer draws with.
+- **The F3 frame statistics** (Round 4) are reset only on frames that are drawn. Round 4's `tools/probe.mjs` now waits for the graphics to be ready after switching presets before taking screenshots.
+
+**Result on the merged code (Ultra, software rendering):**
+- **With the fix:** the loading panel paints at 0.1 s and the start menu is up at 1.1 s.
+- **Without it (main as merged):** the page stays blank for 8.5 s. Round 4's heavier first frame takes 7.3 s here, up from 3.9 s in Round 3.
+
+The startup smoke checks also cover the options reset: after a failed start, after a lost context, and with `?graphics=low`.
+
+**Testing after the merge.**
+- **Syntax and unit tests:** `node --check` on every file, the strict module parse and Round 4's `tools/check-syntax.mjs` (51 modules) all pass. All 42 unit tests pass.
+- **Smoke tests (partial):** I stopped the full run partway through (it takes over an hour in this sandbox). Up to that point, 47 checks had passed and one had failed: the Ultra plants timeout below.
+- **Four survival checks** (mining, inventory screen, crafting table, eating) failed right after that timeout, which leaves the game on Ultra in creative flight. Run on their own, together with the startup checks, all 14 pass with zero console errors.
+- **Not re-run after the merge:** the 12 remaining checks (zombies and water, zombie kills, skeleton, spider, farm animals, butterflies and fish, mob caps, creative immunity, HUD, saving, and the two reload checks).
+
+**Known issue (to investigate later): the Ultra plants check times out.** In the merged full run, "Ultra: tall grass, reeds by the water, ferns in the shade, and new tree species in the world" failed after 300 s.
+- **What it waits for:** after switching to Ultra at render distance 6, the check waits for the world to finish meshing (`world.isIdle` and an empty remesh queue), and that never happened in time.
+- **Likely cause:** the world works through its queues on a fixed time budget per frame, and each Ultra frame takes seconds in this software renderer. This container also ran everything 1.5 to 2 times slower than Round 3; the Ultra check before this one took 212 s, against 113 to 129 s then.
+- **Not yet checked:** whether main alone times out the same way here, or whether something keeps refilling the remesh queue.
+
 ---
 
 # Round 4, Part A checklist

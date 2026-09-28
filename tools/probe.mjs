@@ -74,6 +74,8 @@ await page.evaluate(() => window.__voxelands.setGraphics("low"));
 await page.click("#play-btn", { timeout: 120000 });
 await page.waitForFunction(() => window.__voxelands.gameState === "playing", null, { timeout: 60000 });
 if (args.preset) await page.evaluate((p) => window.__voxelands.setGraphics(p), args.preset);
+// Nothing is drawn until the preset's shaders are ready (see prepareGraphics in main.js).
+await page.waitForFunction(() => window.__voxelands.graphicsReady, null, { timeout: 120000 });
 console.log(`  booted in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
 
 const frames = (n = 2) =>

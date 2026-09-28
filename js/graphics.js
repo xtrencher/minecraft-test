@@ -107,7 +107,12 @@ export const PRESET_ORDER = ["low", "medium", "high", "ultra"];
 export const DEFAULT_PRESET = "ultra";
 
 export function normalizePreset(name) {
-  return PRESETS[name] ? name : DEFAULT_PRESET;
+  return PRESET_ORDER.includes(name) ? name : DEFAULT_PRESET;
+}
+
+// The next preset down (Low stays Low).
+export function lowerPreset(name) {
+  return PRESET_ORDER[Math.max(0, PRESET_ORDER.indexOf(normalizePreset(name)) - 1)];
 }
 
 // Individual graphics options that can override the chosen preset (settings
