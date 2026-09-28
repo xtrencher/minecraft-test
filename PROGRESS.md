@@ -726,3 +726,5 @@ The codebase grew from ~10,800 lines of JavaScript in 34 modules to ~15,200 line
 - Tested: two new smoke checks (F5 cycles behind/front/first with the model shown only in third person; F1/F3; every settings tab applies live and persists, locked time stays put), plus tools/probe.mjs, a new quick harness that boots the game, runs a scenario file and saves screenshots (used for visual checks throughout Round 4 Part B)
 
 (tick items as completed; commit after each numbered group)
+
+R4 PART A COMPLETE
