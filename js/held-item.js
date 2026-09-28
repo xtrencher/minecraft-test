@@ -179,6 +179,11 @@ export class HeldItem {
     this._flash = 0;
   }
 
+  // 0-1 progress of the current swing (1 = at rest).
+  get swingProgress() {
+    return this._swing;
+  }
+
   get swinging() {
     return this._swing < 1;
   }

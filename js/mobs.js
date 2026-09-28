@@ -382,8 +382,15 @@ export class MobManager {
     }
   }
 
+  // Removes every hostile creature at once (switching to Peaceful).
+  removeHostiles() {
+    for (let i = this.mobs.length - 1; i >= 0; i--) if (this.mobs[i].spec.hostile) this._remove(i);
+  }
+
   _updateSpawning(dt) {
-    if (!this.enabled) return;
+    // `spawning` and `hostileSpawning` are settings (creature spawning,
+    // Peaceful difficulty); `enabled` is used by tests.
+    if (!this.enabled || this.spawning === false) return;
     if (!this._seeded && this._chunkReady(this.player.position.x, this.player.position.z)) {
       // Start the world with some animals around.
       this._seeded = true;
@@ -394,7 +401,7 @@ export class MobManager {
     this._spawnTimer = SPAWN_INTERVAL;
     if (this.mobs.length >= MAX_TOTAL_MOBS) return; // an overall cap on top of the per-category ones
     if (this.countOf(false) < MAX_PASSIVE && Math.random() < 0.3) this._trySpawnPassive(30, 80);
-    if (this.countOf(true) < MAX_HOSTILE) this._trySpawnHostile();
+    if (this.countOf(true) < MAX_HOSTILE && this.hostileSpawning !== false) this._trySpawnHostile();
     this._trySpawnVillagers();
     if (Math.random() < 0.4) this._trySpawnFlyers();
   }

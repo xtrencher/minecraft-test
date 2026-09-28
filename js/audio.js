@@ -103,6 +103,25 @@ export class Audio {
     this.master = null;
     this._noiseBuffer = null;
     this._shaperCurve = null;
+    // Per-category volume (0-1), set from the settings menu. Each category
+    // has its own gain node feeding the master gain.
+    this.volumes = { master: 1, blocks: 1, weapons: 1, creatures: 1, player: 1, ui: 1 };
+    this.buses = {};
+    this._out = null; // the bus of the sound being played
+  }
+
+  setVolume(category, value) {
+    const v = Math.max(0, Math.min(1, Number(value)));
+    if (!Number.isFinite(v)) return;
+    this.volumes[category] = v;
+    if (!this.ctx) return;
+    if (category === "master") this.master.gain.value = 0.9 * v;
+    else if (this.buses[category]) this.buses[category].gain.value = v;
+  }
+
+  // Routes the following sounds into a category's bus.
+  _cat(name) {
+    this._out = this.buses[name] || this.master;
   }
 
   ensureStarted() {
@@ -118,8 +137,15 @@ export class Audio {
       compressor.release.value = 0.25;
       compressor.connect(this.ctx.destination);
       this.master = this.ctx.createGain();
-      this.master.gain.value = 0.9;
+      this.master.gain.value = 0.9 * this.volumes.master;
       this.master.connect(compressor);
+      for (const name of ["blocks", "weapons", "creatures", "player", "ui"]) {
+        const bus = this.ctx.createGain();
+        bus.gain.value = this.volumes[name];
+        bus.connect(this.master);
+        this.buses[name] = bus;
+      }
+      this._out = this.master;
       this._noiseBuffer = this._makeNoiseBuffer();
       this._shaperCurve = this._makeShaperCurve(2.5);
     }
@@ -160,7 +186,7 @@ export class Audio {
   // One filtered noise hit (or `n` staggered grains of it) into `dest`.
   _hit({ type = "lowpass", f = 1000, q = 1, d = 0.1, v = 0.3, n = 1, spread = 0.03, jitter = 0.15, attack = 0.004, fEnd = null }, when = 0, dest = null) {
     if (!this.ctx) return;
-    const out = dest || this.master;
+    const out = dest || this._out || this.master;
     for (let i = 0; i < n; i++) {
       const t = this.ctx.currentTime + when + i * spread * (0.7 + Math.random() * 0.6);
       const src = this._noise(t, d + attack);
@@ -188,7 +214,7 @@ export class Audio {
     bus.gain.exponentialRampToValueAtTime(v * gainScale, t + Math.min(0.06, d * 0.3));
     bus.gain.setValueAtTime(v * gainScale, t + d * 0.55);
     bus.gain.exponentialRampToValueAtTime(0.0001, t + d);
-    bus.connect(this.master);
+    bus.connect(this._out || this.master);
 
     const osc = ctx.createOscillator();
     osc.type = "sawtooth";
@@ -242,78 +268,93 @@ export class Audio {
   }
 
   playBreak(sound = "stone") {
+    this._cat("blocks");
     this._material(sound, { volume: 0.34, duration: 1.5, pitch: 0.95 });
     // Crumbs settling after the break.
     this._hit({ type: "bandpass", f: 1800, q: 1, d: 0.03, v: 0.06, n: 3, spread: 0.05 }, 0.08);
   }
 
   playPlace(sound = "stone") {
+    this._cat("blocks");
     this._material(sound, { volume: 0.26, duration: 0.8, pitch: 1.1 });
   }
 
   playDig(sound = "stone") {
+    this._cat("blocks");
     this._material(sound, { volume: 0.15, duration: 0.6, pitch: 1.05 });
   }
 
   playFootstep(sound = "grass") {
+    this._cat("blocks");
     this._material(sound, { volume: 0.1, duration: 0.6, pitch: 0.8 });
   }
 
   // Picking up an item: a soft little pop.
   playPickup() {
+    this._cat("ui");
     this._hit({ type: "bandpass", f: 1400, q: 3, d: 0.035, v: 0.16, jitter: 0.2 });
   }
 
   // UI click: a quiet tick.
   playClick() {
+    this._cat("ui");
     this._hit({ type: "bandpass", f: 3200, q: 1.5, d: 0.015, v: 0.08, jitter: 0.1 });
   }
 
   // Crafting: two quick woody taps.
   playCraft() {
+    this._cat("ui");
     this._hit({ type: "bandpass", f: 700, q: 3, d: 0.05, v: 0.22, n: 2, spread: 0.08 });
   }
 
   // A crunchy bite.
   playEat() {
+    this._cat("ui");
     this._hit({ type: "bandpass", f: 1400, q: 1.2, d: 0.05, v: 0.14, n: 3, spread: 0.022, jitter: 0.4 });
   }
 
   // A tool breaking: a sharp snap and a few small bits.
   playToolBreak() {
+    this._cat("player");
     this._hit({ type: "highpass", f: 2200, q: 0.8, d: 0.06, v: 0.3 });
     this._hit({ type: "bandpass", f: 900, q: 2, d: 0.05, v: 0.2, n: 3, spread: 0.04 }, 0.04);
   }
 
   // Getting hurt: a dull body thud.
   playHurt() {
+    this._cat("player");
     this._hit({ type: "lowpass", f: 320, q: 1.2, d: 0.14, v: 0.55, fEnd: 120 });
     this._hit({ type: "bandpass", f: 900, q: 1, d: 0.05, v: 0.1 });
   }
 
   // Dying: a heavier thud as the body hits the ground, and a low rumble.
   playDeath() {
+    this._cat("player");
     this._hit({ type: "lowpass", f: 380, q: 1.2, d: 0.25, v: 0.7, fEnd: 90 });
     this._hit({ type: "lowpass", f: 180, q: 0.8, d: 0.8, v: 0.35, attack: 0.05 }, 0.12);
   }
 
   playSplash() {
+    this._cat("player");
     this._hit({ type: "lowpass", f: 1400, q: 0.7, d: 0.4, v: 0.3, fEnd: 400, attack: 0.01 });
     this._hit({ type: "bandpass", f: 2600, q: 1.5, d: 0.04, v: 0.08, n: 5, spread: 0.06, jitter: 0.4 }, 0.1); // droplets
   }
 
   // Flight on/off (creative): a short soft rush of air.
   playFlightToggle(enabled) {
+    this._cat("player");
     this._hit({ type: "bandpass", f: enabled ? 700 : 1200, fEnd: enabled ? 1400 : 600, q: 1.2, d: 0.22, v: 0.1, attack: 0.05 });
   }
 
   // Throwing: an airy whoosh.
   playThrow() {
+    this._cat("weapons");
     this._hit({ type: "bandpass", f: 700, fEnd: 1600, q: 1.4, d: 0.2, v: 0.16, attack: 0.03 });
   }
 
   // Pistol shot: a sharp crack, a punchy body, a low thump and a short tail.
   playGunshot() {
+    this._cat("weapons");
     this._hit({ type: "highpass", f: 2600, q: 0.7, d: 0.03, v: 0.55, attack: 0.001 });
     this._hit({ type: "bandpass", f: 950, q: 1, d: 0.08, v: 0.6, attack: 0.001 });
     this._hit({ type: "lowpass", f: 200, q: 1, d: 0.12, v: 0.55, attack: 0.002 });
@@ -322,6 +363,7 @@ export class Audio {
 
   // Machine gun: a lighter, quicker crack for rapid automatic fire.
   playMachineGun() {
+    this._cat("weapons");
     this._hit({ type: "highpass", f: 2400, q: 0.7, d: 0.02, v: 0.4, attack: 0.001 });
     this._hit({ type: "bandpass", f: 1100, q: 1, d: 0.05, v: 0.42, attack: 0.001 });
     this._hit({ type: "lowpass", f: 220, q: 1, d: 0.07, v: 0.32, attack: 0.001 });
@@ -329,6 +371,7 @@ export class Audio {
 
   // Sniper rifle: a deep, sharp crack with a long, rolling tail.
   playSniperShot() {
+    this._cat("weapons");
     this._hit({ type: "highpass", f: 3200, q: 0.6, d: 0.04, v: 0.7, attack: 0.001 });
     this._hit({ type: "bandpass", f: 700, q: 0.9, d: 0.16, v: 0.62, attack: 0.001 });
     this._hit({ type: "lowpass", f: 130, q: 1, d: 0.4, v: 0.5, attack: 0.002 });
@@ -337,16 +380,19 @@ export class Audio {
 
   // Airstrike designator: a rising electronic lock-on beep.
   playLockOn() {
+    this._cat("weapons");
     this._hit({ type: "bandpass", f: 900, fEnd: 1800, q: 3, d: 0.15, v: 0.25, attack: 0.005 });
   }
 
   // A bullet hitting a block `distance` blocks away: a small sharp tick.
   playRicochet(distance = 0) {
+    this._cat("weapons");
     this._hit({ type: "bandpass", f: 2900, q: 7, d: 0.05, v: 0.14 / (1 + distance / 10), jitter: 0.3 }, Math.min(distance / 343, 0.5));
   }
 
   // Bazooka launch: a heavy thump and a rising rush of burning propellant.
   playRocketLaunch() {
+    this._cat("weapons");
     this._hit({ type: "lowpass", f: 160, q: 1, d: 0.25, v: 0.7, attack: 0.002 });
     this._hit({ type: "bandpass", f: 400, fEnd: 1500, q: 1.1, d: 0.5, v: 0.4, attack: 0.01 });
     this._hit({ type: "highpass", f: 3000, q: 0.7, d: 0.4, v: 0.14, attack: 0.02 });
@@ -354,6 +400,7 @@ export class Audio {
 
   // A grenade bouncing: a small metallic clink and a thud (strength 0-1).
   playGrenadeBounce(strength = 1, distance = 0) {
+    this._cat("weapons");
     const v = strength / (1 + distance / 8);
     if (v < 0.02) return;
     this._hit({ type: "bandpass", f: 2400, q: 6, d: 0.035, v: 0.18 * v, jitter: 0.2 });
@@ -363,6 +410,7 @@ export class Audio {
   // Mob voices: `event` is "idle", "hurt", "death" or "attack"; quieter
   // with distance (blocks), silent beyond 40.
   playMob(kind, event, distance = 0) {
+    this._cat("creatures");
     if (!this.ctx || distance > 40) return;
     const gain = 1 / (1 + distance / 7);
     const parts = VOICES[kind]?.[event];
@@ -375,6 +423,7 @@ export class Audio {
 
   // The player's weapon landing (a heavier crack on a critical hit).
   playHit(crit = false) {
+    this._cat("weapons");
     this._hit({ type: "lowpass", f: 700, q: 1, d: 0.08, v: 0.35, fEnd: 200 });
     this._hit({ type: "bandpass", f: 1600, q: 1.2, d: 0.03, v: 0.12 });
     if (crit) this._hit({ type: "highpass", f: 3000, q: 0.8, d: 0.1, v: 0.2 });
@@ -382,6 +431,7 @@ export class Audio {
 
   // A swing that hits nothing.
   playSwing() {
+    this._cat("weapons");
     this._hit({ type: "bandpass", f: 1100, fEnd: 700, q: 1.5, d: 0.12, v: 0.08, attack: 0.02 });
   }
 
@@ -391,6 +441,7 @@ export class Audio {
   // muffled (a low-pass filter, like sound travelling through air) and a
   // little delayed; `size` (1 = grenade, 5 = bazooka) makes it bigger.
   playExplosion(distance = 0, size = 1) {
+    this._cat("weapons");
     const ctx = this.ctx;
     if (!ctx) return;
     const p = explosionSound(distance, size);
@@ -403,7 +454,7 @@ export class Audio {
     muffle.Q.value = 0.5;
     const out = ctx.createGain();
     out.gain.value = p.gain;
-    muffle.connect(out).connect(this.master);
+    muffle.connect(out).connect(this._out || this.master);
 
     const env = (gainNode, attackEnd, peak, decayEnd) => {
       gainNode.gain.setValueAtTime(0.0001, t0);

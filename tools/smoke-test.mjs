@@ -376,6 +376,125 @@ try {
     await page.waitForFunction(() => window.__voxelands.gameState === "playing", null, { timeout: 10000 });
   });
 
+  // --- Round 4 Part A, group 5: player and settings ---
+  await check("F5 camera modes show the player model, F1 hides the HUD, F3 shows debug info", async () => {
+    const state = () =>
+      page.evaluate(() => {
+        const v = window.__voxelands;
+        const eye = v.player.getEyePosition();
+        return {
+          mode: v.player.cameraMode,
+          avatar: v.avatar.root.visible,
+          camDist: v.camera.position.distanceTo(eye),
+          hudOff: document.body.classList.contains("hud-off"),
+          debug: !document.getElementById("debug-overlay").classList.contains("hidden"),
+          debugText: document.getElementById("debug-overlay").textContent,
+        };
+      });
+    const frames = (n = 3) => page.evaluate((k) => new Promise((r) => { let i = 0; const f = () => (++i >= k ? r() : requestAnimationFrame(f)); requestAnimationFrame(f); }), n);
+    // Look down a little so the camera behind rises over nearby terrain.
+    await page.evaluate(() => {
+      window.__voxelands.player.pitch = -0.6;
+    });
+    let s0 = await state();
+    assert(s0.mode === 0 && !s0.avatar && s0.camDist < 0.05, `starts in first person: ${JSON.stringify(s0)}`);
+    await page.keyboard.press("F5");
+    await frames(12);
+    const s1 = await state();
+    assert(s1.mode === 1 && s1.avatar && s1.camDist > 0.5, `F5 -> third person behind with a visible model: ${JSON.stringify(s1)}`);
+    await page.keyboard.press("F5");
+    await frames(12);
+    const s2 = await state();
+    const facing = await page.evaluate(() => {
+      const v = window.__voxelands;
+      const f = v.player.getForwardVector();
+      const d = v.camera.position.clone().sub(v.player.getEyePosition());
+      return d.dot(f) / Math.max(1e-6, d.length());
+    });
+    assert(s2.mode === 2 && s2.avatar && (s2.camDist < 0.05 || facing > 0.9), `F5 -> third person in front: ${JSON.stringify(s2)} facing ${facing}`);
+    await page.keyboard.press("F5");
+    await frames(3);
+    const s3 = await state();
+    assert(s3.mode === 0 && !s3.avatar, `F5 -> back to first person: ${JSON.stringify(s3)}`);
+    await page.keyboard.press("F1");
+    await frames(2);
+    assert((await state()).hudOff, "F1 hides the HUD");
+    await page.keyboard.press("F1");
+    await page.keyboard.press("F3");
+    await frames(4);
+    const s4 = await state();
+    assert(!s4.hudOff && s4.debug && /XYZ:/.test(s4.debugText) && /Chunk:/.test(s4.debugText), `F3 debug overlay: ${JSON.stringify(s4)}`);
+    await page.keyboard.press("F3");
+    assert(!(await state()).debug, "F3 again hides the overlay");
+  });
+
+  await check("settings menu: time of day slider and lock, FOV, sensitivity, volume, difficulty and spawning persist", async () => {
+    await page.evaluate(() => document.exitPointerLock());
+    await page.waitForFunction(() => window.__voxelands.gameState === "paused", null, { timeout: 5000 });
+    const setRange = (sel, v) =>
+      page.$eval(sel, (el, value) => {
+        el.value = String(value);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      }, v);
+    const setCheck = (sel, v) =>
+      page.$eval(sel, (el, value) => {
+        el.checked = value;
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }, v);
+    let lockedStill = false;
+    try {
+      // Tabs switch pages.
+      await page.click('.settings-tab[data-page="gameplay"]');
+      assert(await page.isVisible("#time-of-day"), "gameplay tab shows the time slider");
+      await setRange("#time-of-day", 18.5);
+      await setCheck("#time-lock", true);
+      const t = await page.evaluate(() => ({ h: window.__voxelands.sky.hours, locked: window.__voxelands.sky.locked }));
+      assert(Math.abs(t.h - 18.5) < 0.05 && t.locked, `time set to 18:30 and locked: ${JSON.stringify(t)}`);
+      await page.selectOption("#difficulty", "hard");
+      await setCheck("#mob-spawning", false);
+      await page.click('.settings-tab[data-page="controls"]');
+      await setRange("#fov", 90);
+      await setRange("#sensitivity", 1.5);
+      await page.click('.settings-tab[data-page="audio"]');
+      await setRange("#vol-weapons", 0.25);
+      await page.click('.settings-tab[data-page="video"]');
+      await page.selectOption("#gfx-bloom", "on"); // Low has no bloom: an override
+      const live = await page.evaluate(() => {
+        const v = window.__voxelands;
+        return { fov: v.player.baseFov, sens: v.player.mouseSensitivity, vol: v.audio.volumes.weapons, dmg: v.player.mobDamageScale, spawn: v.mobs.spawning, bloom: v.postfx.bloomLevels, s: JSON.parse(localStorage.getItem("voxelands_v1_settings")) };
+      });
+      assert(live.fov === 90 && live.sens === 1.5 && live.vol === 0.25 && live.dmg === 1.5 && live.spawn === false && live.bloom > 0, `live values: ${JSON.stringify(live)}`);
+      assert(live.s.fov === 90 && live.s.sensitivity === 1.5 && live.s.volume.weapons === 0.25 && live.s.difficulty === "hard" && live.s.mobSpawning === false && live.s.timeLocked === true && live.s.gfxOverrides.bloom === "on", `saved: ${JSON.stringify(live.s)}`);
+    } finally {
+      // Always resume, check the locked clock, and restore the defaults for
+      // the rest of the run (unlocked mid-morning clock, Low, spawning on).
+      if ((await page.evaluate(() => window.__voxelands.gameState)) !== "playing") {
+        await page.click("#resume-btn", { timeout: 20000 });
+        await page.waitForFunction(() => window.__voxelands.gameState === "playing", null, { timeout: 10000 });
+      }
+      const h0 = await page.evaluate(() => window.__voxelands.sky.hours);
+      await page.waitForTimeout(1500);
+      const h1 = await page.evaluate(() => window.__voxelands.sky.hours);
+      lockedStill = Math.abs(h1 - h0) < 1e-6;
+      await page.evaluate(() => {
+        const v = window.__voxelands;
+        localStorage.removeItem("voxelands_v1_settings");
+        Object.assign(v.settings, { timeLocked: false, difficulty: "normal", mobSpawning: true, fov: 75, sensitivity: 1, gfxOverrides: {} });
+        v.settings.volume.weapons = 1;
+        v.sky.locked = false;
+        v.player.mobDamageScale = 1;
+        v.mobs.spawning = true;
+        v.mobs.hostileSpawning = true;
+        v.player.baseFov = 75;
+        v.player.mouseSensitivity = 1;
+        v.audio.setVolume("weapons", 1);
+        v.setGraphics("low");
+        v.sky.setHours(10);
+      });
+    }
+    assert(lockedStill, "a locked clock stays put");
+  });
+
   // --- Level of detail (Round 3, Phase 3) ---
   await check("LOD: flying across the land hands over between chunks and tiles with no gaps or overlaps", async () => {
     await page.evaluate(() => window.__voxelands.setMode("creative")); // to fly (back to survival below)

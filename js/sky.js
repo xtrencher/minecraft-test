@@ -155,6 +155,7 @@ export class Sky {
     this._center = new THREE.Vector3();
     this.horizonColor = new THREE.Color();
     this.exposure = 1;
+    this.locked = false;
   }
 
   // Cycle time (seconds) at which the sun is at `angle` (0 = sunrise, PI = sunset).
@@ -168,6 +169,23 @@ export class Sky {
     this.time = this._timeForAngle(angle);
   }
 
+  // The sun's angle along its path for the current cycle time.
+  _angleForTime(time) {
+    const phase = (((time % DAY_LENGTH) + DAY_LENGTH) % DAY_LENGTH) / DAY_LENGTH;
+    return phase < DAY_SHARE ? (phase / DAY_SHARE) * Math.PI : Math.PI + ((phase - DAY_SHARE) / (1 - DAY_SHARE)) * Math.PI;
+  }
+
+  // Clock time, 0-24 (sunrise at 6:00, sunset at 18:00).
+  get hours() {
+    const a = this._angleForTime(this.time);
+    return (6 + (a / Math.PI) * 12) % 24;
+  }
+
+  setHours(h) {
+    const t = ((((Number(h) || 0) - 6) % 24) + 24) % 24;
+    this.setSunAngle((t / 12) * Math.PI);
+  }
+
   get isNight() {
     return worldUniforms.uSunDir.value.y < -0.05;
   }
@@ -178,9 +196,9 @@ export class Sky {
   }
 
   update(dt, center, forward) {
-    this.time = (this.time + dt) % DAY_LENGTH;
-    const phase = this.time / DAY_LENGTH;
-    const angle = phase < DAY_SHARE ? (phase / DAY_SHARE) * Math.PI : Math.PI + ((phase - DAY_SHARE) / (1 - DAY_SHARE)) * Math.PI;
+    // A locked clock (settings menu) keeps the sun where it is.
+    if (!this.locked) this.time = (this.time + dt) % DAY_LENGTH;
+    const angle = this._angleForTime(this.time);
     this.sunAngle = angle;
 
     const u = worldUniforms;

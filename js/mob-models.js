@@ -852,12 +852,110 @@ const VILLAGER = {
   },
 };
 
+// The player, seen in third person (F5): an original "wayfarer" with auburn
+// hair, a moss-green tunic, a leather satchel strap and belt, rolled sleeves,
+// slate trousers and worn boots. Same proportions as other humanoids.
+const PLAYER = {
+  parts: [
+    { name: "legL", size: [4, 12, 4], pivot: [-2, 12, 0], from: [-2, -12, -2] },
+    { name: "legR", size: [4, 12, 4], pivot: [2, 12, 0], from: [-2, -12, -2] },
+    { name: "body", size: [8, 12, 4], pivot: [0, 12, 0], from: [-4, 0, -2] },
+    { name: "head", size: [8, 8, 8], pivot: [0, 24, 0], from: [-4, 0, -4], parent: "body" },
+    { name: "armL", size: [4, 12, 4], pivot: [-6, 22, 0], from: [-2, -10, -2], parent: "body" },
+    { name: "armR", size: [4, 12, 4], pivot: [6, 22, 0], from: [-2, -10, -2], parent: "body" },
+  ],
+  paint(s) {
+    const skin = hex(0xd29a6e);
+    const skinShade = hex(0xb57f57);
+    const hair = hex(0x7a3a1c);
+    const hairDark = hex(0x552510);
+    const tunic = hex(0x4f7a3a);
+    const tunicDark = hex(0x3a5b2a);
+    const leather = hex(0x6b4424);
+    const buckle = hex(0xd8b04a);
+    const trousers = hex(0x3e4a5c);
+    const boot = hex(0x4a3222);
+    const hairAt = (x, y, seed) => grain(mix(hair, hairDark, hash(x, y >> 1, seed) * 0.8), x, y, seed + 1, 0.12);
+    const cloth = (x, y, seed, a, b) => grain(mix(a, b, hash(x >> 1, y >> 2, seed) * 0.5), x, y, seed + 1, 0.08);
+    s.part("head", (f, x, y, w, h) => {
+      let c = grain(skin, x, y, 201, 0.06);
+      if (f === "top") return hairAt(x, y, 202);
+      if (f === "bottom") return grain(skinShade, x, y, 203, 0.06);
+      // A thick, uneven mop of hair down the back and sides.
+      const fringe = f === "front" ? 3 + Math.floor(hash(x >> 1, 0, 204) * 2) : f === "back" ? 12 : 5 + Math.floor(hash(x, 0, 205) * 3);
+      if (y < fringe) return hairAt(x, y, 206);
+      if (f === "front") {
+        // Eyes: white, a green iris and a dark pupil; brows; a small mouth.
+        for (const ex of [3, 9]) {
+          if (y === 7 && x >= ex && x < ex + 4) c = shade(hairDark, 1.1); // brows
+          if (y >= 8 && y < 10 && x >= ex && x < ex + 4) {
+            const k = x - ex;
+            c = k === 0 || k === 3 ? [236, 232, 226] : y === 8 && k === (ex === 3 ? 2 : 1) ? [24, 30, 22] : [58, 128, 72];
+          }
+        }
+        if (y === 11 && (x === 7 || x === 8)) c = skinShade; // nose shadow
+        if (y === 13 && x >= 6 && x < 10) c = hex(0x8c4f3c); // mouth
+        if (y >= 10 && y < 12 && (x === 2 || x === 13)) c = mix(c, [220, 120, 110], 0.25); // cheeks
+      }
+      return c;
+    });
+    s.part("body", (f, x, y, w, h) => {
+      if (f === "bottom") return cloth(x, y, 210, tunicDark, tunicDark);
+      let c = cloth(x, y, 211, tunic, tunicDark);
+      // Collar opening, belt with a buckle, and a satchel strap across the chest.
+      if (f === "front" && y < 3 && x >= 6 && x < 10) c = grain(skin, x, y, 212, 0.05);
+      if (f === "front" && y === 3 && x >= 5 && x < 11) c = tunicDark;
+      if (y >= 16 && y < 19) c = grain(leather, x, y, 213, 0.12);
+      if (f === "front" && y >= 16 && y < 19 && x >= 7 && x < 9) c = buckle;
+      if (f === "front" && Math.abs(x - (w - 1 - y * 0.62)) < 1.2 && y < 16) c = grain(shade(leather, 1.1), x, y, 214, 0.1);
+      if (f === "back" && Math.abs(x - y * 0.62) < 1.2 && y < 16) c = grain(shade(leather, 1.1), x, y, 215, 0.1);
+      if (y >= h - 2) c = shade(c, 0.85); // hem
+      return c;
+    });
+    for (const arm of ["armL", "armR"]) {
+      s.part(arm, (f, x, y, w, h) => {
+        if (f === "top" || y < 9) return cloth(x, y, 220, tunic, tunicDark);
+        if (y < 11) return grain(shade(tunic, 1.12), x, y, 221, 0.06); // rolled cuff
+        return grain(f === "bottom" ? skinShade : skin, x, y, 222, 0.06);
+      });
+    }
+    for (const leg of ["legL", "legR"]) {
+      s.part(leg, (f, x, y, w, h) => {
+        if (f === "bottom" || y >= h - 7) {
+          let c = grain(boot, x, y, 230, 0.14);
+          if (y === h - 7) c = shade(boot, 1.25); // boot cuff
+          if (f !== "bottom" && y >= h - 2) c = shade(boot, 0.7); // sole
+          return c;
+        }
+        return cloth(x, y, 231, trousers, shade(trousers, 0.85));
+      });
+    }
+  },
+  animate(p, st) {
+    const swing = Math.sin(st.walkPhase) * 0.7 * st.walk;
+    p.legL.rotation.x = swing;
+    p.legR.rotation.x = -swing;
+    p.armL.rotation.x = -swing * 0.8;
+    // The right arm swings with the walk, chops when mining or attacking,
+    // and is raised to aim when holding a gun.
+    const chop = Math.sin(st.swing * Math.PI);
+    p.armR.rotation.x = st.aim ? -1.35 - st.headPitch * 0.9 : swing * 0.8 - chop * 1.6;
+    p.armR.rotation.z = st.aim ? 0 : chop * 0.3;
+    p.armL.rotation.x = st.aim === "two" ? -1.2 - st.headPitch * 0.9 : p.armL.rotation.x;
+    p.armL.rotation.y = st.aim === "two" ? 0.45 : 0;
+    p.body.rotation.x = st.sneak ? 0.45 : 0;
+    p.head.rotation.x = -st.headPitch - (st.sneak ? 0.45 : 0);
+    p.head.rotation.y = st.headYaw;
+  },
+};
+
 export const MODELS = {
   fluffalo: FLUFFALO,
   hoplet: HOPLET,
   mossback: MOSSBACK,
   zombie: ZOMBIE,
   villager: VILLAGER,
+  player: PLAYER,
   skeleton: SKELETON,
   spider: SPIDER,
   cow: COW,
